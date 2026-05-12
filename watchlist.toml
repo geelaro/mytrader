@@ -1,0 +1,113 @@
+# 每日回溯配置文件
+# 定义监控的标的、策略及参数
+
+[default]
+# 默认参数：当策略未指定参数时使用
+lookback_years = 3   # 数据回溯年数
+
+# ---------------------------------------------------------------------------
+# 监控标的列表
+# ---------------------------------------------------------------------------
+
+[[watchlist]]
+symbol = "AAPL"
+name = "Apple"
+strategies = ["enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "NVDA"
+name = "NVIDIA"
+strategies = ["enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "TSLA"
+name = "Tesla"
+strategies = ["enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "GOOGL"
+name = "Alphabet"
+strategies = ["weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "AMZN"
+name = "Amazon"
+strategies = ["weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "QQQ"
+name = "Nasdaq ETF"
+strategies = ["enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "SPY"
+name = "S&P 500 ETF"
+strategies = ["weekly_macd", "weekly_macd_kdj"]
+
+[[watchlist]]
+symbol = "510300"
+name = "沪深300ETF"
+strategies = ["weekly_macd", "weekly_macd_kdj"]
+
+# ---------------------------------------------------------------------------
+# 策略参数（不指定则用策略内置默认值）
+# ---------------------------------------------------------------------------
+
+[strategy.enhanced_macd]
+short_ma = 20
+long_ma = 50
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+rsi_period = 14
+rsi_oversold = 30
+rsi_overbought = 70
+atr_period = 14
+atr_stop_mult = 2.0
+take_profit_mult = 4.0
+risk_per_trade = 0.02
+max_position_pct = 0.95
+
+[strategy.trend_follower]
+short_ma = 20
+long_ma = 50
+adx_period = 14
+adx_threshold = 20
+atr_period = 14
+trail_atr_mult = 3.0
+risk_per_trade = 0.02
+max_position_pct = 0.95
+
+[strategy.weekly_macd]
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+
+[strategy.weekly_macd_kdj]
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+kdj_n = 9
+kdj_k = 3
+kdj_d = 3
+
+# ---------------------------------------------------------------------------
+# 风控参数
+# ---------------------------------------------------------------------------
+
+[risk]
+max_position_pct = 0.30      # 单仓位 ≤ 总权益 30%
+max_total_exposure_pct = 0.80  # 总敞口 ≤ 80%
+max_daily_loss_pct = 0.05    # 日内亏损超 5% 停止交易
+min_order_value = 500.0      # 最小订单金额
+max_slippage_pct = 0.02      # 滑点超 2% 拒绝
+
+# ---------------------------------------------------------------------------
+# 日志
+# ---------------------------------------------------------------------------
+
+[log]
+level = "INFO"               # DEBUG / INFO / WARNING / ERROR
+file_dir = "logs"
+max_bytes = 10485760         # 10 MB
+backup_count = 3

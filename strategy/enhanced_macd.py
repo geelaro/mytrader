@@ -1,0 +1,144 @@
+"""Enhanced MACD — dual-MA + MACD + RSI filter + ATR stop-loss / take-profit."""
+
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .base import (
+    BaseStrategy,
+    StrategyParams,
+    compute_atr,
+    compute_macd,
+)
+
+
+@dataclass(frozen=True)
+class EnhancedMACDParams(StrategyParams):
+    short_ma: int = 20
+    long_ma: int = 50
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    rsi_period: int = 14
+    rsi_oversold: float = 30.0
+    rsi_overbought: float = 70.0
+    atr_period: int = 14
+    atr_stop_mult: float = 2.0
+    take_profit_mult: float = 4.0
+    risk_per_trade: float = 0.02
+    max_position_pct: float = 0.95
+    volume_ma_period: int = 20
+
+    def validate(self):
+        assert self.short_ma < self.long_ma, "short_ma must be < long_ma"
+        assert 0 < self.risk_per_trade <= 1
+
+
+class EnhancedMACDStrategy(BaseStrategy):
+    """Dual-MA + MACD with RSI filter, ATR stop-loss, volume confirmation.
+
+    Entry: MA uptrend AND MACD histogram turns positive AND RSI within range
+           AND volume confirms.
+    Exit:  ATR stop-loss / take-profit, OR MACD histogram turns negative, OR
+           MA death cross.
+    """
+
+    params: EnhancedMACDParams
+
+    def __init__(self, **kwargs):
+        super().__init__(EnhancedMACDParams(**kwargs))
+
+    @property
+    def min_bars(self) -> int:
+        return max(self.params.long_ma, self.params.atr_period,
+                   self.params.rsi_period, self.params.volume_ma_period) + 5
+
+    # ------------------------------------------------------------------
+
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        p = self.params
+
+        # Moving averages
+        df["SMA_short"] = df["Close"].rolling(p.short_ma).mean()
+        df["SMA_long"] = df["Close"].rolling(p.long_ma).mean()
+
+        # MACD
+        df = compute_macd(df, p.macd_fast, p.macd_slow, p.macd_signal)
+
+        # RSI
+        delta = df["Close"].diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["RSI"] = 100 - (100 / (1 + rs))
+
+        # ATR
+        df["ATR"] = compute_atr(df, p.atr_period)
+
+        # Volume MA
+        df["Volume_MA"] = df["Volume"].rolling(p.volume_ma_period).mean()
+        df["Volume_ratio"] = df["Volume"] / df["Volume_MA"]
+
+        # ---- Signals ----
+        df["Signal"] = 0
+
+        buy = (
+            (df["SMA_short"] > df["SMA_long"])
+            & (df["MACD_hist"] > 0)
+            & (df["MACD_hist"].shift(1) <= 0)
+            & df["RSI"].between(p.rsi_oversold, p.rsi_overbought)
+            & (df["Volume_ratio"] > 0.8)
+        )
+        df.loc[buy, "Signal"] = 1
+
+        macd_sell = (df["MACD_hist"] < 0) & (df["MACD_hist"].shift(1) >= 0)
+        ma_sell = (
+            (df["SMA_short"] < df["SMA_long"])
+            & (df["SMA_short"].shift(1) >= df["SMA_long"].shift(1))
+        )
+        df.loc[macd_sell | ma_sell, "Signal"] = -1
+
+        return df
+
+    # ------------------------------------------------------------------
+
+    def position_size(self, capital: float, price: float, atr: float) -> int:
+        if pd.isna(atr) or atr <= 0 or price <= 0:
+            return 0
+        risk_dollar = capital * self.params.risk_per_trade
+        stop_distance = atr * self.params.atr_stop_mult
+        if stop_distance <= 0:
+            return 0
+        shares = int(risk_dollar / stop_distance)
+        max_shares = int(capital * self.params.max_position_pct / price)
+        return max(0, min(shares, max_shares))
+
+    # ------------------------------------------------------------------
+
+    def check_exit(
+        self,
+        df: pd.DataFrame,
+        i: int,
+        entry_price: float,
+        highest_since_entry: float,
+        position: Optional[Dict] = None,
+    ) -> Tuple[bool, str]:
+        price = float(df["Close"].iloc[i])
+        atr = float(df["ATR"].iloc[i])
+        p = self.params
+
+        stop_loss = entry_price - atr * p.atr_stop_mult
+        take_profit = entry_price + atr * p.take_profit_mult
+
+        if price <= stop_loss:
+            return True, "止损"
+        if price >= take_profit:
+            return True, "止盈"
+        if int(df["Signal"].iloc[i]) == -1:
+            return True, "卖出信号"
+        return False, ""

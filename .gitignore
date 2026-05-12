@@ -1,0 +1,26 @@
+# Secrets
+.env
+
+# Coverage
+.coverage
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+
+# Charts (generated)
+charts/
+ppt/
+
+# DB
+*.db
+
+# IDE
+.idea/
+.vscode/
