@@ -27,6 +27,12 @@ from strategy import (
     TrendFollowerParams,
     WeeklyMACDParams,
     WeeklyMACDKDJParams,
+    BollingerMeanReversionParams,
+    DonchianBreakoutParams,
+    ATRBreakoutParams,
+    BollingerSqueezeParams,
+    TurtleTradingParams,
+    DailyMACDKDJParams,
 )
 from trader import BacktestEngine
 
@@ -57,6 +63,41 @@ PARAM_GRIDS = {
         "kdj_k": [2, 3, 5],
         "kdj_d": [2, 3, 5],
     },
+    "bollinger_mean_reversion": {
+        "bb_period": [15, 20, 25],
+        "bb_std": [1.5, 2.0, 2.5],
+        "rsi_oversold": [25, 30, 35],
+        "atr_stop_mult": [1.5, 2.0, 3.0],
+    },
+    "donchian_breakout": {
+        "channel_period": [15, 20, 30, 40],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    },
+    "atr_breakout": {
+        "ma_period": [15, 20, 30],
+        "breakout_atr_mult": [1.5, 2.0, 2.5, 3.0],
+        "trail_atr_mult": [2.5, 3.0, 4.0, 5.0],
+    },
+    "bollinger_squeeze": {
+        "bb_period": [15, 20, 25],
+        "bb_std": [1.5, 2.0, 2.5],
+        "squeeze_percentile": [5, 10, 15],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    },
+    "turtle_trading": {
+        "short_period": [10, 20, 30],
+        "long_period": [40, 50, 60],
+        "channel_period": [15, 20, 30, 40],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    },
+    "daily_macd_kdj": {
+        "macd_fast": [8, 12, 16],
+        "macd_slow": [21, 26, 31],
+        "macd_signal": [7, 9, 11],
+        "kdj_n": [7, 9, 14],
+        "kdj_k": [2, 3, 5],
+        "kdj_d": [2, 3, 5],
+    },
 }
 
 _PARAMS_CLASS = {
@@ -64,6 +105,12 @@ _PARAMS_CLASS = {
     "trend_follower": TrendFollowerParams,
     "weekly_macd": WeeklyMACDParams,
     "weekly_macd_kdj": WeeklyMACDKDJParams,
+    "bollinger_mean_reversion": BollingerMeanReversionParams,
+    "donchian_breakout": DonchianBreakoutParams,
+    "atr_breakout": ATRBreakoutParams,
+    "bollinger_squeeze": BollingerSqueezeParams,
+    "turtle_trading": TurtleTradingParams,
+    "daily_macd_kdj": DailyMACDKDJParams,
 }
 
 
@@ -131,44 +178,13 @@ def grid_search(
             if params["short_ma"] >= params["long_ma"]:
                 continue
 
-        strategy = strategy_cls(**params)
-        df_sig = strategy.calculate_indicators(df)
-        engine = BacktestEngine(initial_capital=initial_capital)
-        highest = 0
-
-        for i in range(strategy.min_bars, len(df_sig)):
-            date_idx = df_sig.index[i]
-            price = float(df_sig["Close"].iloc[i])
-            atr = float(df_sig["ATR"].iloc[i])
-
-            if engine.position > 0 and engine.current_entry:
-                if price > highest:
-                    highest = price
-                exit_now, reason = strategy.check_exit(
-                    df_sig, i,
-                    entry_price=engine.current_entry["price"],
-                    highest_since_entry=highest,
-                    position=engine.current_entry,
-                )
-                if exit_now:
-                    engine.sell(date_idx, price, reason=reason)
-            elif strategy.entry_signal(df_sig, i) and engine.position == 0:
-                qty = strategy.position_size(engine.cash, price, atr)
-                if qty > 0:
-                    engine.buy(date_idx, price, qty)
-                    highest = price
-
-            engine.update(date_idx, price)
-
-        if engine.position > 0:
-            last_price = float(df_sig["Close"].iloc[-1])
-            engine.sell(df_sig.index[-1], last_price, reason="回测结束")
-            engine.update(df_sig.index[-1], last_price)
-
-        bench = df_sig["Close"].pct_change().dropna()
         try:
+            strategy = strategy_cls(**params)
+            df_sig = strategy.calculate_indicators(df)
+            engine = BacktestEngine(initial_capital=initial_capital)
+            bench = engine.run(strategy, df_sig)
             r = engine.get_result(bench)
-        except ValueError:
+        except Exception:
             continue
 
         opt = OptResult(
@@ -261,48 +277,19 @@ def walk_forward(
 
         # Run on test window
         strategy_cls, _ = _STRATEGY_MAP[strategy_name], _PARAMS_CLASS[strategy_name]
-        strategy = strategy_cls(**best_params)
-        provider = DataProvider()
-        df = provider.get_daily(symbol, start=train_end, end=test_end)
-        if df is None or df.empty:
-            window_start += pd.DateOffset(years=test_years)
-            continue
-        df = df.dropna(subset=["Open", "High", "Low", "Close"])
-        df_sig = strategy.calculate_indicators(df)
-        engine = BacktestEngine(initial_capital=initial_capital)
-        highest = 0
-
-        for i in range(strategy.min_bars, len(df_sig)):
-            date_idx = df_sig.index[i]
-            price = float(df_sig["Close"].iloc[i])
-            atr = float(df_sig["ATR"].iloc[i])
-
-            if engine.position > 0 and engine.current_entry:
-                if price > highest:
-                    highest = price
-                exit_now, reason = strategy.check_exit(
-                    df_sig, i,
-                    entry_price=engine.current_entry["price"],
-                    highest_since_entry=highest,
-                )
-                if exit_now:
-                    engine.sell(date_idx, price, reason=reason)
-            elif strategy.entry_signal(df_sig, i) and engine.position == 0:
-                qty = strategy.position_size(engine.cash, price, atr)
-                if qty > 0:
-                    engine.buy(date_idx, price, qty)
-                    highest = price
-            engine.update(date_idx, price)
-
-        if engine.position > 0:
-            last_price = float(df_sig["Close"].iloc[-1])
-            engine.sell(df_sig.index[-1], last_price, reason="回测结束")
-            engine.update(df_sig.index[-1], last_price)
-
-        bench = df_sig["Close"].pct_change().dropna()
         try:
+            strategy = strategy_cls(**best_params)
+            provider = DataProvider()
+            df = provider.get_daily(symbol, start=train_end, end=test_end)
+            if df is None or df.empty:
+                window_start += pd.DateOffset(years=test_years)
+                continue
+            df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            df_sig = strategy.calculate_indicators(df)
+            engine = BacktestEngine(initial_capital=initial_capital)
+            bench = engine.run(strategy, df_sig)
             r = engine.get_result(bench)
-        except ValueError:
+        except Exception:
             window_start += pd.DateOffset(years=test_years)
             continue
 

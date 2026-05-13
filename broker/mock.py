@@ -52,6 +52,15 @@ class MockBroker(Broker):
     def name(self) -> str:
         return "mock"
 
+    def refresh_prices(self, symbols: List[str]):
+        """Mock: prices are set externally via last_prices dict or data pipeline."""
+        updated = {s: self.last_prices.get(s, 0) for s in symbols
+                   if self.last_prices.get(s, 0) > 0}
+        if updated:
+            print(f"  [Mock] 使用日线收盘价 ({len(updated)} 个标的)")
+        else:
+            print(f"  [Mock] 价格待更新 (等待数据管线)")
+
     # ------------------------------------------------------------------
     # Account / Positions
     # ------------------------------------------------------------------
@@ -139,9 +148,9 @@ class MockBroker(Broker):
 
         if order.order_type == OrderType.LIMIT and order.price is not None:
             if order.side == OrderSide.BUY and order.price >= last_price:
-                return order.price
+                return min(order.price, last_price)  # fill at better price
             if order.side == OrderSide.SELL and order.price <= last_price:
-                return order.price
+                return max(order.price, last_price)  # fill at better price
             return 0  # limit order not reachable
 
         return 0

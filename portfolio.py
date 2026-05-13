@@ -156,6 +156,9 @@ class PortfolioBacktest:
 
                 # Entry check
                 elif st["position"] == 0 and st["strategy"].entry_signal(df_sig, idx_pos):
+                    active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
+                    if active_positions >= self.max_positions:
+                        continue
                     alloc = self._allocate(st["leg"], cash, len(leg_data))
                     if alloc > 0:
                         qty = st["strategy"].position_size(alloc, price, atr)
@@ -189,8 +192,7 @@ class PortfolioBacktest:
     def _allocate(self, leg: Leg, available_cash: float, num_legs: int) -> float:
         """Determine how much cash to allocate to a new position."""
         if self.allocation == "equal":
-            # Equal split of total capital
-            return self.initial_capital / max(num_legs, 1)
+            return min(available_cash, self.initial_capital / max(num_legs, 1))
         elif self.allocation == "fraction":
             # Fraction of available cash
             return available_cash * 0.25

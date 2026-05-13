@@ -16,6 +16,7 @@ matplotlib = "*"
 akshare = "*"
 tomli = "*"
 python-dotenv = "*"
+futu-api = "*"
 
 [dev-packages]
 pytest = "*"

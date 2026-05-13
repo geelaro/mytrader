@@ -60,12 +60,29 @@ def scan_day(
     for item in config.get("watchlist", []):
         symbol = item["symbol"]
         name = item.get("name", symbol)
-        strategy_names = item.get("strategies", [])
+        active_strat = item.get("active", "")
+        monitor_list = item.get("monitor", [])
+        strategy_names = [active_strat] + monitor_list if active_strat else monitor_list
 
         # Fetch data once per symbol
         df = provider.get_daily(symbol, start=start, end=target_date)
         if df is None or df.empty:
+            logger.warning("数据缺失: %s 无数据", symbol)
+            print(f"  ! {symbol} 无数据，跳过")
             continue
+
+        # Data quality checks
+        latest = df.index[-1]
+        age_days = (pd.Timestamp(target_date) - latest).days
+        if age_days > 5:
+            logger.warning("数据陈旧: %s 最新K线 %s (%d天前)", symbol, latest.date(), age_days)
+            print(f"  ! {symbol} 数据陈旧: 最新 {latest.date()} ({age_days}天前)")
+        if len(df) < 50:
+            logger.warning("数据不足: %s 仅 %d 根K线", symbol, len(df))
+            print(f"  ! {symbol} K线不足: 仅 {len(df)} 根")
+        if (df["Close"] <= 0).any():
+            logger.warning("异常价格: %s 存在零/负收盘价", symbol)
+            print(f"  ! {symbol} 异常价格: 存在零/负值")
 
         # Ensure target_date is in the data (use latest available if not)
         if target_date not in df.index.strftime("%Y-%m-%d"):
@@ -105,7 +122,8 @@ def scan_day(
 
             label = SIGNAL_LABEL.get(signal, str(signal))
             if signal != 0:
-                symbol_signals.append(f"  {strat_name:<20s}  {label:<5s}  价格: {price:.2f}  ATR: {atr:.2f}")
+                tag = " ★" if strat_name == active_strat else "  "
+                symbol_signals.append(f"  {strat_name:<20s}  {label:<5s}  价格: {price:.2f}  ATR: {atr:.2f}{tag}")
 
             # Save to DB
             cache.save_signal(

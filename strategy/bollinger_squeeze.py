@@ -1,0 +1,121 @@
+"""Bollinger Squeeze — volatility contraction / expansion strategy.
+
+Entry: BB width is at a low percentile (squeeze) AND close breaks above upper BB.
+Exit:  close falls back below mid-BB OR Chandelier trailing stop.
+"""
+
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .base import BaseStrategy, StrategyParams, compute_atr, compute_bollinger
+
+
+@dataclass(frozen=True)
+class BollingerSqueezeParams(StrategyParams):
+    bb_period: int = 20
+    bb_std: float = 2.0
+    squeeze_lookback: int = 125
+    squeeze_percentile: float = 10.0
+    atr_period: int = 14
+    trail_atr_mult: float = 3.0
+    risk_per_trade: float = 0.02
+    max_position_pct: float = 0.95
+
+    def validate(self):
+        if not (self.squeeze_lookback > self.bb_period):
+            raise ValueError("squeeze_lookback must be > bb_period")
+        if not (0 < self.squeeze_percentile <= 50):
+            raise ValueError("squeeze_percentile must be in (0, 50]")
+        if not (self.trail_atr_mult > 0):
+            raise ValueError("trail_atr_mult must be positive")
+        if not (0 < self.risk_per_trade <= 1):
+            raise ValueError("risk_per_trade must be in (0, 1]")
+
+
+class BollingerSqueeze(BaseStrategy):
+    """Wait for volatility contraction (squeeze), then enter on upward breakout."""
+
+    params: BollingerSqueezeParams
+
+    def __init__(self, **kwargs):
+        super().__init__(BollingerSqueezeParams(**kwargs))
+
+    @property
+    def min_bars(self) -> int:
+        p = self.params
+        return max(p.bb_period, p.squeeze_lookback, p.atr_period) + 5
+
+    # ------------------------------------------------------------------
+
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        p = self.params
+
+        df = compute_bollinger(df, p.bb_period, p.bb_std)
+        df["ATR"] = compute_atr(df, p.atr_period)
+
+        # Rolling percentile of bandwidth: is current width in the lowest X%?
+        df["BB_width_pct"] = (
+            df["BB_width"]
+            .rolling(p.squeeze_lookback)
+            .apply(
+                lambda x: (x.iloc[-1] <= x).sum() / len(x) * 100,
+                raw=False,
+            )
+        )
+        df["is_squeeze"] = df["BB_width_pct"] <= p.squeeze_percentile
+
+        # ---- Signals ----
+        df["Signal"] = 0
+        buy = (
+            df["is_squeeze"]
+            & (df["Close"] > df["BB_upper"])
+            & (df["Close"].shift(1) <= df["BB_upper"].shift(1))
+        )
+        df.loc[buy, "Signal"] = 1
+
+        sell = (
+            (df["Close"] < df["BB_mid"])
+            & (df["Close"].shift(1) >= df["BB_mid"].shift(1))
+        )
+        df.loc[sell, "Signal"] = -1
+
+        return df
+
+    # ------------------------------------------------------------------
+
+    def position_size(self, capital: float, price: float, atr: float) -> int:
+        if pd.isna(atr) or atr <= 0 or price <= 0:
+            return 0
+        risk_dollar = capital * self.params.risk_per_trade
+        stop_distance = atr * self.params.trail_atr_mult
+        if stop_distance <= 0:
+            return 0
+        shares = int(risk_dollar / stop_distance)
+        max_shares = int(capital * self.params.max_position_pct / price)
+        return max(0, min(shares, max_shares))
+
+    # ------------------------------------------------------------------
+
+    def check_exit(
+        self,
+        df: pd.DataFrame,
+        i: int,
+        entry_price: float,
+        highest_since_entry: float,
+        position: Optional[Dict] = None,
+    ) -> Tuple[bool, str]:
+        price = float(df["Close"].iloc[i])
+        atr = float(df["ATR"].iloc[i])
+
+        chandelier_stop = highest_since_entry - self.params.trail_atr_mult * atr
+        if price <= chandelier_stop:
+            return True, "移动止损"
+
+        if int(df["Signal"].iloc[i]) == -1:
+            return True, "回归中轨"
+
+        return False, ""

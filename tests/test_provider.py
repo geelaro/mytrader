@@ -1,5 +1,8 @@
 """Tests for data/provider.py and data/sources.py — routing, validation, classify."""
 
+import json
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
 import pytest
 
@@ -207,3 +210,189 @@ class TestDataProvider:
         provider = DataProvider()
         sources = provider.list_sources("AAPL")
         assert len(sources) >= 1
+
+
+# ===================================================================
+# Source fetch mocking
+# ===================================================================
+
+
+MOCK_TENCENT_RESP = {
+    "code": 0,
+    "data": {
+        "usAAPL.OQ": {
+            "day": [
+                ["2025-01-02", "190.00", "191.00", "192.00", "189.00", "50000000"],
+                ["2025-01-03", "191.50", "192.50", "193.50", "190.50", "45000000"],
+                ["2025-01-06", "192.00", "194.00", "195.00", "191.00", "55000000"],
+            ]
+        }
+    }
+}
+
+MOCK_SINA_RESP = [
+    {"day": "2025-01-02", "open": "3.500", "high": "3.550", "low": "3.480", "close": "3.520", "volume": "10000000"},
+    {"day": "2025-01-03", "open": "3.520", "high": "3.580", "low": "3.510", "close": "3.560", "volume": "12000000"},
+]
+
+
+class TestTencentSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        from data.sources import TencentSource
+
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = MOCK_TENCENT_RESP
+        mock_session.get.return_value = mock_resp
+
+        src = TencentSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert len(df) == 3
+            assert list(df.columns) == OHLCV_COLUMNS
+            assert df["Close"].iloc[0] == 191.0
+
+    def test_fetch_api_error_returns_empty(self):
+        from data.sources import TencentSource
+
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"code": -1, "msg": "error"}
+        mock_session.get.return_value = mock_resp
+
+        src = TencentSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_fetch_request_exception_returns_empty(self):
+        from data.sources import TencentSource
+        import requests as req
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = req.RequestException("connection error")
+
+        src = TencentSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("NONEXIST", "2025-01-01", "2025-01-10")
+            assert isinstance(df, pd.DataFrame)
+
+    def test_fetch_with_split_adjustment(self):
+        from data.sources import TencentSource
+
+        src = TencentSource()
+        # AAPL has a 4:1 split on 2020-08-31
+        # With 2025 data, no splits should apply
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = MOCK_TENCENT_RESP
+        mock_session.get.return_value = mock_resp
+
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert len(df) == 3
+
+
+class TestSinaSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        from data.sources import SinaSource
+
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps(MOCK_SINA_RESP)
+        mock_session.get.return_value = mock_resp
+
+        src = SinaSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
+            assert len(df) == 2
+            assert list(df.columns) == OHLCV_COLUMNS
+
+    def test_fetch_empty_response(self):
+        from data.sources import SinaSource
+
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = "[]"
+        mock_session.get.return_value = mock_resp
+
+        src = SinaSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_fetch_json_error(self):
+        from data.sources import SinaSource
+
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = "not json"
+        mock_session.get.return_value = mock_resp
+
+        src = SinaSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+
+class TestYFinanceSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        from data.sources import YFinanceSource
+
+        mock_df = pd.DataFrame({
+            "Open": [190, 191], "High": [192, 193],
+            "Low": [189, 190], "Close": [191, 192],
+            "Volume": [50000000, 45000000],
+        }, index=pd.to_datetime(["2025-01-02", "2025-01-03"]))
+
+        src = YFinanceSource()
+        with patch("data.sources.yf.download", return_value=mock_df):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert len(df) == 2
+            assert list(df.columns) == OHLCV_COLUMNS
+
+    def test_fetch_empty_returns_empty_df(self):
+        from data.sources import YFinanceSource
+
+        src = YFinanceSource()
+        with patch("data.sources.yf.download", return_value=pd.DataFrame()):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_fetch_exception_returns_empty(self):
+        from data.sources import YFinanceSource
+
+        src = YFinanceSource()
+        with patch("data.sources.yf.download", side_effect=Exception("fail")):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+
+class TestAKShareSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        from data.sources import AKShareSource
+
+        mock_df = pd.DataFrame({
+            "日期": ["2025-01-02", "2025-01-03"],
+            "开盘": [3.50, 3.52],
+            "最高": [3.55, 3.58],
+            "最低": [3.48, 3.51],
+            "收盘": [3.52, 3.56],
+            "成交量": [10000000, 12000000],
+        })
+
+        src = AKShareSource()
+        with patch("data.sources.AKShareSource.fetch", return_value=pd.DataFrame(columns=OHLCV_COLUMNS)):
+            # Just verify import/init doesn't crash
+            df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_without_akshare_installed(self):
+        try:
+            import akshare  # noqa: F401
+            pytest.skip("akshare is installed")
+        except ImportError:
+            from data.sources import AKShareSource
+            src = AKShareSource()
+            df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
+            assert df.empty

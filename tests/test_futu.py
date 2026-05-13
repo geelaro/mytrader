@@ -1,0 +1,161 @@
+"""Tests for broker/futu.py — symbol mapping, broker interface contract."""
+
+from unittest.mock import patch, MagicMock
+
+import pytest
+from broker.futu import (
+    FutuBroker,
+    _to_futu_symbol,
+    _to_market,
+    _from_futu_side,
+    _to_futu_side,
+    _from_futu_status,
+    _to_futu_order_type,
+)
+from broker.base import (
+    Order, OrderSide, OrderStatus, OrderType, Account, Position,
+)
+from futu import TrdSide, OrderType as FutuOrderType, OrderStatus as FutuOrderStatus, TrdMarket
+
+
+# ===================================================================
+# Symbol mapping
+# ===================================================================
+
+
+class TestSymbolMapping:
+    def test_us_stock(self):
+        assert _to_futu_symbol("AAPL") == "US.AAPL"
+        assert _to_futu_symbol("NVDA") == "US.NVDA"
+
+    def test_hk_stock(self):
+        assert _to_futu_symbol("HK.00700") == "HK.00700"
+
+    def test_cn_etf(self):
+        assert _to_futu_symbol("510300") == "SH.510300"
+        assert _to_futu_symbol("159919") == "SZ.159919"
+
+    def test_already_prefixed(self):
+        assert _to_futu_symbol("US.TSLA") == "US.TSLA"
+        assert _to_futu_symbol("SH.510050") == "SH.510050"
+
+    def test_shenzhen_code(self):
+        """6-digit codes starting with 0/1/2/3 are SZSE."""
+        assert _to_futu_symbol("000001") == "SZ.000001"
+        assert _to_futu_symbol("300750") == "SZ.300750"
+
+
+class TestMarketMapping:
+    def test_us_market(self):
+        assert _to_market("AAPL") == TrdMarket.US
+
+    def test_hk_market(self):
+        assert _to_market("HK.00700") == TrdMarket.HK
+
+    def test_cn_market(self):
+        assert _to_market("510300") == TrdMarket.CN
+
+
+# ===================================================================
+# Side / type / status mapping
+# ===================================================================
+
+
+class TestSideMapping:
+    def test_buy(self):
+        assert _to_futu_side(OrderSide.BUY) == TrdSide.BUY
+        assert _from_futu_side(TrdSide.BUY) == OrderSide.BUY
+
+    def test_sell(self):
+        assert _to_futu_side(OrderSide.SELL) == TrdSide.SELL
+        assert _from_futu_side(TrdSide.SELL) == OrderSide.SELL
+
+
+class TestOrderTypeMapping:
+    def test_market(self):
+        assert _to_futu_order_type(OrderType.MARKET) == FutuOrderType.MARKET
+
+    def test_limit(self):
+        assert _to_futu_order_type(OrderType.LIMIT) == FutuOrderType.NORMAL
+
+
+class TestStatusMapping:
+    def test_filled_all(self):
+        assert _from_futu_status(FutuOrderStatus.FILLED_ALL) == OrderStatus.FILLED
+
+    def test_filled_part(self):
+        assert _from_futu_status(FutuOrderStatus.FILLED_PART) == OrderStatus.PARTIAL
+
+    def test_submitted(self):
+        assert _from_futu_status(FutuOrderStatus.SUBMITTED) == OrderStatus.SUBMITTED
+
+    def test_cancelled(self):
+        assert _from_futu_status(FutuOrderStatus.CANCELLED_ALL) == OrderStatus.CANCELLED
+
+    def test_failed(self):
+        assert _from_futu_status(FutuOrderStatus.FAILED) == OrderStatus.REJECTED
+
+
+# ===================================================================
+# FutuBroker interface
+# ===================================================================
+
+
+class TestFutuBrokerInterface:
+    def test_initialization(self):
+        broker = FutuBroker(host="127.0.0.1", port=11111, initial_cash=10000)
+        assert broker.name == "futu"
+        assert broker._initial_cash == 10000
+        assert broker._host == "127.0.0.1"
+        assert broker._port == 11111
+
+    def test_implements_broker_interface(self):
+        from broker.base import Broker
+        assert issubclass(FutuBroker, Broker)
+
+    def test_get_account_no_connection(self):
+        """Without FutuOpenD, returns initial state."""
+        broker = FutuBroker(initial_cash=10000)
+        account = broker.get_account()
+        assert isinstance(account, Account)
+        assert account.total_equity == 10000
+        assert account.available_cash == 10000
+        assert account.currency == "USD"
+
+    def test_get_positions_no_connection(self):
+        broker = FutuBroker()
+        positions = broker.get_positions()
+        assert positions == []
+
+    def test_cancel_order_no_connection(self):
+        broker = FutuBroker()
+        assert broker.cancel_order("nonexistent") is False
+
+    def test_get_order_no_connection(self):
+        broker = FutuBroker()
+        assert broker.get_order("nonexistent") is None
+
+    def test_submit_order_without_connection(self):
+        """Without FutuOpenD, order should be REJECTED gracefully."""
+        broker = FutuBroker()
+        order = Order(
+            symbol="AAPL", side=OrderSide.BUY,
+            order_type=OrderType.MARKET, quantity=10,
+        )
+        # Mock _get_trade_ctx to simulate FutuOpenD not running
+        with patch.object(broker, '_get_trade_ctx', return_value=None):
+            result = broker.submit_order(order)
+        assert result.status == OrderStatus.REJECTED
+        assert "error" in result.broker_data
+
+    def test_last_prices_dict(self):
+        broker = FutuBroker()
+        assert broker.last_prices == {}
+        broker.last_prices["AAPL"] = 195.0
+        assert broker.last_prices["AAPL"] == 195.0
+
+    def test_disconnect_cleanup(self):
+        broker = FutuBroker()
+        broker.disconnect()  # should not raise
+        # Second disconnect is also safe
+        broker.disconnect()

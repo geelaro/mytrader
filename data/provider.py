@@ -36,45 +36,6 @@ logger = logging.getLogger(__name__)
 # Trading-calendar helpers (used for gap detection)
 # ---------------------------------------------------------------------------
 
-# Approximate US holidays for gap-skipping
-_US_HOLIDAYS: set[str] = set()
-# US market holidays 2018-2030 (New Year, MLK, Presidents, Good Fri, Memorial,
-# Juneteenth, Independence, Labor, Thanksgiving, Christmas)
-_US_HOLIDAY_SKELETON = [
-    # New Year's Day
-    (1, 1),  # Jan 1
-    # Martin Luther King Jr. Day — 3rd Monday of Jan
-    # Presidents' Day — 3rd Monday of Feb
-    # Memorial Day — last Monday of May
-    # Juneteenth — Jun 19
-    (6, 19),
-    # Independence Day — Jul 4
-    (7, 4),
-    # Labor Day — 1st Monday of Sep
-    # Thanksgiving — 4th Thursday of Nov
-    # Christmas — Dec 25
-    (12, 25),
-]
-
-
-def _is_weekend(d: pd.Timestamp) -> bool:
-    return d.weekday() >= 5  # Saturday=5, Sunday=6
-
-
-def _count_trading_gap(
-    cached_end: Optional[str], req_start: str, max_gap_business_days: int = 30
-) -> bool:
-    """If the gap between *cached_end* and *req_start* is small enough,
-    consider it bridged (e.g. a few weekends + minor holidays)."""
-    if cached_end is None:
-        return False
-    ce = pd.Timestamp(cached_end)
-    rs = pd.Timestamp(req_start)
-    gap_days = (rs - ce).days
-    # Loose heuristic: allow ~7 calendar days (≈5 business days) gap
-    return gap_days <= 7
-
-
 # ---------------------------------------------------------------------------
 # DataProvider
 # ---------------------------------------------------------------------------

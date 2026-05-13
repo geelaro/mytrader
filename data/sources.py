@@ -69,6 +69,7 @@ _TENCENT_CODE_MAP = {
     "AAPL": "usAAPL.OQ", "MSFT": "usMSFT.OQ", "GOOGL": "usGOOGL.OQ",
     "AMZN": "usAMZN.OQ", "TSLA": "usTSLA.OQ", "NVDA": "usNVDA.OQ",
     "META": "usMETA.OQ", "QQQ": "usQQQ.OQ", "SPY": "usSPY.AM",
+    "MU": "usMU.OQ", "INTC": "usINTC.OQ", "ORCL": "usORCL.N",
 }
 
 # Manual split adjustments — verified against CRSP/EOD

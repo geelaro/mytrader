@@ -164,18 +164,24 @@ class CacheManager:
             db_df[low] = df[cap] if cap in df.columns else 0
         db_df["source"] = df["source"]
 
-        # Delete existing rows for these symbol/dates to allow upsert
-        dates = list(db_df["date"].unique())
-        self.conn.execute(
-            f"DELETE FROM ohlcv_daily WHERE symbol = ? AND date IN ({','.join('?' * len(dates))})",
-            [symbol.upper()] + dates,
-        )
-
-        db_df.to_sql(
-            "ohlcv_daily", self.conn, if_exists="append", index=False,
-            method="multi",
-        )
-        self.conn.commit()
+        # Upsert within an explicit transaction for atomicity
+        dates = [str(d) for d in db_df["date"].unique()]
+        if not dates:
+            return 0
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute(
+                f"DELETE FROM ohlcv_daily WHERE symbol = ? AND date IN ({','.join('?' * len(dates))})",
+                [symbol.upper()] + dates,
+            )
+            db_df.to_sql(
+                "ohlcv_daily", self.conn, if_exists="append", index=False,
+                method="multi",
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         return len(db_df)
 
     # ------------------------------------------------------------------

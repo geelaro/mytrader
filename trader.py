@@ -1,15 +1,13 @@
-import pandas as pd
-import numpy as np
-import time
-import yfinance as yf
-from datetime import datetime, timedelta
-import sqlite3
-from pathlib import Path
+import warnings
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import warnings
+import numpy as np
+import pandas as pd
+
 warnings.filterwarnings('ignore')
 
 from data import DataProvider
@@ -53,73 +51,6 @@ class BacktestResult:
     buy_hold_return_pct: float
     initial_capital: float
     final_equity: float
-
-
-# ---------------------------------------------------------------------------
-# Database manager (preserved from original)
-# ---------------------------------------------------------------------------
-
-class DatabaseManager:
-    def __init__(self, db_path="trading_data.db"):
-        self.db_path = Path(db_path)
-        self._init_db()
-
-    def _init_db(self):
-        conn = sqlite3.connect(str(self.db_path))
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS market_data (
-            timestamp TEXT, symbol TEXT, open REAL, high REAL, low REAL,
-            close REAL, volume INTEGER, PRIMARY KEY (timestamp, symbol))''')
-        c.execute('''CREATE TABLE IF NOT EXISTS trade_logs (
-            timestamp TEXT PRIMARY KEY, symbol TEXT, signal INTEGER,
-            price REAL, position INTEGER, macd REAL, macd_signal REAL, macd_hist REAL)''')
-        conn.commit()
-        conn.close()
-
-    def save_market_data(self, df, symbol):
-        conn = sqlite3.connect(str(self.db_path))
-        try:
-            data = df.reset_index()
-            data['Date'] = data['Date'].astype(str)
-            data['symbol'] = symbol
-            data.to_sql('market_data', conn, if_exists='append', index=False)
-        finally:
-            conn.close()
-
-    def get_market_data(self, symbol, days=365):
-        conn = sqlite3.connect(str(self.db_path))
-        try:
-            df = pd.read_sql_query(
-                "SELECT timestamp, open, high, low, close, volume FROM market_data "
-                "WHERE symbol=? AND timestamp >= date('now', ?) ORDER BY timestamp ASC",
-                conn, params=(symbol, f'-{days} days'))
-            if not df.empty:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
-            return df
-        finally:
-            conn.close()
-
-    def save_trade_log(self, timestamp, symbol, signal, price, position,
-                       macd, macd_signal, macd_hist):
-        conn = sqlite3.connect(str(self.db_path))
-        try:
-            conn.cursor().execute(
-                "INSERT INTO trade_logs VALUES (?,?,?,?,?,?,?,?)",
-                (timestamp, symbol, signal, price, position, macd, macd_signal, macd_hist))
-            conn.commit()
-        finally:
-            conn.close()
-
-    def get_trade_history(self, symbol, days=30):
-        conn = sqlite3.connect(str(self.db_path))
-        try:
-            return pd.read_sql_query(
-                "SELECT * FROM trade_logs WHERE symbol=? AND "
-                "timestamp >= datetime('now', ?) ORDER BY timestamp DESC",
-                conn, params=(symbol, f'-{days} days'))
-        finally:
-            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +119,17 @@ class BacktestEngine:
                 self.current_entry = None
             else:
                 self.current_entry = {**e, 'quantity': e['quantity'] - quantity}
+        elif self.position >= 0:
+            # Fallback: current_entry lost (edge case), reconstruct from sell price
+            trade = Trade(
+                entry_date=date, exit_date=date,
+                entry_price=actual_price, exit_price=actual_price,
+                quantity=quantity,
+                pnl=0.0, pnl_pct=0.0,
+                exit_reason=f"{reason}(状态异常)")
+            self.trades.append(trade)
+            if self.position == 0:
+                self.current_entry = None
         return trade
 
     def update(self, date, price):
@@ -237,13 +179,54 @@ class BacktestEngine:
             buy_hold_return_pct=bh_ret,
             initial_capital=self.initial_capital, final_equity=final)
 
+    def run(self, strategy, df, close_out: bool = True) -> pd.Series:
+        """Execute backtest loop over *df* using *strategy* signals.
+
+        Returns
+        -------
+        benchmark_returns : pd.Series
+            Buy-and-hold returns of the close price over the backtest period.
+        """
+        highest = 0.0
+
+        for i in range(strategy.min_bars, len(df)):
+            date_idx = df.index[i]
+            price = float(df["Close"].iloc[i])
+            atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
+
+            if self.position > 0 and self.current_entry:
+                if price > highest:
+                    highest = price
+                exit_now, reason = strategy.check_exit(
+                    df, i,
+                    entry_price=self.current_entry["price"],
+                    highest_since_entry=highest,
+                    position=self.current_entry,
+                )
+                if exit_now:
+                    self.sell(date_idx, price, reason=reason)
+                    # Prevent re-entry on the same bar after stop-loss exit
+                    self.update(date_idx, price)
+                    continue
+
+            elif strategy.entry_signal(df, i) and self.position == 0:
+                qty = strategy.position_size(self.cash, price, atr)
+                if qty > 0:
+                    self.buy(date_idx, price, qty)
+                    highest = price
+
+            self.update(date_idx, price)
+
+        if close_out and self.position > 0:
+            last_price = float(df["Close"].iloc[-1])
+            self.sell(df.index[-1], last_price, reason="回测结束")
+            self.update(df.index[-1], last_price)
+
+        return df["Close"].pct_change().dropna()
+
 
 from strategy import (
-    BaseStrategy,
     EnhancedMACDStrategy,
-    TrendFollower,
-    WeeklyMACD,
-    WeeklyMACD_KDJ,
 )
 
 
@@ -280,123 +263,6 @@ def _synthetic_ohlcv(symbol, start, end, seed=42):
     return df
 
 
-def _fetch_tencent(symbol, start, end):
-    """Fetch US stock OHLCV data from Tencent (ifzq.gtimg.cn).
-
-    Data format per row: [date, open, close, high, low, volume]
-    """
-    import requests
-    import json
-
-    code_map = {
-        "AAPL": "usAAPL.OQ",
-        "MSFT": "usMSFT.OQ",
-        "GOOGL": "usGOOGL.OQ",
-        "AMZN": "usAMZN.OQ",
-        "TSLA": "usTSLA.OQ",
-        "NVDA": "usNVDA.OQ",
-        "META": "usMETA.OQ",
-        "QQQ": "usQQQ.OQ",
-        "SPY": "usSPY.AM",
-    }
-    tencent_code = code_map.get(symbol.upper(), f"us{symbol.upper()}.OQ")
-
-    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-    # Use empty end date — API rejects future/non-trading dates
-    # Max count is ~2000, errors on larger values
-    params = {"param": f"{tencent_code},day,{start},,2000,qfq"}
-
-    s = requests.Session()
-    s.trust_env = False
-    s.headers.update({"User-Agent": "Mozilla/5.0"})
-    r = s.get(url, params=params, timeout=30)
-    data = r.json()
-
-    if data.get("code") != 0 or not isinstance(data.get("data"), dict):
-        raise RuntimeError(f"Tencent API returned error: {data.get('msg', 'unknown')}")
-
-    stock_data = data["data"].get(tencent_code)
-    if not isinstance(stock_data, dict):
-        raise RuntimeError(f"Tencent API unexpected data format")
-
-    raw_rows = stock_data.get("day", [])
-    if not raw_rows:
-        raise RuntimeError("Tencent API returned empty data")
-
-    rows = []
-    for row in raw_rows:
-        if len(row) < 6:
-            continue
-        date_str, open_, close_, high_, low_, vol_ = row[:6]
-        rows.append({
-            "Date": pd.Timestamp(date_str),
-            "Open": float(open_),
-            "High": float(high_),
-            "Low": float(low_),
-            "Close": float(close_),
-            "Volume": float(vol_),
-        })
-
-    df = pd.DataFrame(rows).set_index("Date").sort_index()
-
-    # Manual split adjustment — Tencent API does not adjust US stock splits
-    # Format: (split_date, ratio) — prices before date are divided by ratio
-    splits = {
-        "AAPL":  [("2020-08-31", 4)],
-        "NVDA":  [("2021-07-20", 4), ("2024-06-10", 10)],
-        "TSLA":  [("2020-08-31", 5), ("2022-08-25", 3)],
-        "AMZN":  [("2022-06-06", 20)],
-        "GOOGL": [("2022-07-18", 20)],
-    }
-    if symbol.upper() in splits:
-        for split_date, ratio in splits[symbol.upper()]:
-            split_dt = pd.Timestamp(split_date)
-            pre_split = df.index < split_dt
-            for col in ['Open', 'High', 'Low', 'Close']:
-                df.loc[pre_split, col] = df.loc[pre_split, col] / ratio
-            df.loc[pre_split, 'Volume'] = df.loc[pre_split, 'Volume'] * ratio
-
-    # Filter to requested date range
-    df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
-    return df
-
-
-def _fetch_sina(symbol, start, end):
-    """Fetch Chinese A-share/ETF OHLCV from Sina Finance.
-
-    Symbol format: 'sh510300' (Shanghai) or 'sz159919' (Shenzhen).
-    """
-    import requests
-    import json
-
-    url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
-    params = {"symbol": symbol, "scale": "240", "ma": "no", "datalen": "2000"}
-
-    s = requests.Session()
-    s.trust_env = False
-    s.headers.update({"User-Agent": "Mozilla/5.0"})
-    r = s.get(url, params=params, timeout=30)
-    data = json.loads(r.text)
-
-    if not data or not isinstance(data, list):
-        raise RuntimeError(f"Sina API returned unexpected data")
-
-    rows = []
-    for row in data:
-        rows.append({
-            "Date": pd.Timestamp(row["day"]),
-            "Open": float(row["open"]),
-            "High": float(row["high"]),
-            "Low": float(row["low"]),
-            "Close": float(row["close"]),
-            "Volume": float(row["volume"]),
-        })
-
-    df = pd.DataFrame(rows).set_index("Date").sort_index()
-    df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
-    return df
-
-
 def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
                  initial_capital=10000, strategy_cls=None, **strategy_params):
     """Run a full backtest and return results + dataframe.
@@ -424,47 +290,7 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
     strategy = strategy_cls(**strategy_params)
     df = strategy.calculate_indicators(df)
     engine = BacktestEngine(initial_capital=initial_capital)
-
-    highest_since_entry = 0
-
-    for i in range(strategy.min_bars, len(df)):
-        date = df.index[i]
-        price = float(df['Close'].iloc[i])
-        atr = float(df['ATR'].iloc[i])
-
-        if engine.position > 0 and engine.current_entry:
-            if price > highest_since_entry:
-                highest_since_entry = price
-
-            exit_now, reason = strategy.check_exit(
-                df, i,
-                entry_price=engine.current_entry['price'],
-                highest_since_entry=highest_since_entry,
-                position=engine.current_entry,
-            )
-            if exit_now:
-                engine.sell(date, price, reason=reason)
-
-        elif strategy.entry_signal(df, i) and engine.position == 0:
-            qty = strategy.position_size(engine.cash, price, atr)
-            if qty > 0:
-                engine.buy(date, price, qty)
-                highest_since_entry = price
-
-        engine.update(date, price)
-
-    # Close any open position at end
-    if engine.position > 0:
-        last_price = float(df['Close'].iloc[-1])
-        engine.sell(df.index[-1], last_price, reason='回测结束')
-        engine.update(df.index[-1], last_price)
-
-    benchmark_rets = df['Close'].pct_change().dropna()
-    # Align benchmark returns to backtest period
-    if len(engine.equity_history) > 0:
-        eq_dates = pd.DataFrame(engine.equity_history, columns=['date', 'equity']).set_index('date')
-        benchmark_rets = benchmark_rets[benchmark_rets.index >= eq_dates.index[0]]
-
+    benchmark_rets = engine.run(strategy, df)
     result = engine.get_result(benchmark_rets)
     return result, df
 
@@ -591,4 +417,6 @@ def plot_result(result, df, symbol="AAPL", save_path=None):
 
 
 if __name__ == "__main__":
-    run_strategy()
+    result, df = run_backtest(symbol="AAPL", start="2020-01-01")
+    print_result(result)
+    plot_result(result, df, symbol="AAPL")

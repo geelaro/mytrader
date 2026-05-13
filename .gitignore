@@ -20,6 +20,8 @@ ppt/
 
 # DB
 *.db
+*.db-shm
+*.db-wal
 
 # IDE
 .idea/

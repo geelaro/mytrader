@@ -173,5 +173,67 @@ def test_all_four_strategies_run_without_error(ohlcv):
         s.check_exit(df, s.min_bars + 5, entry_price=100, highest_since_entry=105)
 
 
+# ===================================================================
+# print_result
+# ===================================================================
+
+
+class TestPrintResult:
+    def test_prints_without_crash(self, capsys):
+        from trader import print_result, BacktestResult
+        import numpy as np
+
+        result = BacktestResult(
+            trades=[],
+            equity_curve=pd.Series([10000, 10100, 10200],
+                                   index=pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"])),
+            total_return_pct=2.0, cagr_pct=10.0, sharpe_ratio=1.5,
+            max_drawdown_pct=-1.0, win_rate_pct=60.0, profit_factor=2.0,
+            avg_win_pct=3.0, avg_loss_pct=-2.0,
+            total_trades=5, winning_trades=3, losing_trades=2,
+            buy_hold_return_pct=1.5,
+            initial_capital=10000, final_equity=10200,
+        )
+        print_result(result)
+        out = capsys.readouterr().out
+        assert len(out) > 0
+
+
+class TestPlotResult:
+    def test_plot_saves_file(self, tmp_path):
+        """plot_result should create a PNG file."""
+        import matplotlib
+        matplotlib.use("Agg")
+        from trader import plot_result, BacktestResult, BacktestEngine
+        import numpy as np
+
+        dates = pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03",
+                                "2025-01-06", "2025-01-07"])
+        df = pd.DataFrame({
+            "Open": [100, 101, 102, 103, 104],
+            "High": [102, 103, 104, 105, 106],
+            "Low": [99, 100, 101, 102, 103],
+            "Close": [101, 102, 103, 104, 105],
+            "Volume": [1_000_000] * 5,
+        }, index=dates)
+
+        result = BacktestResult(
+            trades=[],
+            equity_curve=pd.Series([10000, 10100, 10200, 10300, 10400], index=dates),
+            total_return_pct=4.0, cagr_pct=20.0, sharpe_ratio=2.0,
+            max_drawdown_pct=0.0, win_rate_pct=100.0, profit_factor=999,
+            avg_win_pct=2.0, avg_loss_pct=0.0,
+            total_trades=0, winning_trades=0, losing_trades=0,
+            buy_hold_return_pct=5.0,
+            initial_capital=10000, final_equity=10400,
+        )
+        path = str(tmp_path / "test_plot.png")
+        fig = plot_result(result, df, symbol="TEST", save_path=path)
+        import os
+        assert os.path.exists(path)
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
 # Need pd for timestamp
 import pandas as pd

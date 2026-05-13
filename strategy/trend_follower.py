@@ -21,8 +21,8 @@ class TrendFollowerParams(StrategyParams):
     max_position_pct: float = 0.95
 
     def validate(self):
-        assert self.short_ma < self.long_ma
-        assert self.trail_atr_mult > 0
+        if not (self.short_ma < self.long_ma): raise ValueError("validation failed")
+        if not (self.trail_atr_mult > 0): raise ValueError("validation failed")
 
 
 class TrendFollower(BaseStrategy):

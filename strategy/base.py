@@ -153,28 +153,37 @@ def compute_macd(
 def compute_kdj(
     df: pd.DataFrame, n: int = 9, k_period: int = 3, d_period: int = 3
 ) -> pd.DataFrame:
-    """Add K / D / J columns to *df*."""
+    """Add K / D / J columns to *df* (vectorised via ewm)."""
     low_n = df["Low"].rolling(n).min()
     high_n = df["High"].rolling(n).max()
     rsv = (df["Close"] - low_n) / (high_n - low_n).replace(0, np.nan) * 100
-    rsv = rsv.fillna(50)
 
-    k_vals, d_vals = [50.0], [50.0]
-    alpha_k, alpha_d = 1 / k_period, 1 / d_period
-    for r in rsv.iloc[1:]:
-        k_vals.append(alpha_k * r + (1 - alpha_k) * k_vals[-1])
-        d_vals.append(alpha_d * k_vals[-1] + (1 - alpha_d) * d_vals[-1])
+    # K = EMA of RSV, seeded at 50 for the initial bar
+    rsv.iloc[0] = 50.0
+    rsv = rsv.fillna(50.0)
 
-    df["K"] = k_vals
-    df["D"] = d_vals
+    df["K"] = rsv.ewm(alpha=1 / k_period, adjust=False).mean()
+    df["D"] = df["K"].ewm(alpha=1 / d_period, adjust=False).mean()
     df["J"] = 3 * df["K"] - 2 * df["D"]
+    return df
+
+
+def compute_bollinger(
+    df: pd.DataFrame, period: int = 20, std_mult: float = 2.0
+) -> pd.DataFrame:
+    """Add BB_mid / BB_upper / BB_lower / BB_width columns to *df*."""
+    df["BB_mid"] = df["Close"].rolling(period).mean()
+    bb_std = df["Close"].rolling(period).std()
+    df["BB_upper"] = df["BB_mid"] + std_mult * bb_std
+    df["BB_lower"] = df["BB_mid"] - std_mult * bb_std
+    df["BB_width"] = (df["BB_upper"] - df["BB_lower"]) / df["BB_mid"].replace(0, np.nan)
     return df
 
 
 def resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
     """Resample daily OHLCV to weekly (Friday close)."""
     return (
-        df.resample("W")
+        df.resample("W-FRI")
         .agg(
             {
                 "Open": "first",

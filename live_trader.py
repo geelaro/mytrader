@@ -58,9 +58,17 @@ class RiskLimits:
     max_daily_loss_pct: float = 0.05
     min_order_value: float = 500.0
     max_slippage_pct: float = 0.02
+    max_consecutive_losses: int = 3
+    max_daily_trades: int = 5
+    base_risk_pct: float = 0.02
+    vol_sensitivity: float = 5.0
+    min_vol_scalar: float = 0.3
 
+    # -- runtime state --
     _day_start_equity: float = 0.0
     _date: str = ""
+    _consecutive_losses: int = 0
+    _daily_trade_count: int = 0
 
     @classmethod
     def from_config(cls, config: dict) -> "RiskLimits":
@@ -71,6 +79,11 @@ class RiskLimits:
             max_daily_loss_pct=rc.get("max_daily_loss_pct", 0.05),
             min_order_value=rc.get("min_order_value", 500.0),
             max_slippage_pct=rc.get("max_slippage_pct", 0.02),
+            max_consecutive_losses=rc.get("max_consecutive_losses", 3),
+            max_daily_trades=rc.get("max_daily_trades", 5),
+            base_risk_pct=rc.get("base_risk_pct", 0.02),
+            vol_sensitivity=rc.get("vol_sensitivity", 5.0),
+            min_vol_scalar=rc.get("min_vol_scalar", 0.3),
         )
 
 
@@ -106,6 +119,7 @@ class LiveTrader:
         self.cache = CacheManager()
         self.risk = RiskLimits.from_config(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
+        self._entry_prices: Dict[str, float] = {}  # for circuit breaker tracking
 
     # ------------------------------------------------------------------
     # Main entry
@@ -126,7 +140,10 @@ class LiveTrader:
         print(f"  券商: {self.broker.name}  {'[模拟模式]' if self.dry_run else '[实盘模式]'}")
         print(f"{'=' * 60}")
 
-        # 1. Get broker state
+        # 1. Refresh market prices
+        self._refresh_market_prices()
+
+        # 2. Get broker state
         account = self.broker.get_account()
         positions = {p.symbol: p for p in self.broker.get_positions()}
         self._init_risk(account)
@@ -142,7 +159,7 @@ class LiveTrader:
                       f"均价 ${pos.avg_price:.2f}  市值 ${pos.market_value:,.0f}  "
                       f"浮盈 ${pos.unrealized_pnl:+,.0f}")
 
-        # 2. Generate signals
+        # 3. Generate signals
         signals = self._scan_signals(target_date)
 
         # 3. Compare → Orders
@@ -152,8 +169,14 @@ class LiveTrader:
         submitted = []
         for order in orders:
             if self.dry_run:
+                order.status = OrderStatus.FILLED
+                if hasattr(self.broker, 'last_prices'):
+                    fill_price = self.broker.last_prices.get(order.symbol, 0)
+                    order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
+                    order.filled_qty = order.quantity
                 self._print_order(order)
-                order.status = OrderStatus.FILLED  # pretend for dry-run
+                submitted.append(order)
+                self.notifier.trade_card(order)
             else:
                 result = self.broker.submit_order(order)
                 self._log_order(result)
@@ -169,6 +192,11 @@ class LiveTrader:
                 elif result.status == OrderStatus.REJECTED:
                     self.notifier.error(f"订单被拒: {result.symbol} {result.side.value}",
                                         str(result.broker_data))
+                order = result
+
+            # Track risk state
+            if order.status == OrderStatus.FILLED:
+                self._update_risk_state(order)
 
         if not orders:
             print("\n  无新订单 — 信号与持仓一致")
@@ -176,6 +204,32 @@ class LiveTrader:
 
         print(f"\n  {'=' * 60}\n")
         return submitted
+
+    # ------------------------------------------------------------------
+    # Market data
+    # ------------------------------------------------------------------
+
+    def _refresh_market_prices(self):
+        """Fetch latest prices for all watchlist symbols.
+
+        Uses broker.refresh_prices() if available (FutuBroker),
+        otherwise updates last_prices from scan data.
+        """
+        symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
+        if not symbols:
+            return
+
+        if hasattr(self.broker, 'refresh_prices'):
+            try:
+                self.broker.refresh_prices(symbols)
+                updated = {s: self.broker.last_prices.get(s, 0)
+                           for s in symbols if self.broker.last_prices.get(s, 0) > 0}
+                if updated:
+                    logger.info("行情刷新: %d 个标的", len(updated))
+                    for s, p in updated.items():
+                        print(f"  {s:<8s} ${p:.2f}")
+            except Exception as e:
+                logger.warning("行情刷新失败: %s", e)
 
     # ------------------------------------------------------------------
     # Signal generation
@@ -190,7 +244,9 @@ class LiveTrader:
         for item in self.config.get("watchlist", []):
             symbol = item["symbol"]
             name = item.get("name", symbol)
-            strategy_names = item.get("strategies", [])
+            # Only execute the active strategy for live trading
+            active_strat = item.get("active", "")
+            strategy_names = [active_strat] if active_strat else []
 
             df = self.provider.get_daily(symbol, start=start, end=target_date)
             if df is None or df.empty:
@@ -232,8 +288,8 @@ class LiveTrader:
                     "bar_date": bar_date, "indicators": indicators,
                 })
 
-                # Update broker last prices for mock
-                if hasattr(self.broker, "last_prices"):
+                # Fill broker last_prices only if not already set (FutuBroker has real-time)
+                if hasattr(self.broker, "last_prices") and symbol not in self.broker.last_prices:
                     self.broker.last_prices[symbol] = price
 
         return results
@@ -271,6 +327,15 @@ class LiveTrader:
                 if qty <= 0:
                     print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
                     continue
+
+                # Total exposure check
+                new_value = sig.get("price", 0) * qty
+                current_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
+                total_exposure_pct = (current_exposure + new_value) / account.total_equity
+                if total_exposure_pct > self.risk.max_total_exposure_pct:
+                    print(f"  ! {sym} 总敞口超限 ({total_exposure_pct*100:.0f}% > {self.risk.max_total_exposure_pct*100:.0f}%)，跳过")
+                    continue
+
                 if self._passes_risk(sig, qty, account):
                     orders.append(Order(
                         symbol=sym,
@@ -297,18 +362,29 @@ class LiveTrader:
     # ------------------------------------------------------------------
 
     def _calc_position_size(self, signal: dict, equity: float) -> int:
-        """Basic volatility-adjusted sizing."""
+        """Volatility-adaptive position sizing.
+
+        Scales position down when ATR/price ratio is high (volatile).
+        """
         price = signal.get("price", 0)
         atr = signal.get("atr", 0)
         if price <= 0:
             return 0
-        # Risk 2% of equity per trade, stop at 2× ATR
-        risk_dollar = equity * 0.02
+
+        r = self.risk
+        risk_dollar = equity * r.base_risk_pct
+
         if atr > 0:
-            qty = int(risk_dollar / (atr * 2))
+            # Volatility scalar: reduce size when stock is volatile
+            vol_ratio = atr / price
+            vol_scalar = 1.0 / (1.0 + vol_ratio * r.vol_sensitivity)
+            vol_scalar = max(vol_scalar, r.min_vol_scalar)
+
+            qty = int(risk_dollar / (atr * 2) * vol_scalar)
         else:
             qty = int(equity * 0.30 / price)
-        max_qty = int(equity * self.risk.max_position_pct / price)
+
+        max_qty = int(equity * r.max_position_pct / price)
         return max(1, min(qty, max_qty))
 
     # ------------------------------------------------------------------
@@ -323,24 +399,159 @@ class LiveTrader:
 
     def _passes_risk(self, signal: dict, qty: int, account) -> bool:
         """Run all risk checks before order submission."""
+        r = self.risk
         equity = account.total_equity
+
+        # Consecutive loss circuit breaker
+        if r._consecutive_losses >= r.max_consecutive_losses:
+            print(f"  ! 连续亏损熔断 ({r._consecutive_losses}笔)，暂停交易")
+            return False
+
+        # Daily trade cap
+        if r._daily_trade_count >= r.max_daily_trades:
+            print(f"  ! 日内交易次数已达上限 ({r.max_daily_trades}笔)，暂停交易")
+            return False
+
         # Daily loss limit
-        if equity < self.risk._day_start_equity * (1 - self.risk.max_daily_loss_pct):
-            print(f"  ! 日内亏损超限 ({self.risk.max_daily_loss_pct*100:.0f}%)，暂停交易")
+        if equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
+            print(f"  ! 日内亏损超限 ({r.max_daily_loss_pct*100:.0f}%)，暂停交易")
             return False
 
         # Min order value
         order_value = signal.get("price", 0) * qty
-        if order_value < self.risk.min_order_value:
+        if order_value < r.min_order_value:
             return False
 
+        # Slippage guard — compare signal price vs broker last price
+        sym = signal.get("symbol", "")
+        signal_price = signal.get("price", 0)
+        if hasattr(self.broker, 'last_prices') and sym in self.broker.last_prices:
+            last_price = self.broker.last_prices[sym]
+            if last_price > 0 and signal_price > 0:
+                slippage = abs(signal_price - last_price) / last_price
+                if slippage > r.max_slippage_pct:
+                    print(f"  ! {sym} 滑点超限 ({slippage*100:.2f}%)，拒绝")
+                    return False
+
         return True
+
+    def _update_risk_state(self, order: Order):
+        """Update circuit breaker and daily trade count after a fill."""
+        r = self.risk
+        sym = order.symbol
+        fill_price = order.avg_fill_price
+
+        if order.side == OrderSide.BUY:
+            self._entry_prices[sym] = fill_price
+            r._daily_trade_count += 1
+        elif order.side == OrderSide.SELL:
+            entry = self._entry_prices.pop(sym, None)
+            if entry is not None and fill_price < entry:
+                r._consecutive_losses += 1
+                logger.warning("连续亏损 %d/%d: %s", r._consecutive_losses,
+                               r.max_consecutive_losses, sym)
+            elif entry is not None:
+                r._consecutive_losses = 0
+
+    # ------------------------------------------------------------------
+    # Daemon
+    # ------------------------------------------------------------------
+
+    def run_daemon(
+        self,
+        interval_minutes: int = 5,
+        market_hours_only: bool = True,
+    ):
+        """Run trading cycles on a schedule until interrupted.
+
+        Parameters
+        ----------
+        interval_minutes : int
+            Minutes between trading cycles.
+        market_hours_only : bool
+            If True, only trade during US market hours (Beijing time).
+        """
+        import signal
+        import time as _time
+
+        shutdown = False
+
+        def _handle_signal(sig, frame):
+            nonlocal shutdown
+            print(f"\n  收到信号 {sig}，安全退出...")
+            shutdown = True
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
+
+        print(f"\n{'=' * 60}")
+        print(f"  LiveTrader 守护进程启动")
+        print(f"  券商: {self.broker.name}  {'[模拟]' if self.dry_run else '[实盘]'}")
+        print(f"  周期: {interval_minutes} 分钟  "
+              f"{'仅交易时段' if market_hours_only else '全天候'}")
+        print(f"{'=' * 60}")
+
+        cycle = 0
+        while not shutdown:
+            cycle += 1
+            try:
+                if market_hours_only and not self._is_market_open():
+                    now = datetime.now().strftime("%H:%M:%S")
+                    print(f"\n  [{now}] 休市中，等待...")
+                    _time.sleep(60 * interval_minutes)
+                    continue
+
+                # New day → reset daily trade count (keep circuit breaker across days)
+                today = date.today().isoformat()
+                if self.risk._date != today:
+                    self.risk._date = today
+                    self.risk._daily_trade_count = 0
+                    logger.info("新交易日: %s，日交易计数重置", today)
+
+                print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] 第 {cycle} 轮")
+                self.run()
+
+            except KeyboardInterrupt:
+                print("\n  用户中断，退出守护模式")
+                break
+            except Exception:
+                logger.exception("守护进程异常")
+
+            if shutdown:
+                break
+
+            # Sleep between cycles
+            for _ in range(interval_minutes * 60):
+                if shutdown:
+                    break
+                _time.sleep(1)
+
+        print(f"\n  LiveTrader 守护进程已退出 (共 {cycle} 轮)\n")
+
+    @staticmethod
+    def _is_market_open() -> bool:
+        """Check if US market is open (Beijing time).
+
+        US regular hours: 9:30-16:00 ET
+        Beijing (UTC+8) summer: 21:30-04:00, winter: 22:30-05:00
+        """
+        now = datetime.now()
+        weekday = now.weekday()
+        if weekday >= 5:  # Saturday/Sunday
+            return False
+
+        hour = now.hour
+        minute = now.minute
+        t = hour * 100 + minute
+
+        # Rough check: 21:30 - 05:00 next day Beijing time covers US market
+        # Winter close is 05:00, so use < 500 (strict) to avoid edge
+        return t >= 2130 or t < 500
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
     @staticmethod
     def _load_config(path: str) -> dict:
         return load_toml(path)
@@ -379,7 +590,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="模拟运行，不实际下单")
     parser.add_argument("--date", help="交易日期 (YYYY-MM-DD)，默认今天")
     parser.add_argument("--notify", action="store_true", help="推送成交/告警到飞书")
-    parser.add_argument("--daemon", action="store_true", help="守护模式 (暂未实现)")
+    parser.add_argument("--daemon", action="store_true", help="守护进程模式")
+    parser.add_argument("--interval", type=int, default=5, help="守护模式轮询间隔(分钟)")
+    parser.add_argument("--all-day", action="store_true", help="守护模式下全天候运行")
     args = parser.parse_args()
 
     os.chdir(Path(__file__).parent)
@@ -392,8 +605,15 @@ def main():
         dry_run=args.dry_run,
         notifier=notifier,
     )
-    orders = trader.run(target_date=args.date)
 
+    if args.daemon:
+        trader.run_daemon(
+            interval_minutes=args.interval,
+            market_hours_only=not args.all_day,
+        )
+        return
+
+    orders = trader.run(target_date=args.date)
     if orders:
         print(f"提交 {len(orders)} 笔订单:")
         for o in orders:

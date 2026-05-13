@@ -1,4 +1,8 @@
-"""Enhanced MACD — dual-MA + MACD + RSI filter + ATR stop-loss / take-profit."""
+"""Bollinger Mean Reversion — counter-trend strategy.
+
+Entry: price at/under lower BB + RSI oversold + RSI turned up.
+Exit:  price back to mid-BB (mean reversion) OR ATR stop-loss.
+"""
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
@@ -6,54 +10,41 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import (
-    BaseStrategy,
-    StrategyParams,
-    compute_atr,
-    compute_macd,
-)
+from .base import BaseStrategy, StrategyParams, compute_atr, compute_bollinger
 
 
 @dataclass(frozen=True)
-class EnhancedMACDParams(StrategyParams):
-    short_ma: int = 20
-    long_ma: int = 50
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
+class BollingerMeanReversionParams(StrategyParams):
+    bb_period: int = 20
+    bb_std: float = 2.0
     rsi_period: int = 14
     rsi_oversold: float = 30.0
-    rsi_overbought: float = 70.0
+    rsi_turnup: float = 3.0
     atr_period: int = 14
     atr_stop_mult: float = 2.0
-    take_profit_mult: float = 4.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
-    volume_ma_period: int = 20
 
     def validate(self):
-        if not (self.short_ma < self.long_ma): raise ValueError("short_ma must be < long_ma")
+        if not (self.bb_std > 0): raise ValueError("bb_std must be positive")
+        if not (0 < self.rsi_oversold < 50): raise ValueError("rsi_oversold must be in (0, 50)")
+        if not (self.rsi_turnup > 0): raise ValueError("rsi_turnup must be positive")
+        if not (self.atr_stop_mult > 0): raise ValueError("atr_stop_mult must be positive")
         if not (0 < self.risk_per_trade <= 1): raise ValueError("validation failed")
 
 
-class EnhancedMACDStrategy(BaseStrategy):
-    """Dual-MA + MACD with RSI filter, ATR stop-loss, volume confirmation.
+class BollingerMeanReversion(BaseStrategy):
+    """Buy at lower BB when RSI is oversold and turning up; sell at mid-BB."""
 
-    Entry: MA uptrend AND MACD histogram turns positive AND RSI within range
-           AND volume confirms.
-    Exit:  ATR stop-loss / take-profit, OR MACD histogram turns negative, OR
-           MA death cross.
-    """
-
-    params: EnhancedMACDParams
+    params: BollingerMeanReversionParams
 
     def __init__(self, **kwargs):
-        super().__init__(EnhancedMACDParams(**kwargs))
+        super().__init__(BollingerMeanReversionParams(**kwargs))
 
     @property
     def min_bars(self) -> int:
-        return max(self.params.long_ma, self.params.atr_period,
-                   self.params.rsi_period, self.params.volume_ma_period) + 5
+        return max(self.params.bb_period, self.params.rsi_period,
+                   self.params.atr_period) + 10
 
     # ------------------------------------------------------------------
 
@@ -61,12 +52,8 @@ class EnhancedMACDStrategy(BaseStrategy):
         df = df.copy()
         p = self.params
 
-        # Moving averages
-        df["SMA_short"] = df["Close"].rolling(p.short_ma).mean()
-        df["SMA_long"] = df["Close"].rolling(p.long_ma).mean()
-
-        # MACD
-        df = compute_macd(df, p.macd_fast, p.macd_slow, p.macd_signal)
+        df = compute_bollinger(df, p.bb_period, p.bb_std)
+        df["ATR"] = compute_atr(df, p.atr_period)
 
         # RSI
         delta = df["Close"].diff()
@@ -77,31 +64,24 @@ class EnhancedMACDStrategy(BaseStrategy):
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df["RSI"] = 100 - (100 / (1 + rs))
 
-        # ATR
-        df["ATR"] = compute_atr(df, p.atr_period)
-
-        # Volume MA
-        df["Volume_MA"] = df["Volume"].rolling(p.volume_ma_period).mean()
-        df["Volume_ratio"] = df["Volume"] / df["Volume_MA"]
+        # RSI minimum over last 5 bars — used to detect turn-up
+        df["RSI_low5"] = df["RSI"].rolling(5).min()
 
         # ---- Signals ----
         df["Signal"] = 0
 
         buy = (
-            (df["SMA_short"] > df["SMA_long"])
-            & (df["MACD_hist"] > 0)
-            & (df["MACD_hist"].shift(1) <= 0)
-            & df["RSI"].between(p.rsi_oversold, p.rsi_overbought)
-            & (df["Volume_ratio"] > 0.8)
+            (df["Close"] <= df["BB_lower"])
+            & (df["RSI"] < p.rsi_oversold)
+            & ((df["RSI"] - df["RSI_low5"]) >= p.rsi_turnup)
         )
         df.loc[buy, "Signal"] = 1
 
-        macd_sell = (df["MACD_hist"] < 0) & (df["MACD_hist"].shift(1) >= 0)
-        ma_sell = (
-            (df["SMA_short"] < df["SMA_long"])
-            & (df["SMA_short"].shift(1) >= df["SMA_long"].shift(1))
+        sell = (
+            (df["Close"] >= df["BB_mid"])
+            & (df["Close"].shift(1) < df["BB_mid"].shift(1))
         )
-        df.loc[macd_sell | ma_sell, "Signal"] = -1
+        df.loc[sell, "Signal"] = -1
 
         return df
 
@@ -133,12 +113,11 @@ class EnhancedMACDStrategy(BaseStrategy):
         p = self.params
 
         stop_loss = entry_price - atr * p.atr_stop_mult
-        take_profit = entry_price + atr * p.take_profit_mult
-
         if price <= stop_loss:
             return True, "止损"
-        if price >= take_profit:
-            return True, "止盈"
+
+        # Primary exit handled by Signal == -1 (mid-BB cross)
         if int(df["Signal"].iloc[i]) == -1:
-            return True, "卖出信号"
+            return True, "均值回归"
+
         return False, ""

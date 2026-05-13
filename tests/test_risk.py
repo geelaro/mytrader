@@ -69,3 +69,56 @@ class TestRiskLimitsBoundary:
         r = RiskLimits(max_position_pct=1.0, max_total_exposure_pct=2.0)
         assert r.max_position_pct == 1.0
         assert r.max_total_exposure_pct == 2.0
+
+
+# ===================================================================
+# New risk fields (circuit breaker, daily trades, adaptive sizing)
+# ===================================================================
+
+
+class TestRiskLimitsNewFields:
+    def test_circuit_breaker_defaults(self):
+        r = RiskLimits()
+        assert r.max_consecutive_losses == 3
+        assert r._consecutive_losses == 0
+
+    def test_daily_trade_limit_defaults(self):
+        r = RiskLimits()
+        assert r.max_daily_trades == 5
+        assert r._daily_trade_count == 0
+
+    def test_adaptive_sizing_defaults(self):
+        r = RiskLimits()
+        assert r.base_risk_pct == 0.02
+        assert r.vol_sensitivity == 5.0
+        assert r.min_vol_scalar == 0.3
+
+    def test_from_config_includes_new_fields(self):
+        config = {
+            "risk": {
+                "max_consecutive_losses": 5,
+                "max_daily_trades": 10,
+                "base_risk_pct": 0.01,
+                "vol_sensitivity": 3.0,
+                "min_vol_scalar": 0.5,
+            }
+        }
+        r = RiskLimits.from_config(config)
+        assert r.max_consecutive_losses == 5
+        assert r.max_daily_trades == 10
+        assert r.base_risk_pct == 0.01
+        assert r.vol_sensitivity == 3.0
+        assert r.min_vol_scalar == 0.5
+
+    def test_from_config_partial_keeps_defaults(self):
+        config = {"risk": {"max_consecutive_losses": 4}}
+        r = RiskLimits.from_config(config)
+        assert r.max_consecutive_losses == 4
+        assert r.max_daily_trades == 5  # default
+
+    def test_runtime_state_defaults(self):
+        r = RiskLimits()
+        assert r._consecutive_losses == 0
+        assert r._daily_trade_count == 0
+        assert r._day_start_equity == 0.0
+        assert r._date == ""
