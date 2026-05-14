@@ -237,8 +237,10 @@ def walk_forward(
 
     For each window:
       1. Optimize params on [window_start, window_start + train_years]
-      2. Run best params on [window_start + train_years, window_start + train_years + test_years]
-      3. Slide forward by test_years
+      2. Run best params on (train_end + 1d, train_end + test_years]
+         — test window starts one day after training to prevent data leakage.
+      3. Slide forward by test_years. Capital carries forward across windows
+         so the OOS equity curve is naturally continuous.
     """
 
     if end is None:
@@ -249,21 +251,23 @@ def walk_forward(
     all_oos_trades = []
     all_oos_equity = []
     windows = []
+    current_capital = initial_capital
 
     while window_start + pd.DateOffset(years=train_years + test_years) <= end_dt:
         train_start = window_start.strftime("%Y-%m-%d")
         train_end = (window_start + pd.DateOffset(years=train_years)).strftime("%Y-%m-%d")
+        test_start = (pd.Timestamp(train_end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         test_end = (window_start + pd.DateOffset(years=train_years + test_years)).strftime("%Y-%m-%d")
 
         print(f"\n{'=' * 60}")
-        print(f"  训练: {train_start} ~ {train_end}  测试: {train_end} ~ {test_end}")
+        print(f"  训练: {train_start} ~ {train_end}  测试: {test_start} ~ {test_end}")
         print(f"{'=' * 60}")
 
         # Optimize on training window
         best = grid_search(
             strategy_name, symbol,
             start=train_start, end=train_end,
-            initial_capital=initial_capital,
+            initial_capital=current_capital,
             metric=metric, top_n=1,
         )
         if not best:
@@ -275,18 +279,18 @@ def walk_forward(
         print(f"  最优参数: {best_params}")
         print(f"  训练集Sharpe: {best[0].sharpe:.2f}  收益: {best[0].total_return:+.1f}%")
 
-        # Run on test window
+        # Run on test window (carry-forward capital from previous window)
         strategy_cls, _ = _STRATEGY_MAP[strategy_name], _PARAMS_CLASS[strategy_name]
         try:
             strategy = strategy_cls(**best_params)
             provider = DataProvider()
-            df = provider.get_daily(symbol, start=train_end, end=test_end)
+            df = provider.get_daily(symbol, start=test_start, end=test_end)
             if df is None or df.empty:
                 window_start += pd.DateOffset(years=test_years)
                 continue
             df = df.dropna(subset=["Open", "High", "Low", "Close"])
             df_sig = strategy.calculate_indicators(df)
-            engine = BacktestEngine(initial_capital=initial_capital)
+            engine = BacktestEngine(initial_capital=current_capital)
             bench = engine.run(strategy, df_sig)
             r = engine.get_result(bench)
         except Exception:
@@ -299,10 +303,12 @@ def walk_forward(
         all_oos_equity.extend(engine.equity_history)
         windows.append({
             "train_start": train_start, "train_end": train_end,
-            "test_end": test_end, "best_params": best_params,
+            "test_start": test_start, "test_end": test_end,
+            "best_params": best_params,
             "test_return": r.total_return_pct, "test_sharpe": r.sharpe_ratio,
             "test_dd": r.max_drawdown_pct, "trades": r.total_trades,
         })
+        current_capital = r.final_equity
         window_start += pd.DateOffset(years=test_years)
 
     # Aggregate OOS performance
@@ -310,8 +316,8 @@ def walk_forward(
         print("\n无有效窗口")
         return {"windows": []}
 
-    # Compute combined OOS equity curve
-    eq_df = pd.DataFrame(all_oos_equity, columns=["date", "equity"]).drop_duplicates("date").set_index("date")
+    # Equity curve is naturally continuous (capital carries forward across windows)
+    eq_df = pd.DataFrame(all_oos_equity, columns=["date", "equity"]).set_index("date")
     eq_df = eq_df.sort_index()
     curve = eq_df["equity"]
     rets = curve.pct_change().dropna()

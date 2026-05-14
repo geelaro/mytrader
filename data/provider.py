@@ -112,10 +112,9 @@ class DataProvider:
         # Identify gaps and fetch
         gaps = self._find_gaps(sym, start, end, force_refresh)
         for gap_start, gap_end in gaps:
-            fetched = self._fetch_from_sources(sym, gap_start, gap_end)
+            fetched, actual_source = self._fetch_from_sources(sym, gap_start, gap_end)
             if fetched is not None and not fetched.empty:
-                source_name = self._resolve_source(sym).name
-                self.cache.save(sym, fetched, source=source_name)
+                self.cache.save(sym, fetched, source=actual_source or "unknown")
 
         return self._load_from_cache(sym, start, end)
 
@@ -133,13 +132,6 @@ class DataProvider:
     # Internal
     # ------------------------------------------------------------------
 
-    def _resolve_source(self, symbol: str) -> DataSource:
-        """Return the first source that supports *symbol*."""
-        for src in self._sources:
-            if src.supports(symbol):
-                return src
-        return self._sources[-1]  # YFinance as last resort
-
     def _load_from_cache(
         self, symbol: str, start: str, end: str
     ) -> pd.DataFrame:
@@ -155,8 +147,8 @@ class DataProvider:
 
     def _fetch_from_sources(
         self, symbol: str, start: str, end: str
-    ) -> pd.DataFrame:
-        """Try sources in priority order; return first successful fetch."""
+    ) -> Tuple[pd.DataFrame, Optional[str]]:
+        """Try sources in priority order; return (df, actual_source_name)."""
         market = classify_symbol(symbol)
         priorities = SOURCE_PRIORITY.get(market, SOURCE_PRIORITY["default"])
 
@@ -169,10 +161,10 @@ class DataProvider:
                 df = src.fetch(symbol, start, end)
                 if df is not None and not df.empty:
                     logger.info("  → got %d bars from %s", len(df), source_name)
-                    return df
+                    return df, source_name
             except Exception:
                 logger.exception("Source %s failed for %s", source_name, symbol)
-        return pd.DataFrame(columns=OHLCV_COLUMNS)
+        return pd.DataFrame(columns=OHLCV_COLUMNS), None
 
     def _find_source_by_name(self, name: str) -> Optional[DataSource]:
         for src in self._sources:
