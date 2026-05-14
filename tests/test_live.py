@@ -329,7 +329,14 @@ class TestLiveTraderInternals:
 
     def test_log_order(self):
         trader = LiveTrader(broker=MockBroker(), dry_run=True)
-        trader.cache.conn.execute("DELETE FROM order_log")  # clean slate
+        # Ensure table exists, then clean slate (table created lazily in _log_order)
+        trader.cache.conn.execute(
+            "CREATE TABLE IF NOT EXISTS order_log ("
+            "  order_id TEXT, symbol TEXT, side TEXT, qty INTEGER,"
+            "  price REAL, status TEXT, created_at TEXT"
+            ")"
+        )
+        trader.cache.conn.execute("DELETE FROM order_log")
         trader.cache.conn.commit()
 
         order = Order(
