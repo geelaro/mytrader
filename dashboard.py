@@ -159,12 +159,20 @@ if strategy_cls:
             # Buy / Sell markers on equity curve
             if result.trades:
                 for t in result.trades:
-                    if t.entry_date in eq.index:
-                        ax.scatter(t.entry_date, float(eq.loc[t.entry_date]),
+                    try:
+                        pos = eq.index.get_loc(t.entry_date)
+                        idx = pos if isinstance(pos, int) else pos[0]
+                        ax.scatter(eq.index[idx], float(eq.iloc[idx]),
                                    color="limegreen", marker="^", s=50, zorder=5)
-                    if t.exit_date in eq.index:
-                        ax.scatter(t.exit_date, float(eq.loc[t.exit_date]),
+                    except (KeyError, IndexError):
+                        pass
+                    try:
+                        pos = eq.index.get_loc(t.exit_date)
+                        idx = pos if isinstance(pos, int) else pos[0]
+                        ax.scatter(eq.index[idx], float(eq.iloc[idx]),
                                    color="red", marker="v", s=50, zorder=5)
+                    except (KeyError, IndexError):
+                        pass
 
             ax.axhline(y=10000, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
             ax.set_title(f"{selected_symbol} — {selected_strategy}")
