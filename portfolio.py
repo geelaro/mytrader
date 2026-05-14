@@ -40,6 +40,22 @@ class Leg:
         return cls(**self.params)
 
 
+@dataclass
+class PortfolioTrade:
+    """A single round-trip trade recorded during portfolio backtest."""
+
+    symbol: str
+    entry_time: pd.Timestamp
+    exit_time: Optional[pd.Timestamp] = None
+    qty: int = 0
+    entry_price: float = 0.0
+    exit_price: Optional[float] = None
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    reason: str = ""
+    hold_days: Optional[int] = None
+
+
 # ---------------------------------------------------------------------------
 # Portfolio backtest engine
 # ---------------------------------------------------------------------------
@@ -113,7 +129,8 @@ class PortfolioBacktest:
             }
 
         cash = self.initial_capital
-        total_trades = []
+        trades: List[PortfolioTrade] = []
+        open_trade_idx: dict = {}  # leg_index -> trades index
         equity_history = []
 
         for date_idx in timeline:
@@ -149,6 +166,19 @@ class PortfolioBacktest:
                         actual_price = price * (1 - self.slippage_pct)
                         proceeds = actual_price * st["position"] * (1 - self.commission_rate)
                         cash += proceeds
+
+                        # Record closed trade
+                        if i in open_trade_idx:
+                            t = trades[open_trade_idx[i]]
+                            t.exit_time = date_idx
+                            t.exit_price = actual_price
+                            t.pnl = (actual_price - t.entry_price) * st["position"]
+                            cost_basis = t.entry_price * st["position"]
+                            t.pnl_pct = (t.pnl / cost_basis * 100) if cost_basis > 0 else 0
+                            t.reason = reason
+                            t.hold_days = (date_idx - t.entry_time).days
+                            del open_trade_idx[i]
+
                         st["position"] = 0
                         st["capital_allocated"] = 0
                         st["entry_price"] = 0
@@ -171,22 +201,43 @@ class PortfolioBacktest:
                             st["highest"] = price
                             st["capital_allocated"] = cost
 
+                            trade = PortfolioTrade(
+                                symbol=st["leg"].symbol,
+                                entry_time=date_idx,
+                                qty=qty,
+                                entry_price=actual_price,
+                            )
+                            trades.append(trade)
+                            open_trade_idx[i] = len(trades) - 1
+
                 total_equity += st["position"] * price
 
             equity_history.append((date_idx, total_equity))
 
-        # Close all open positions
+        # Close all open positions at end of period
         final_equity = cash
+        last_date = timeline[-1] if timeline else pd.Timestamp(end)
         for i, st in leg_state.items():
             if st["position"] > 0 and "last_price" in st:
                 price = st["last_price"] * (1 - self.slippage_pct)
                 final_equity += st["position"] * price
+
+                if i in open_trade_idx:
+                    t = trades[open_trade_idx[i]]
+                    t.exit_time = last_date
+                    t.exit_price = price
+                    t.pnl = (price - t.entry_price) * st["position"]
+                    cost_basis = t.entry_price * st["position"]
+                    t.pnl_pct = (t.pnl / cost_basis * 100) if cost_basis > 0 else 0
+                    t.reason = "end_of_period"
+                    t.hold_days = (last_date - t.entry_time).days
 
         return PortfolioResult(
             equity_history=equity_history,
             initial_capital=self.initial_capital,
             final_equity=final_equity,
             legs=self.legs,
+            trades=trades,
         )
 
     def _allocate(self, leg: Leg, available_cash: float, num_legs: int) -> float:
@@ -211,6 +262,7 @@ class PortfolioResult:
     initial_capital: float
     final_equity: float
     legs: List[Leg]
+    trades: List[PortfolioTrade] = field(default_factory=list)
 
     @property
     def equity_curve(self) -> pd.Series:
@@ -244,6 +296,45 @@ class PortfolioResult:
         dd = (curve - rolling_max) / rolling_max * 100
         return float(dd.min())
 
+    # --- Trade statistics ---
+
+    @property
+    def closed_trades(self) -> List[PortfolioTrade]:
+        return [t for t in self.trades if t.exit_price is not None]
+
+    @property
+    def total_trades(self) -> int:
+        return len(self.closed_trades)
+
+    @property
+    def win_rate_pct(self) -> float:
+        closed = self.closed_trades
+        if not closed:
+            return 0
+        wins = sum(1 for t in closed if t.pnl is not None and t.pnl > 0)
+        return wins / len(closed) * 100
+
+    @property
+    def profit_factor(self) -> float:
+        gross_win = sum(t.pnl for t in self.closed_trades if t.pnl is not None and t.pnl > 0)
+        gross_loss = abs(sum(t.pnl for t in self.closed_trades if t.pnl is not None and t.pnl < 0))
+        return gross_win / gross_loss if gross_loss > 0 else float("inf")
+
+    @property
+    def avg_win(self) -> float:
+        wins = [t.pnl for t in self.closed_trades if t.pnl is not None and t.pnl > 0]
+        return sum(wins) / len(wins) if wins else 0
+
+    @property
+    def avg_loss(self) -> float:
+        losses = [t.pnl for t in self.closed_trades if t.pnl is not None and t.pnl < 0]
+        return sum(losses) / len(losses) if losses else 0
+
+    @property
+    def avg_hold_days(self) -> float:
+        closed = [t for t in self.closed_trades if t.hold_days is not None]
+        return sum(t.hold_days for t in closed) / len(closed) if closed else 0
+
     def summary(self):
         print(f"\n{'=' * 60}")
         print(f"  组合回测结果")
@@ -256,6 +347,31 @@ class PortfolioResult:
         print(f"  夏普比率:      {self.sharpe_ratio:.2f}")
         print(f"  最大回撤:      {self.max_drawdown_pct:.2f}%")
         print()
+
+        # Trade statistics
+        print(f"  --- 交易统计 ---")
+        print(f"  总交易笔数:    {self.total_trades}")
+        print(f"  胜率:          {self.win_rate_pct:.1f}%")
+        print(f"  盈亏比:        {self.profit_factor:.2f}")
+        print(f"  平均盈利:      ${self.avg_win:,.0f}")
+        print(f"  平均亏损:      ${self.avg_loss:,.0f}")
+        print(f"  平均持仓天数:  {self.avg_hold_days:.1f}")
+        print()
+
+        # Per-symbol breakdown
+        if self.closed_trades:
+            by_symbol: dict = {}
+            for t in self.closed_trades:
+                by_symbol.setdefault(t.symbol, []).append(t)
+            print(f"  {'标的':<8s} {'笔数':>4s} {'胜率':>6s} {'总PnL':>10s} {'平均PnL':>10s}")
+            print(f"  {'─' * 44}")
+            for sym, sym_trades in sorted(by_symbol.items()):
+                n = len(sym_trades)
+                wr = sum(1 for t in sym_trades if t.pnl is not None and t.pnl > 0) / n * 100
+                total_pnl = sum(t.pnl or 0 for t in sym_trades)
+                avg_pnl = total_pnl / n
+                print(f"  {sym:<8s} {n:>4d} {wr:>5.0f}% ${total_pnl:>9,.0f} ${avg_pnl:>9,.0f}")
+            print()
 
     def plot(self, save_path: str = "charts/portfolio_result.png"):
         try:
