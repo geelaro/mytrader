@@ -161,14 +161,14 @@ if strategy_cls:
                 for t in result.trades:
                     try:
                         pos = eq.index.get_loc(t.entry_date)
-                        idx = pos if isinstance(pos, int) else pos[0]
+                        idx = pos if isinstance(pos, int) else pos.start
                         ax.scatter(eq.index[idx], float(eq.iloc[idx]),
                                    color="limegreen", marker="^", s=50, zorder=5)
                     except (KeyError, IndexError):
                         pass
                     try:
                         pos = eq.index.get_loc(t.exit_date)
-                        idx = pos if isinstance(pos, int) else pos[0]
+                        idx = pos if isinstance(pos, int) else pos.start
                         ax.scatter(eq.index[idx], float(eq.iloc[idx]),
                                    color="red", marker="v", s=50, zorder=5)
                     except (KeyError, IndexError):

@@ -220,7 +220,9 @@ class BacktestEngine:
         if close_out and self.position > 0:
             last_price = float(df["Close"].iloc[-1])
             self.sell(df.index[-1], last_price, reason="回测结束")
-            self.update(df.index[-1], last_price)
+            self._current_price = last_price
+            # Replace last bar's equity entry to avoid duplicate date
+            self.equity_history[-1] = (df.index[-1], self.equity)
 
         return df["Close"].pct_change().dropna()
 
