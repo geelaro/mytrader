@@ -53,13 +53,10 @@ class MockBroker(Broker):
         return "mock"
 
     def refresh_prices(self, symbols: List[str]):
-        """Mock: prices are set externally via last_prices dict or data pipeline."""
-        updated = {s: self.last_prices.get(s, 0) for s in symbols
-                   if self.last_prices.get(s, 0) > 0}
-        if updated:
-            print(f"  [Mock] 使用日线收盘价 ({len(updated)} 个标的)")
-        else:
-            print(f"  [Mock] 价格待更新 (等待数据管线)")
+        """Mock: clear stale prices so data pipeline refills fresh each cycle."""
+        for s in symbols:
+            self.last_prices.pop(s, None)
+        print(f"  [Mock] 日线收盘价 (Tencent/Sina, {len(symbols)} 个标的)")
 
     # ------------------------------------------------------------------
     # Account / Positions
