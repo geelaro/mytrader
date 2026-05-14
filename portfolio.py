@@ -420,12 +420,12 @@ class PortfolioResult:
 
 
 DEFAULT_PORTFOLIO = [
-    Leg("AAPL", "trend_follower", {"short_ma": 10, "long_ma": 40, "adx_threshold": 15, "trail_atr_mult": 3.0}),
-    Leg("NVDA", "trend_follower", {"short_ma": 10, "long_ma": 40, "adx_threshold": 15, "trail_atr_mult": 3.0}),
-    Leg("TSLA", "trend_follower", {"short_ma": 10, "long_ma": 40, "adx_threshold": 15, "trail_atr_mult": 3.0}),
-    Leg("QQQ",  "trend_follower", {"short_ma": 10, "long_ma": 40, "adx_threshold": 15, "trail_atr_mult": 3.0}),
-    Leg("SPY",  "weekly_macd",   {}),
-    Leg("510300", "weekly_macd", {}),
+    Leg("AAPL", "weekly_macd_kdj"),
+    Leg("NVDA", "weekly_macd_kdj"),
+    Leg("TSLA", "weekly_macd_kdj"),
+    Leg("QQQ",  "weekly_macd_kdj"),
+    Leg("SPY",  "turtle_trading",  {}),
+    Leg("510300", "turtle_trading", {}),
 ]
 
 
