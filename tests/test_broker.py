@@ -146,6 +146,27 @@ class TestLimitOrder:
         assert result.status == OrderStatus.REJECTED
 
 
+class TestRefreshPrices:
+    def test_clears_specified_symbols(self, mock_broker):
+        mock_broker.last_prices["AAPL"] = 195.0
+        mock_broker.last_prices["TSLA"] = 250.0
+        mock_broker.refresh_prices(["AAPL", "TSLA"])
+        assert "AAPL" not in mock_broker.last_prices
+        assert "TSLA" not in mock_broker.last_prices
+
+    def test_preserves_other_symbols(self, mock_broker):
+        mock_broker.last_prices["AAPL"] = 195.0
+        mock_broker.last_prices["TSLA"] = 250.0
+        mock_broker.refresh_prices(["AAPL"])
+        assert "AAPL" not in mock_broker.last_prices
+        assert mock_broker.last_prices["TSLA"] == 250.0
+
+    def test_noop_on_empty_symbols(self, mock_broker):
+        mock_broker.last_prices["AAPL"] = 195.0
+        mock_broker.refresh_prices([])
+        assert mock_broker.last_prices["AAPL"] == 195.0
+
+
 class TestCancelOrder:
     def test_cancel_pending(self, mock_broker):
         order = Order(symbol="AAPL", side=OrderSide.BUY,
