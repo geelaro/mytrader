@@ -17,6 +17,7 @@ akshare = "*"
 tomli = "*"
 python-dotenv = "*"
 futu-api = "*"
+streamlit = "*"
 
 [dev-packages]
 pytest = "*"
