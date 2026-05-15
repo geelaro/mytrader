@@ -16,7 +16,8 @@
 | 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 |
 | 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
 | 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、滑点检查、日内亏损上限 |
-| Dashboard | Streamlit Web UI — 今日信号、回测图表（含买卖点）、策略对比、组合回测、交易明细 |
+| 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/日开仓上限） |
+| Dashboard | Streamlit Web UI — Tab 分页（单标/组合），回测图表+买卖点，交易明细筛选与收益归因 |
 | CI | GitHub Actions — push/PR 自动跑 pytest（353 测试） |
 
 ## 策略
@@ -41,7 +42,10 @@ mytrader/
   data/              # 数据管线 (protocol/cache/provider/sources)
   strategy/          # 策略库 (base + 10 个策略)
   broker/            # 券商接口 (base + mock + futu)
-  engine/            # 回测引擎 (单标/组合/参数优化)
+  engine/            # 回测引擎
+  ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult)
+  ├─ portfolio.py    #   组合回测 (PortfolioBacktest/PortfolioTrade)
+  └─ optimize.py     #   参数优化 (grid_search/walk_forward)
   utils/             # 工具 (日志/飞书通知/环境/配置)
   tests/             # 353 个测试
   daily.py           # 每日回溯扫描 (入口脚本)
@@ -94,6 +98,55 @@ pipenv run python -m pytest tests/ -v
 
 配置后 `--notify` 即可推送信号卡片和成交通知。
 
+## 配置系统
+
+`config.py` 提供统一的运行时配置，支持层级覆盖：
+
+```
+默认值 (config.py) → config.yaml (可选) → 环境变量 (.env)
+```
+
+```python
+from config import config
+
+print(config.risk.max_position_pct)  # 0.3
+print(config.feishu.app_id)          # 从环境变量读取
+```
+
+创建 `config.yaml` 可覆盖任意默认值：
+
+```yaml
+log:
+  level: DEBUG
+trading:
+  daemon_interval_minutes: 10
+```
+
+## 组合回测
+
+多标的共享资金池，支持三种分配模式、组合级风控、成交约束、交易明细与收益归因。
+
+```bash
+pipenv run python engine/portfolio.py
+```
+
+```python
+from engine.portfolio import PortfolioBacktest, Leg
+
+bt = PortfolioBacktest(
+    legs=[Leg("AAPL", "weekly_macd_kdj"), Leg("SPY", "turtle_trading")],
+    initial_capital=100000,
+    allocation="dynamic_equal",      # equal / dynamic_equal / fraction
+    max_symbol_weight=0.25,           # 单标的上限 25%
+    max_daily_new_positions=3,        # 单日最大新开仓
+    max_gross_exposure=1.5,           # 总敞口 ≤ 150%
+    lot_size=100,                     # 整手取整（可选）
+    max_participation_rate=0.01,      # 单笔 ≤ 1% 成交量（可选）
+)
+result = bt.run(start="2020-01-01")
+result.summary()
+```
+
 ## 添加新标的
 
 编辑 `watchlist.toml`：
@@ -127,7 +180,7 @@ class MyStrategy(BaseStrategy):
         return 20
 ```
 
-在 `strategy/__init__.py` 的 `STRATEGY_MAP` 注册，并在 `optimize.py` 的 `PARAM_GRIDS` 添加搜索空间。
+在 `strategy/__init__.py` 的 `STRATEGY_MAP` 注册，并在 `engine/optimize.py` 的 `PARAM_GRIDS` 添加搜索空间。
 
 ## 接入真实券商
 
