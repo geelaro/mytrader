@@ -109,6 +109,7 @@ class Notifier:
         self._async = async_mode
         self._queue: queue.Queue = queue.Queue(maxsize=1000)
         self._worker: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
         if self.url:
             self._mode = "webhook"
@@ -140,9 +141,9 @@ class Notifier:
         atexit.register(self.stop)
 
     def _consume(self):
-        while True:
+        while not self._stop_event.is_set():
             try:
-                payload = self._queue.get(timeout=1.0)
+                payload = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
@@ -151,6 +152,7 @@ class Notifier:
                 logger.exception("通知消费异常")
 
     def stop(self):
+        self._stop_event.set()
         try:
             atexit.unregister(self.stop)
         except Exception:

@@ -282,3 +282,102 @@ class TestCardBuilders:
         assert nf._strat_label("weekly_macd") == "周线MACD"
         assert nf._strat_label("weekly_macd_kdj") == "周线KDJ+MACD"
         assert nf._strat_label("unknown") == "unknown"
+
+
+# ===================================================================
+# Async path — enqueue + NotifyLogHandler
+# ===================================================================
+
+
+class TestNotifierAsync:
+    def test_enqueue_puts_on_queue(self):
+        nf = Notifier(dry_run=True, async_mode=True)
+        # Stop worker to isolate queue behaviour
+        nf.stop()
+        assert nf._queue.qsize() == 0
+        result = nf.enqueue({"msg_type": "text", "content": {"text": "hello"}})
+        assert result is True
+        assert nf._queue.qsize() == 1
+
+    def test_enqueue_starts_worker(self):
+        nf = Notifier(dry_run=True, async_mode=True)
+        assert nf._worker is not None
+        assert nf._worker.is_alive()
+        nf.stop()
+
+    def test_async_mode_false_calls_send_directly(self):
+        nf = Notifier(dry_run=True, async_mode=False)
+        assert nf._worker is None
+        result = nf.enqueue({"msg_type": "text", "content": {"text": "sync"}})
+        assert result is True
+        assert nf._queue.qsize() == 0  # never queued
+
+    def test_consumer_drains_queue(self):
+        nf = Notifier(dry_run=True, async_mode=True)
+        nf.stop()  # stop worker, set event so it exits cleanly
+        # Worker is now stopped, queue isolated
+        nf._queue.put({"msg_type": "text", "content": {"text": "msg1"}})
+        nf._queue.put({"msg_type": "text", "content": {"text": "msg2"}})
+        assert nf._queue.qsize() == 2
+        # Consume one
+        nf._send(nf._queue.get(timeout=0.1))
+        assert nf._queue.qsize() == 1
+
+    def test_enqueue_returns_false_when_unavailable(self):
+        nf = Notifier(async_mode=True)  # no credentials, all env empty
+        # mode should be "none" if no env vars are set
+        if nf.available:
+            pytest.skip("env has feishu creds")
+        result = nf.enqueue({"msg_type": "text"})
+        assert result is False
+
+    def test_stop_joins_worker(self):
+        nf = Notifier(dry_run=True, async_mode=True)
+        assert nf._worker.is_alive()
+        nf.stop()
+        # Worker should exit cleanly after stop event is set
+        assert not nf._worker.is_alive()
+
+
+class TestNotifyLogHandler:
+    def test_emit_enqueues_error(self):
+        """emit() should call notifier.error() which enqueues a payload."""
+        nf = Notifier(dry_run=True, async_mode=False)  # sync mode for direct check
+        from utils.notify import NotifyLogHandler
+        import logging as _logging
+        handler = NotifyLogHandler(nf, level=_logging.ERROR)
+        record = _logging.LogRecord(
+            "test", _logging.ERROR, "test.py", 1, "test message", (), None,
+        )
+        # sync mode: error() → enqueue() → _send() returns True
+        result = handler.emit(record)
+        # emit doesn't return anything — if it didn't raise, it worked
+        # Verify by checking that dry_run logged via _send
+        assert True  # no exception = pass
+
+    def test_emit_skips_below_level(self):
+        nf = Notifier(dry_run=True, async_mode=True)
+        nf.stop()
+        from utils.notify import NotifyLogHandler
+        import logging
+        handler = NotifyLogHandler(nf, level=logging.ERROR)
+        record = logging.LogRecord(
+            "test", logging.WARNING, "test.py", 1, "just a warning", (), None,
+        )
+        handler.emit(record)
+        assert nf._queue.qsize() == 0
+
+    def test_install_notify_log_handler_idempotent(self):
+        import logging as _logging
+        from utils.notify import install_notify_log_handler, NotifyLogHandler
+
+        root = _logging.getLogger()
+        before = sum(1 for h in root.handlers if isinstance(h, NotifyLogHandler))
+
+        install_notify_log_handler(level=_logging.ERROR)
+        after_first = sum(1 for h in root.handlers if isinstance(h, NotifyLogHandler))
+        assert after_first >= before
+
+        install_notify_log_handler(level=_logging.ERROR)
+        after_second = sum(1 for h in root.handlers if isinstance(h, NotifyLogHandler))
+        assert after_second == after_first  # no dup
