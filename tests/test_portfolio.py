@@ -397,3 +397,106 @@ class TestPortfolioBacktestIntegration:
             result = bt.run(start="2020-01-01", end="2021-01-01")
             # Should still run without error even with position limit
             assert result.final_equity > 0
+
+
+# ===================================================================
+# Regression: close-trade consistency
+# ===================================================================
+
+
+class TestCloseTradeUnit:
+    """Direct unit tests for PortfolioBacktest._close_trade()."""
+
+    def _make_st(self, position=100, entry_price=50.0, capital_allocated=5015.0):
+        return {
+            "position": position,
+            "entry_price": entry_price,
+            "capital_allocated": capital_allocated,  # entry_price * qty * (1 + comm)
+            "highest": 55.0,
+        }
+
+    def test_end_of_period_applies_commission(self):
+        """End-of-period close MUST apply commission, same as signal exit."""
+        bt = PortfolioBacktest(legs=[], initial_capital=100000)
+        st = self._make_st(position=100, entry_price=50.0, capital_allocated=5015.0)
+        trades: list = [
+            PortfolioTrade(symbol="AAPL", entry_time=pd.Timestamp("2025-01-02"),
+                           qty=100, entry_price=50.0),
+        ]
+        open_idx = {0: 0}
+        cash_before = 94985.0  # 100000 - 5015 entry cost
+
+        cash_after = bt._close_trade(
+            st, pd.Timestamp("2025-01-10"), 55.0, "end_of_period",
+            open_idx, trades, 0, cash_before,
+        )
+
+        t = trades[0]
+        # exit_price = 55 * (1 - 0.0001) = 54.9945
+        # exit_proceeds = 54.9945 * 100 * (1 - 0.0003) = 5497.80...
+        expected_exit_price = 55.0 * (1 - bt.slippage_pct)
+        expected_proceeds = expected_exit_price * 100 * (1 - bt.commission_rate)
+        expected_pnl = expected_proceeds - 5015.0
+
+        assert t.exit_price == pytest.approx(expected_exit_price, abs=0.01)
+        assert t.pnl == pytest.approx(expected_pnl, abs=0.01)
+        assert t.pnl_pct == pytest.approx(expected_pnl / 5015.0 * 100, abs=0.01)
+        assert t.reason == "end_of_period"
+        assert t.hold_days == 8
+        assert cash_after == pytest.approx(cash_before + expected_proceeds, abs=0.01)
+        assert st["position"] == 0
+
+    def test_signal_exit_same_math_as_end_of_period(self):
+        """Signal exit and end-of-period close produce identical PnL math."""
+        bt = PortfolioBacktest(legs=[], initial_capital=100000)
+
+        # Signal exit
+        st1 = self._make_st(position=50, entry_price=100.0, capital_allocated=5015.0)
+        t1_list = [PortfolioTrade(symbol="NVDA", entry_time=pd.Timestamp("2025-03-01"),
+                                  qty=50, entry_price=100.0)]
+        cash1 = bt._close_trade(
+            st1, pd.Timestamp("2025-03-15"), 110.0, "signal",
+            {0: 0}, t1_list, 0, 50000.0,
+        )
+
+        # End-of-period close with same numbers
+        st2 = self._make_st(position=50, entry_price=100.0, capital_allocated=5015.0)
+        t2_list = [PortfolioTrade(symbol="NVDA", entry_time=pd.Timestamp("2025-03-01"),
+                                  qty=50, entry_price=100.0)]
+        cash2 = bt._close_trade(
+            st2, pd.Timestamp("2025-03-15"), 110.0, "end_of_period",
+            {0: 0}, t2_list, 0, 50000.0,
+        )
+
+        assert t1_list[0].pnl == pytest.approx(t2_list[0].pnl, abs=0.01)
+        assert t1_list[0].pnl_pct == pytest.approx(t2_list[0].pnl_pct, abs=0.01)
+        assert cash1 == pytest.approx(cash2, abs=0.01)
+
+
+class TestTradePnLAlignsWithEquity:
+    """Integration test: sum of trade PnLs ≈ final equity change."""
+
+    def test_pnl_sum_matches_equity_change(self, ohlcv):
+        """Σ trade.pnl should equal (final_equity - initial_capital)
+        allowing for floating-point rounding."""
+        from unittest.mock import patch
+        from data import DataProvider
+
+        legs = [Leg("AAPL", "enhanced_macd")]
+        bt = PortfolioBacktest(legs=legs, initial_capital=10000, allocation="equal")
+
+        with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
+            result = bt.run(start="2020-01-01", end="2021-01-01")
+
+        closed = result.closed_trades
+        assert len(closed) > 0, "synthetic data should produce trades"
+
+        total_trade_pnl = sum(t.pnl for t in closed)
+        equity_change = result.final_equity - result.initial_capital
+
+        # Allow 0.01% tolerance due to floating-point accumulation
+        tolerance = result.initial_capital * 0.0001
+        assert total_trade_pnl == pytest.approx(equity_change, abs=tolerance), (
+            f"Σ trade.pnl = {total_trade_pnl:.2f}, "
+            f"equity change = {equity_change:.2f}"
+        )

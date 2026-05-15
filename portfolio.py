@@ -163,26 +163,10 @@ class PortfolioBacktest:
                         highest_since_entry=st["highest"],
                     )
                     if exit_now:
-                        actual_price = price * (1 - self.slippage_pct)
-                        proceeds = actual_price * st["position"] * (1 - self.commission_rate)
-                        cash += proceeds
-
-                        # Record closed trade
-                        if i in open_trade_idx:
-                            t = trades[open_trade_idx[i]]
-                            t.exit_time = date_idx
-                            t.exit_price = actual_price
-                            t.pnl = (actual_price - t.entry_price) * st["position"]
-                            cost_basis = t.entry_price * st["position"]
-                            t.pnl_pct = (t.pnl / cost_basis * 100) if cost_basis > 0 else 0
-                            t.reason = reason
-                            t.hold_days = (date_idx - t.entry_time).days
-                            del open_trade_idx[i]
-
-                        st["position"] = 0
-                        st["capital_allocated"] = 0
-                        st["entry_price"] = 0
-                        st["highest"] = 0
+                        cash = self._close_trade(
+                            st, date_idx, price, reason,
+                            open_trade_idx, trades, i, cash,
+                        )
 
                 # Entry check
                 elif st["position"] == 0 and st["strategy"].entry_signal(df_sig, idx_pos):
@@ -214,23 +198,15 @@ class PortfolioBacktest:
 
             equity_history.append((date_idx, total_equity))
 
-        # Close all open positions at end of period
-        final_equity = cash
+        # Close all open positions at end of period (same path as signal exit)
         last_date = timeline[-1] if timeline else pd.Timestamp(end)
         for i, st in leg_state.items():
             if st["position"] > 0 and "last_price" in st:
-                price = st["last_price"] * (1 - self.slippage_pct)
-                final_equity += st["position"] * price
-
-                if i in open_trade_idx:
-                    t = trades[open_trade_idx[i]]
-                    t.exit_time = last_date
-                    t.exit_price = price
-                    t.pnl = (price - t.entry_price) * st["position"]
-                    cost_basis = t.entry_price * st["position"]
-                    t.pnl_pct = (t.pnl / cost_basis * 100) if cost_basis > 0 else 0
-                    t.reason = "end_of_period"
-                    t.hold_days = (last_date - t.entry_time).days
+                cash = self._close_trade(
+                    st, last_date, st["last_price"], "end_of_period",
+                    open_trade_idx, trades, i, cash,
+                )
+        final_equity = cash
 
         return PortfolioResult(
             equity_history=equity_history,
@@ -239,6 +215,41 @@ class PortfolioBacktest:
             legs=self.legs,
             trades=trades,
         )
+
+    def _close_trade(
+        self, st: dict, date_idx: pd.Timestamp, price: float, reason: str,
+        open_trade_idx: dict, trades: List[PortfolioTrade],
+        leg_index: int, cash: float,
+    ) -> float:
+        """Close a position — unified path for signal exits and end-of-period close.
+
+        Applies slippage and commission consistently.  Fills the matching
+        PortfolioTrade with exit info computed on a net basis:
+        entry_cost includes buy-side commission, exit_proceeds deducts
+        sell-side commission, so trade PnL is strictly aligned with
+        the cash curve.
+        """
+        qty = st["position"]
+        exit_price = price * (1 - self.slippage_pct)
+        exit_proceeds = exit_price * qty * (1 - self.commission_rate)
+        entry_cost = st["capital_allocated"]
+        cash += exit_proceeds
+
+        if leg_index in open_trade_idx:
+            t = trades[open_trade_idx[leg_index]]
+            t.exit_time = date_idx
+            t.exit_price = exit_price
+            t.pnl = exit_proceeds - entry_cost
+            t.pnl_pct = (t.pnl / entry_cost * 100) if entry_cost > 0 else 0
+            t.reason = reason
+            t.hold_days = (date_idx - t.entry_time).days
+            del open_trade_idx[leg_index]
+
+        st["position"] = 0
+        st["capital_allocated"] = 0
+        st["entry_price"] = 0
+        st["highest"] = 0
+        return cash
 
     def _allocate(self, leg: Leg, available_cash: float, num_legs: int) -> float:
         """Determine how much cash to allocate to a new position."""
