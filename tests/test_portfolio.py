@@ -314,6 +314,26 @@ class TestPortfolioBacktestInit:
         assert bt.initial_capital == 50000
         assert bt.max_positions == 5
 
+    def test_risk_params_default(self):
+        bt = PortfolioBacktest(legs=[Leg("AAPL", "weekly_macd_kdj")])
+        assert bt.max_symbol_weight == 0.0
+        assert bt.max_daily_new_positions == 0
+        assert bt.max_gross_exposure == 0.0
+
+    def test_risk_params_custom(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            max_symbol_weight=0.25, max_daily_new_positions=3, max_gross_exposure=1.5,
+        )
+        assert bt.max_symbol_weight == 0.25
+        assert bt.max_daily_new_positions == 3
+        assert bt.max_gross_exposure == 1.5
+
+    def test_exec_constraints_default(self):
+        bt = PortfolioBacktest(legs=[Leg("AAPL", "weekly_macd_kdj")])
+        assert bt.lot_size == 0
+        assert bt.max_participation_rate == 0.0
+
     def test_empty_legs_raises_on_run(self):
         bt = PortfolioBacktest(legs=[], initial_capital=100000)
         with pytest.raises(RuntimeError):
@@ -321,6 +341,20 @@ class TestPortfolioBacktestInit:
 
 
 class TestPortfolioAllocation:
+    def test_dynamic_equal_uses_equity(self, ohlcv):
+        """dynamic_equal allocates based on current equity, not initial capital."""
+        legs = [Leg("AAPL", "weekly_macd_kdj"), Leg("NVDA", "weekly_macd_kdj")]
+        bt = PortfolioBacktest(legs=legs, initial_capital=100000, allocation="dynamic_equal")
+        # With current_equity=200000, allocation should be 100k, not 50k
+        alloc = bt._allocate(legs[0], 180000, 2, current_equity=200000)
+        assert alloc == 100000  # 200k / 2
+
+    def test_dynamic_equal_falls_back_to_initial(self):
+        legs = [Leg("AAPL", "weekly_macd_kdj")]
+        bt = PortfolioBacktest(legs=legs, initial_capital=100000, allocation="dynamic_equal")
+        alloc = bt._allocate(legs[0], 100000, 1, current_equity=0)
+        assert alloc == 100000  # falls back to initial_capital
+
     def test_equal_allocation(self, ohlcv):
         """Equal allocation splits initial capital evenly."""
         legs = [Leg("AAPL", "weekly_macd_kdj"), Leg("NVDA", "weekly_macd_kdj")]
@@ -402,6 +436,30 @@ class TestPortfolioBacktestIntegration:
 # ===================================================================
 # Regression: close-trade consistency
 # ===================================================================
+
+
+class TestExecutionConstraints:
+    def test_lot_size_rounds_down(self):
+        bt = PortfolioBacktest(legs=[], lot_size=100)
+        qty = bt._apply_execution_constraints(255, None, None, 0)
+        assert qty == 200
+
+    def test_lot_size_zero_noop(self):
+        bt = PortfolioBacktest(legs=[], lot_size=0)
+        assert bt._apply_execution_constraints(123, None, None, 0) == 123
+
+    def test_participation_rate_caps_qty(self, ohlcv):
+        bt = PortfolioBacktest(legs=[], max_participation_rate=0.01)
+        ohlcv["Volume"] = 100000
+        qty = bt._apply_execution_constraints(5000, ohlcv.iloc[50], ohlcv, 50)
+        assert qty == 1000  # 1% of 100k
+
+    def test_lot_size_then_participation(self, ohlcv):
+        bt = PortfolioBacktest(legs=[], lot_size=100, max_participation_rate=0.02)
+        ohlcv["Volume"] = 50000
+        qty = bt._apply_execution_constraints(1234, ohlcv.iloc[50], ohlcv, 50)
+        # 1234 → lot: 1200 → participation: min(1200, 1000) = 1000
+        assert qty == 1000
 
 
 class TestCloseTradeUnit:

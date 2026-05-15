@@ -77,6 +77,13 @@ class PortfolioBacktest:
         max_positions: int = 10,
         commission_rate: float = 0.0003,
         slippage_pct: float = 0.0001,
+        # --- portfolio risk ---
+        max_symbol_weight: float = 0.0,
+        max_daily_new_positions: int = 0,
+        max_gross_exposure: float = 0.0,
+        # --- execution constraints ---
+        lot_size: int = 0,
+        max_participation_rate: float = 0.0,
     ):
         self.legs = legs
         self.initial_capital = initial_capital
@@ -84,6 +91,11 @@ class PortfolioBacktest:
         self.max_positions = max_positions
         self.commission_rate = commission_rate
         self.slippage_pct = slippage_pct
+        self.max_symbol_weight = max_symbol_weight
+        self.max_daily_new_positions = max_daily_new_positions
+        self.max_gross_exposure = max_gross_exposure
+        self.lot_size = lot_size
+        self.max_participation_rate = max_participation_rate
 
     def run(
         self, start: str = "2018-01-01", end: Optional[str] = None
@@ -132,8 +144,15 @@ class PortfolioBacktest:
         trades: List[PortfolioTrade] = []
         open_trade_idx: dict = {}  # leg_index -> trades index
         equity_history = []
+        daily_new_count = 0
+        prev_date = None
 
         for date_idx in timeline:
+            # Reset daily counter on new date
+            if prev_date is not None and date_idx.date() != prev_date.date():
+                daily_new_count = 0
+            prev_date = date_idx
+
             total_equity = cash
 
             for i, st in leg_state.items():
@@ -173,17 +192,48 @@ class PortfolioBacktest:
                     active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
                     if active_positions >= self.max_positions:
                         continue
-                    alloc = self._allocate(st["leg"], cash, len(leg_data))
+
+                    # Compute current equity for dynamic allocation & risk checks
+                    current_equity = cash + sum(
+                        s["position"] * s.get("last_price", 0) for s in leg_state.values()
+                    )
+
+                    # Portfolio risk: max_daily_new_positions
+                    if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
+                        continue
+
+                    alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
                     if alloc > 0:
                         qty = st["strategy"].position_size(alloc, price, atr)
+
+                        # Execution constraints
+                        qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
+                        if qty <= 0:
+                            continue
+
                         actual_price = price * (1 + self.slippage_pct)
                         cost = actual_price * qty * (1 + self.commission_rate)
+
+                        # Portfolio risk: max_symbol_weight
+                        if self.max_symbol_weight > 0 and current_equity > 0:
+                            if cost / current_equity > self.max_symbol_weight:
+                                continue
+
+                        # Portfolio risk: max_gross_exposure
+                        if self.max_gross_exposure > 0 and current_equity > 0:
+                            existing_exposure = sum(
+                                s["position"] * s.get("last_price", 0) for s in leg_state.values()
+                            )
+                            if (existing_exposure + cost) / current_equity > self.max_gross_exposure:
+                                continue
+
                         if cost <= cash and qty > 0:
                             cash -= cost
                             st["position"] = qty
                             st["entry_price"] = actual_price
                             st["highest"] = price
                             st["capital_allocated"] = cost
+                            daily_new_count += 1
 
                             trade = PortfolioTrade(
                                 symbol=st["leg"].symbol,
@@ -251,14 +301,32 @@ class PortfolioBacktest:
         st["highest"] = 0
         return cash
 
-    def _allocate(self, leg: Leg, available_cash: float, num_legs: int) -> float:
+    def _apply_execution_constraints(
+        self, qty: int, row: pd.Series, df_sig: pd.DataFrame, idx_pos: int,
+    ) -> int:
+        """Enforce lot size and participation rate on *qty*.  Return adjusted qty."""
+        if self.lot_size > 0:
+            qty = (qty // self.lot_size) * self.lot_size
+        if self.max_participation_rate > 0 and qty > 0:
+            try:
+                vol = float(df_sig.iloc[idx_pos]["Volume"])
+                if vol > 0:
+                    max_qty = int(vol * self.max_participation_rate)
+                    qty = min(qty, max_qty)
+            except (KeyError, IndexError, TypeError):
+                pass
+        return qty
+
+    def _allocate(self, leg: Leg, available_cash: float, num_legs: int,
+                  current_equity: float = 0) -> float:
         """Determine how much cash to allocate to a new position."""
         if self.allocation == "equal":
             return min(available_cash, self.initial_capital / max(num_legs, 1))
+        elif self.allocation == "dynamic_equal":
+            ref = current_equity if current_equity > 0 else self.initial_capital
+            return min(available_cash, ref / max(num_legs, 1))
         elif self.allocation == "fraction":
-            # Fraction of available cash
             return available_cash * 0.25
-        # Default: use all available cash (single-position portfolio)
         return available_cash
 
 
