@@ -1,7 +1,7 @@
 """Portfolio backtest — multi-symbol, shared capital pool.
 
 Usage:
-    pipenv run python portfolio.py
+    pipenv run python engine/portfolio.py
 """
 
 import os
@@ -18,7 +18,7 @@ import pandas as pd
 
 from data import DataProvider
 from strategy import BaseStrategy, STRATEGY_MAP as _STRATEGY_MAP
-from trader import BacktestEngine, BacktestResult
+from engine.trader import BacktestEngine, BacktestResult
 
 
 # ---------------------------------------------------------------------------

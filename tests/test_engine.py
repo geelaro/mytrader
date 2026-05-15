@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from trader import BacktestEngine, BacktestResult, Trade
+from engine.trader import BacktestEngine, BacktestResult, Trade
 
 
 class TestBacktestEngine:
@@ -180,7 +180,7 @@ def test_all_four_strategies_run_without_error(ohlcv):
 
 class TestPrintResult:
     def test_prints_without_crash(self, capsys):
-        from trader import print_result, BacktestResult
+        from engine.trader import print_result, BacktestResult
         import numpy as np
 
         result = BacktestResult(
@@ -204,7 +204,7 @@ class TestPlotResult:
         """plot_result should create a PNG file."""
         import matplotlib
         matplotlib.use("Agg")
-        from trader import plot_result, BacktestResult, BacktestEngine
+        from engine.trader import plot_result, BacktestResult, BacktestEngine
         import numpy as np
 
         dates = pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03",

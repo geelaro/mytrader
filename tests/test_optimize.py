@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 import pytest
 
-from optimize import _compute_score, OptResult, PARAM_GRIDS, _PARAMS_CLASS
+from engine.optimize import _compute_score, OptResult, PARAM_GRIDS, _PARAMS_CLASS
 
 
 # ===================================================================
@@ -111,7 +111,7 @@ class TestParamGrids:
 
 class TestGridSearchSmoke:
     def test_function_signature(self):
-        from optimize import grid_search
+        from engine.optimize import grid_search
         import inspect
         sig = inspect.signature(grid_search)
         param_names = list(sig.parameters.keys())
@@ -129,7 +129,7 @@ class TestGridSearchSmoke:
 class TestGridSearchMocked:
     def test_grid_search_runs_with_mock_data(self, ohlcv):
         """Full grid_search with mocked data provider returns results."""
-        from optimize import grid_search
+        from engine.optimize import grid_search
         from data import DataProvider
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
@@ -146,7 +146,7 @@ class TestGridSearchMocked:
                 assert r.trades >= 0
 
     def test_grid_search_composite_metric(self, ohlcv):
-        from optimize import grid_search
+        from engine.optimize import grid_search
         from data import DataProvider
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
@@ -163,12 +163,12 @@ class TestGridSearchMocked:
             assert len(scores) >= 1
 
     def test_unknown_strategy_raises(self):
-        from optimize import grid_search
+        from engine.optimize import grid_search
         with pytest.raises(ValueError, match="Unknown strategy"):
             grid_search("no_such", "AAPL")
 
     def test_no_grid_defined_raises(self, ohlcv):
-        from optimize import grid_search, PARAM_GRIDS
+        from engine.optimize import grid_search, PARAM_GRIDS
         from data import DataProvider
 
         # strategy in STRATEGY_MAP but missing from PARAM_GRIDS would raise
@@ -186,7 +186,7 @@ class TestGridSearchMocked:
 
 class TestOptimizeHelpers:
     def test_print_grid_results(self, capsys):
-        from optimize import print_grid_results, OptResult
+        from engine.optimize import print_grid_results, OptResult
         results = [
             OptResult(params={"a": 10, "b": 20}, sharpe=1.5, total_return=25.0,
                       cagr=10.0, max_dd=-5.0, win_rate=60.0, trades=10, score=3.0),
@@ -202,7 +202,7 @@ class TestOptimizeHelpers:
 
 class TestWalkForwardSmoke:
     def test_function_signature(self):
-        from optimize import walk_forward
+        from engine.optimize import walk_forward
         import inspect
         sig = inspect.signature(walk_forward)
         param_names = list(sig.parameters.keys())
@@ -212,7 +212,7 @@ class TestWalkForwardSmoke:
         assert "test_years" in param_names
 
     def test_walk_forward_returns_structure(self, ohlcv):
-        from optimize import walk_forward
+        from engine.optimize import walk_forward
         from data import DataProvider
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):

@@ -1,9 +1,9 @@
 """Parameter optimization — grid search & walk-forward validation.
 
 Usage:
-    pipenv run python optimize.py --strategy trend_follower --symbol AAPL
-    pipenv run python optimize.py --strategy weekly_macd --symbol 510300
-    pipenv run python optimize.py --strategy enhanced_macd --walk-forward
+    pipenv run python engine/optimize.py -s trend_follower -symbol AAPL
+    pipenv run python engine/optimize.py -s weekly_macd -symbol 510300
+    pipenv run python engine/optimize.py -s enhanced_macd --walk-forward
 """
 
 import argparse
@@ -34,7 +34,7 @@ from strategy import (
     TurtleTradingParams,
     DailyMACDKDJParams,
 )
-from trader import BacktestEngine
+from engine.trader import BacktestEngine
 
 # ---------------------------------------------------------------------------
 # Parameter grids — define search space per strategy

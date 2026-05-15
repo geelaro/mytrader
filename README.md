@@ -17,7 +17,7 @@
 | 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
 | 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、滑点检查、日内亏损上限 |
 | Dashboard | Streamlit Web UI — 今日信号、回测图表（含买卖点）、策略对比、组合回测、交易明细 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（318 测试） |
+| CI | GitHub Actions — push/PR 自动跑 pytest（353 测试） |
 
 ## 策略
 
@@ -41,15 +41,13 @@ mytrader/
   data/              # 数据管线 (protocol/cache/provider/sources)
   strategy/          # 策略库 (base + 10 个策略)
   broker/            # 券商接口 (base + mock + futu)
-  utils/             # 工具 (日志/飞书通知/环境配置)
-  tests/             # 318 个测试
-  trader.py          # 单标回测引擎
-  daily.py           # 每日回溯扫描
-  optimize.py        # 参数优化 (网格搜索 + Walk-forward)
-  portfolio.py       # 组合回测 (多标的共享资金池 + 交易明细)
-  live_trader.py     # 实盘信号执行 + 风控
-  dashboard.py       # Streamlit Web 仪表盘
-  app.py             # 批量回测脚本
+  engine/            # 回测引擎 (单标/组合/参数优化)
+  utils/             # 工具 (日志/飞书通知/环境/配置)
+  tests/             # 353 个测试
+  daily.py           # 每日回溯扫描 (入口脚本)
+  live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
+  dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
+  config.py          # 统一运行时配置
   watchlist.toml     # 标的 + 策略 + 风控 + 日志配置
 ```
 
@@ -69,15 +67,12 @@ pipenv run python daily.py                        # 今天信号
 pipenv run python daily.py --notify               # 推送到飞书
 pipenv run python daily.py --history --days 7     # 近 7 天历史
 
-# 回测
-pipenv run python app.py                          # 批量回测全部标的
-
 # 参数优化
-pipenv run python optimize.py --strategy trend_follower --symbol AAPL --top 10
-pipenv run python optimize.py --strategy weekly_macd --walk-forward
+pipenv run python engine/optimize.py -s trend_follower -symbol AAPL --top 10
+pipenv run python engine/optimize.py -s weekly_macd --walk-forward
 
 # 组合回测
-pipenv run python portfolio.py
+pipenv run python engine/portfolio.py
 
 # Dashboard
 pipenv run streamlit run dashboard.py

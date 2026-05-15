@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from data import DataProvider
 from data.cache import CacheManager
 from strategy import STRATEGY_MAP, SIGNAL_LABEL
-from trader import BacktestEngine, plot_result, print_result
+from engine.trader import BacktestEngine, plot_result, print_result
 from utils import load_toml, get_logger
 
 logger = get_logger("dashboard")
@@ -294,7 +294,7 @@ with tab_portfolio:
 
     st.header("组合回测")
 
-    from portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
+    from engine.portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
 
     @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
     def _cached_portfolio_bt(start, end, alloc):
