@@ -99,10 +99,18 @@ with col2:
     st.metric(label="总组合数", value=f"{len(results)} 策略×标的")
 
 # ---------------------------------------------------------------------------
-# Row 2 — Backtest chart
+# Tabs: 单标的回测 | 组合回测
 # ---------------------------------------------------------------------------
 
-st.subheader(f"策略回测: {selected_symbol} + {selected_strategy}")
+tab_single, tab_portfolio = st.tabs(["单标的回测", "组合回测"])
+
+# ========================
+# Tab 1 — 单标的回测
+# ========================
+
+with tab_single:
+
+    st.subheader(f"策略回测: {selected_symbol} + {selected_strategy}")
 
 @st.cache_data(ttl=3600, show_spinner="获取数据中...")
 def _cached_get_daily(symbol, start, end):
@@ -277,78 +285,84 @@ with col2:
         df_comp = pd.DataFrame(compare_data).sort_values("Sharpe", ascending=False)
         st.dataframe(df_comp, use_container_width=True, hide_index=True)
 
-# ---------------------------------------------------------------------------
-# Row 4 — Portfolio backtest
-# ---------------------------------------------------------------------------
+# ========================
+# Tab 2 — 组合回测
+# ========================
 
-st.divider()
-st.header("组合回测")
+with tab_portfolio:
 
-from portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
+    st.header("组合回测")
 
+    from portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
 
-@st.cache_data(ttl=3600, show_spinner="运行组合回测...")
-def _cached_portfolio_bt(start, end):
-    bt = PortfolioBacktest(
-        legs=DEFAULT_PORTFOLIO,
-        initial_capital=100000,
-        allocation="equal",
-    )
-    return bt.run(start=start, end=end)
+    @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
+    def _cached_portfolio_bt(start, end):
+        bt = PortfolioBacktest(
+            legs=DEFAULT_PORTFOLIO,
+            initial_capital=100000,
+            allocation="equal",
+        )
+        return bt.run(start=start, end=end)
 
+    pf_result = _cached_portfolio_bt(start, end)
 
-pf_result = _cached_portfolio_bt(start, end)
+    # --- Metrics row ---
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("总收益", f"{pf_result.total_return_pct:+.1f}%")
+    m2.metric("夏普", f"{pf_result.sharpe_ratio:.2f}")
+    m3.metric("最大回撤", f"{pf_result.max_drawdown_pct:.1f}%")
+    m4.metric("交易笔数", pf_result.total_trades)
+    m5.metric("胜率", f"{pf_result.win_rate_pct:.1f}%")
+    m6.metric("盈亏比", f"{pf_result.profit_factor:.2f}")
 
-# Metrics
-m1, m2, m3, m4, m5, m6 = st.columns(6)
-m1.metric("总收益", f"{pf_result.total_return_pct:+.1f}%")
-m2.metric("夏普", f"{pf_result.sharpe_ratio:.2f}")
-m3.metric("最大回撤", f"{pf_result.max_drawdown_pct:.1f}%")
-m4.metric("交易笔数", pf_result.total_trades)
-m5.metric("胜率", f"{pf_result.win_rate_pct:.1f}%")
-m6.metric("盈亏比", f"{pf_result.profit_factor:.2f}")
+    # --- Equity curve + Drawdown ---
+    import matplotlib.pyplot as plt
 
-# Equity curve + Drawdown
-import matplotlib.pyplot as plt
+    for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
+        try:
+            plt.rcParams["font.sans-serif"] = [font]
+            break
+        except Exception:
+            continue
+    plt.rcParams["axes.unicode_minus"] = False
 
-for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-    try:
-        plt.rcParams["font.sans-serif"] = [font]
-        break
-    except Exception:
-        continue
-plt.rcParams["axes.unicode_minus"] = False
+    fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
+                             gridspec_kw={"height_ratios": [2, 1]})
+    curve = pf_result.equity_curve
+    ax1 = axes[0]
+    ax1.plot(curve.index, curve, color="#2ca02c", linewidth=1.2, label="组合权益")
+    ax1.axhline(y=pf_result.initial_capital, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
+    ax1.set_ylabel("Equity ($)")
+    ax1.set_title("组合权益曲线", fontsize=13, fontweight="bold")
+    ax1.legend(loc="upper left")
+    ax1.grid(True, alpha=0.3)
 
-fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
-                         gridspec_kw={"height_ratios": [2, 1]})
-curve = pf_result.equity_curve
-ax1 = axes[0]
-ax1.plot(curve.index, curve, color="#2ca02c", linewidth=1.2, label="组合权益")
-ax1.axhline(y=pf_result.initial_capital, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
-ax1.set_ylabel("Equity ($)")
-ax1.set_title("组合权益曲线", fontsize=13, fontweight="bold")
-ax1.legend(loc="upper left")
-ax1.grid(True, alpha=0.3)
+    ax2 = axes[1]
+    rolling_max = curve.expanding().max()
+    drawdown = (curve - rolling_max) / rolling_max * 100
+    ax2.fill_between(drawdown.index, drawdown, 0, color="#d62728", alpha=0.4)
+    ax2.plot(drawdown.index, drawdown, color="#d62728", linewidth=0.6)
+    ax2.set_ylabel("Drawdown (%)")
+    ax2.set_xlabel("Date")
+    ax2.set_title("组合回撤", fontsize=13, fontweight="bold")
+    ax2.grid(True, alpha=0.3)
 
-ax2 = axes[1]
-rolling_max = curve.expanding().max()
-drawdown = (curve - rolling_max) / rolling_max * 100
-ax2.fill_between(drawdown.index, drawdown, 0, color="#d62728", alpha=0.4)
-ax2.plot(drawdown.index, drawdown, color="#d62728", linewidth=0.6)
-ax2.set_ylabel("Drawdown (%)")
-ax2.set_xlabel("Date")
-ax2.set_title("组合回撤", fontsize=13, fontweight="bold")
-ax2.grid(True, alpha=0.3)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
-plt.tight_layout()
-st.pyplot(fig)
-plt.close(fig)
+    # --- Trade statistics cards ---
+    st.subheader("交易统计")
+    s1, s2, s3, s4, s5, s6 = st.columns(6)
+    s1.metric("总笔数", pf_result.total_trades)
+    s2.metric("胜率", f"{pf_result.win_rate_pct:.1f}%")
+    s3.metric("盈亏比", f"{pf_result.profit_factor:.2f}")
+    s4.metric("平均盈利", f"${pf_result.avg_win:,.0f}")
+    s5.metric("平均亏损", f"${pf_result.avg_loss:,.0f}")
+    s6.metric("平均持仓天", f"{pf_result.avg_hold_days:.1f}")
 
-# Per-symbol breakdown + Trade details
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("按标的统计")
+    # --- Per-symbol PnL attribution ---
+    st.subheader("收益归因 · 按标的")
     if pf_result.closed_trades:
         by_symbol: dict = {}
         for t in pf_result.closed_trades:
@@ -361,29 +375,63 @@ with col1:
             sym_rows.append({
                 "标的": sym, "笔数": n, "胜率%": round(wr, 1),
                 "总PnL": round(total_pnl, 0), "平均PnL": round(total_pnl / n, 0),
+                "最大单笔PnL": round(max(t.pnl or 0 for t in sym_trades), 0),
+                "最小单笔PnL": round(min(t.pnl or 0 for t in sym_trades), 0),
             })
-        st.dataframe(pd.DataFrame(sym_rows), use_container_width=True, hide_index=True)
+        df_sym = pd.DataFrame(sym_rows).sort_values("总PnL", ascending=False)
+        st.dataframe(df_sym, use_container_width=True, hide_index=True)
 
-with col2:
-    st.subheader("交易统计")
-    st.metric("平均盈利", f"${pf_result.avg_win:,.0f}")
-    st.metric("平均亏损", f"${pf_result.avg_loss:,.0f}")
-    st.metric("平均持仓天数", f"{pf_result.avg_hold_days:.1f}")
+    # --- Filtered trade details ---
+    st.subheader("交易明细")
 
-with st.expander(f"交易明细 ({pf_result.total_trades} 笔)"):
     if pf_result.closed_trades:
+        # Build base dataframe
         trade_rows = []
         for t in pf_result.closed_trades:
+            entry_str = t.entry_time.strftime("%Y-%m-%d") if hasattr(t.entry_time, "strftime") else str(t.entry_time)[:10]
+            exit_str = t.exit_time.strftime("%Y-%m-%d") if t.exit_time and hasattr(t.exit_time, "strftime") else (str(t.exit_time)[:10] if t.exit_time else "")
             trade_rows.append({
                 "标的": t.symbol,
-                "入场日": t.entry_time.strftime("%Y-%m-%d") if hasattr(t.entry_time, "strftime") else str(t.entry_time)[:10],
-                "出场日": t.exit_time.strftime("%Y-%m-%d") if t.exit_time and hasattr(t.exit_time, "strftime") else (str(t.exit_time)[:10] if t.exit_time else ""),
+                "入场日": entry_str,
+                "出场日": exit_str,
                 "数量": t.qty,
                 "入场价": round(t.entry_price, 2),
                 "出场价": round(t.exit_price, 2) if t.exit_price else None,
-                "PnL": round(t.pnl, 0) if t.pnl else None,
-                "PnL%": round(t.pnl_pct, 2) if t.pnl_pct else None,
+                "PnL": round(t.pnl, 0) if t.pnl else 0,
+                "PnL%": round(t.pnl_pct, 2) if t.pnl_pct else 0,
                 "原因": t.reason,
                 "持仓天": t.hold_days,
+                "入场": pd.Timestamp(entry_str),
+                "出场": pd.Timestamp(exit_str) if exit_str else pd.NaT,
             })
-        st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
+        df_trades = pd.DataFrame(trade_rows)
+
+        # Filters row
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            symbols = sorted(df_trades["标的"].unique().tolist())
+            filter_sym = st.multiselect("标的", symbols, default=symbols, key="pf_filter_sym")
+        with fc2:
+            filter_pnl = st.selectbox("盈亏", ["全部", "盈利", "亏损"], key="pf_filter_pnl")
+        with fc3:
+            if not df_trades["入场"].isna().all():
+                min_date = df_trades["入场"].min().date()
+                max_date = df_trades["出场"].max().date() if not df_trades["出场"].isna().all() else pd.Timestamp.today().date()
+                filter_dates = st.date_input("日期区间", value=(min_date, max_date), key="pf_filter_date")
+
+        # Apply filters
+        df_filtered = df_trades[df_trades["标的"].isin(filter_sym)]
+        if filter_pnl == "盈利":
+            df_filtered = df_filtered[df_filtered["PnL"] > 0]
+        elif filter_pnl == "亏损":
+            df_filtered = df_filtered[df_filtered["PnL"] < 0]
+        if isinstance(filter_dates, tuple) and len(filter_dates) == 2:
+            d1, d2 = pd.Timestamp(filter_dates[0]), pd.Timestamp(filter_dates[1])
+            df_filtered = df_filtered[(df_filtered["入场"] >= d1) & (df_filtered["入场"] <= d2)]
+
+        st.caption(f"共 {len(df_filtered)} 笔（筛选自 {len(df_trades)} 笔）")
+
+        display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
+        st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("无交易记录")
