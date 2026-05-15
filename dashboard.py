@@ -232,58 +232,58 @@ if strategy_cls:
     except Exception as e:
         st.error(f"回测失败: {e}")
 
-# ---------------------------------------------------------------------------
-# Row 3 — Signal history + Strategy compare
-# ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Row 3 — Signal history + Strategy compare
+    # -----------------------------------------------------------------------
 
-col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-with col1:
-    st.subheader("近期信号历史")
-    since = (date.today() - timedelta(days=7)).isoformat()
-    rows = cache.query_signals(scan_date=since)
-    if rows:
-        df_hist = pd.DataFrame(rows)
-        df_hist["signal_label"] = df_hist["signal"].map({1: "买入", -1: "卖出", 0: "—"})
-        st.dataframe(
-            df_hist[["scan_date", "symbol", "strategy", "signal_label", "price"]].tail(20),
-            use_container_width=True, hide_index=True,
-        )
-    else:
-        st.info("近 7 天无信号记录")
+    with col1:
+        st.subheader("近期信号历史")
+        since = (date.today() - timedelta(days=7)).isoformat()
+        rows = cache.query_signals(scan_date=since)
+        if rows:
+            df_hist = pd.DataFrame(rows)
+            df_hist["signal_label"] = df_hist["signal"].map({1: "买入", -1: "卖出", 0: "—"})
+            st.dataframe(
+                df_hist[["scan_date", "symbol", "strategy", "signal_label", "price"]].tail(20),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("近 7 天无信号记录")
 
-with col2:
-    st.subheader("策略 Sharpe 对比")
-    strategies_to_compare = ["weekly_macd_kdj", "turtle_trading", "enhanced_macd",
-                             "donchian_breakout", "bollinger_mean_reversion"]
-    compare_data = []
-    for sn in strategies_to_compare:
-        cls = STRATEGY_MAP.get(sn)
-        if cls is None:
-            continue
-        try:
-            df_cmp = _cached_get_daily(selected_symbol, start, end)
-            if df_cmp is None or df_cmp.empty:
+    with col2:
+        st.subheader("策略 Sharpe 对比")
+        strategies_to_compare = ["weekly_macd_kdj", "turtle_trading", "enhanced_macd",
+                                 "donchian_breakout", "bollinger_mean_reversion"]
+        compare_data = []
+        for sn in strategies_to_compare:
+            cls = STRATEGY_MAP.get(sn)
+            if cls is None:
                 continue
-            s = cls()
-            df_s = s.calculate_indicators(df_cmp)
-            eng = BacktestEngine(initial_capital=10000)
-            ben = eng.run(s, df_s)
-            res = eng.get_result(ben)
-            compare_data.append({
-                "策略": sn,
-                "Sharpe": round(res.sharpe_ratio, 2),
-                "收益%": round(res.total_return_pct, 1),
-                "回撤%": round(res.max_drawdown_pct, 1),
-                "胜率%": round(res.win_rate_pct, 1),
-                "交易": res.total_trades,
-            })
-        except Exception:
-            pass
+            try:
+                df_cmp = _cached_get_daily(selected_symbol, start, end)
+                if df_cmp is None or df_cmp.empty:
+                    continue
+                s = cls()
+                df_s = s.calculate_indicators(df_cmp)
+                eng = BacktestEngine(initial_capital=10000)
+                ben = eng.run(s, df_s)
+                res = eng.get_result(ben)
+                compare_data.append({
+                    "策略": sn,
+                    "Sharpe": round(res.sharpe_ratio, 2),
+                    "收益%": round(res.total_return_pct, 1),
+                    "回撤%": round(res.max_drawdown_pct, 1),
+                    "胜率%": round(res.win_rate_pct, 1),
+                    "交易": res.total_trades,
+                })
+            except Exception:
+                pass
 
-    if compare_data:
-        df_comp = pd.DataFrame(compare_data).sort_values("Sharpe", ascending=False)
-        st.dataframe(df_comp, use_container_width=True, hide_index=True)
+        if compare_data:
+            df_comp = pd.DataFrame(compare_data).sort_values("Sharpe", ascending=False)
+            st.dataframe(df_comp, use_container_width=True, hide_index=True)
 
 # ========================
 # Tab 2 — 组合回测
