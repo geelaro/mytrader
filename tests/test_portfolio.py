@@ -47,6 +47,8 @@ class TestLeg:
 def _make_trade(symbol="AAPL", pnl=500.0, hold_days=10, reason="signal", **kwargs):
     """Factory for a closed PortfolioTrade with sensible defaults."""
     entry = pd.Timestamp("2025-01-02")
+    explicit_pnl_pct = kwargs.pop("pnl_pct", None)
+    computed_pnl_pct = explicit_pnl_pct if explicit_pnl_pct is not None else (pnl / (100 * 100) * 100)
     return PortfolioTrade(
         symbol=symbol,
         entry_time=entry,
@@ -55,7 +57,7 @@ def _make_trade(symbol="AAPL", pnl=500.0, hold_days=10, reason="signal", **kwarg
         entry_price=kwargs.pop("entry_price", 100.0),
         exit_price=kwargs.pop("exit_price", 105.0),
         pnl=pnl,
-        pnl_pct=kwargs.pop("pnl_pct", None) or (pnl / (100 * 100) * 100),
+        pnl_pct=computed_pnl_pct,
         reason=reason,
         hold_days=hold_days,
         **kwargs,

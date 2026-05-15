@@ -112,180 +112,180 @@ with tab_single:
 
     st.subheader(f"策略回测: {selected_symbol} + {selected_strategy}")
 
-@st.cache_data(ttl=3600, show_spinner="获取数据中...")
-def _cached_get_daily(symbol, start, end):
-    return provider.get_daily(symbol, start=start, end=end)
+    @st.cache_data(ttl=3600, show_spinner="获取数据中...")
+    def _cached_get_daily(symbol, start, end):
+        return provider.get_daily(symbol, start=start, end=end)
 
 
-start = (pd.Timestamp(target_date) - pd.DateOffset(years=backtest_years)).strftime("%Y-%m-%d")
-end = target_date.isoformat()
+    start = (pd.Timestamp(target_date) - pd.DateOffset(years=backtest_years)).strftime("%Y-%m-%d")
+    end = target_date.isoformat()
 
-strategy_cls = STRATEGY_MAP.get(selected_strategy)
-if strategy_cls:
-    try:
-        df = _cached_get_daily(selected_symbol, start, end)
-        if df is not None and not df.empty:
-            strategy = strategy_cls()
-            df_sig = strategy.calculate_indicators(df)
-            engine = BacktestEngine(initial_capital=10000)
-            bench = engine.run(strategy, df_sig)
-            result = engine.get_result(bench)
+    strategy_cls = STRATEGY_MAP.get(selected_strategy)
+    if strategy_cls:
+        try:
+            df = _cached_get_daily(selected_symbol, start, end)
+            if df is not None and not df.empty:
+                strategy = strategy_cls()
+                df_sig = strategy.calculate_indicators(df)
+                engine = BacktestEngine(initial_capital=10000)
+                bench = engine.run(strategy, df_sig)
+                result = engine.get_result(bench)
 
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("总收益", f"{result.total_return_pct:+.1f}%")
-            col2.metric("夏普", f"{result.sharpe_ratio:.2f}")
-            col3.metric("最大回撤", f"{result.max_drawdown_pct:.1f}%")
-            col4.metric("胜率", f"{result.win_rate_pct:.1f}%")
-            col5.metric("交易", result.total_trades)
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("总收益", f"{result.total_return_pct:+.1f}%")
+                col2.metric("夏普", f"{result.sharpe_ratio:.2f}")
+                col3.metric("最大回撤", f"{result.max_drawdown_pct:.1f}%")
+                col4.metric("胜率", f"{result.win_rate_pct:.1f}%")
+                col5.metric("交易", result.total_trades)
 
-            # Plot equity curve
-            import matplotlib.pyplot as plt
+                # Plot equity curve
+                import matplotlib.pyplot as plt
 
-            # Configure Chinese font rendering
-            for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-                try:
-                    plt.rcParams["font.sans-serif"] = [font]
-                    break
-                except Exception:
-                    continue
-            plt.rcParams["axes.unicode_minus"] = False
-
-            fig, ax = plt.subplots(figsize=(10, 4))
-            eq = result.equity_curve
-            ax.plot(eq.index, eq.values,
-                    color="#2ca02c", linewidth=1.2, label="策略权益")
-
-            # Benchmark
-            if result.buy_hold_return_pct != 0:
-                bh_start = result.initial_capital
-                price_data = df["Close"]
-                price_data = price_data[price_data.index >= eq.index[0]]
-                bh_curve = bh_start * (price_data / price_data.iloc[0])
-                ax.plot(bh_curve.index, bh_curve.values,
-                        color="#d62728", linewidth=0.8, linestyle="--", alpha=0.7, label="买入持有")
-
-            # Buy / Sell markers on equity curve
-            if result.trades:
-                for t in result.trades:
+                # Configure Chinese font rendering
+                for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
                     try:
-                        pos = eq.index.get_loc(t.entry_date)
-                        idx = pos if isinstance(pos, int) else pos.start
-                        ax.scatter(eq.index[idx], float(eq.iloc[idx]),
-                                   color="limegreen", marker="^", s=50, zorder=5)
-                    except (KeyError, IndexError):
-                        pass
-                    try:
-                        pos = eq.index.get_loc(t.exit_date)
-                        idx = pos if isinstance(pos, int) else pos.start
-                        ax.scatter(eq.index[idx], float(eq.iloc[idx]),
-                                   color="red", marker="v", s=50, zorder=5)
-                    except (KeyError, IndexError):
-                        pass
+                        plt.rcParams["font.sans-serif"] = [font]
+                        break
+                    except Exception:
+                        continue
+                plt.rcParams["axes.unicode_minus"] = False
 
-            ax.axhline(y=10000, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
-            ax.set_title(f"{selected_symbol} — {selected_strategy}")
-            ax.legend(loc="upper left")
-            ax.grid(True, alpha=0.3)
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
-            st.pyplot(fig)
-            plt.close(fig)
+                fig, ax = plt.subplots(figsize=(10, 4))
+                eq = result.equity_curve
+                ax.plot(eq.index, eq.values,
+                        color="#2ca02c", linewidth=1.2, label="策略权益")
 
-            # Indicator preview
-            with st.expander("最新指标"):
-                last_row = df_sig.iloc[-1]
-                indicator_cols = [c for c in df_sig.columns
-                                  if c not in ("Open", "High", "Low", "Close", "Volume", "Signal")]
-                cols = st.columns(min(len(indicator_cols), 6))
-                for i, col_name in enumerate(indicator_cols[:18]):
-                    val = last_row[col_name]
-                    if isinstance(val, (float, int)) and not pd.isna(val):
-                        cols[i % 6].metric(col_name, f"{float(val):.4f}")
+                # Benchmark
+                if result.buy_hold_return_pct != 0:
+                    bh_start = result.initial_capital
+                    price_data = df["Close"]
+                    price_data = price_data[price_data.index >= eq.index[0]]
+                    bh_curve = bh_start * (price_data / price_data.iloc[0])
+                    ax.plot(bh_curve.index, bh_curve.values,
+                            color="#d62728", linewidth=0.8, linestyle="--", alpha=0.7, label="买入持有")
 
-            # Trade details (single-symbol)
-            with st.expander(f"交易明细 ({result.total_trades} 笔)"):
+                # Buy / Sell markers on equity curve
                 if result.trades:
-                    pf_str = "∞" if result.profit_factor == float("inf") else f"{result.profit_factor:.2f}"
-                    st.caption(
-                        f"胜率 {result.win_rate_pct:.1f}%  |  "
-                        f"盈亏比 {pf_str}  |  "
-                        f"均盈 {result.avg_win_pct:+.2f}%  |  "
-                        f"均亏 {result.avg_loss_pct:+.2f}%"
-                    )
-                    trade_rows = []
                     for t in result.trades:
-                        trade_rows.append({
-                            "入场日": t.entry_date.strftime("%Y-%m-%d") if hasattr(t.entry_date, "strftime") else str(t.entry_date)[:10],
-                            "出场日": t.exit_date.strftime("%Y-%m-%d") if hasattr(t.exit_date, "strftime") else str(t.exit_date)[:10],
-                            "数量": t.quantity,
-                            "入场价": round(t.entry_price, 2),
-                            "出场价": round(t.exit_price, 2),
-                            "PnL": round(t.pnl, 0),
-                            "PnL%": f"{t.pnl_pct:+.2f}%",
-                            "原因": t.exit_reason,
-                            "持仓天": t.holding_days,
-                        })
-                    st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
-                else:
-                    st.info("无交易记录")
-        else:
-            st.warning(f"无 {selected_symbol} 数据")
-    except Exception as e:
-        st.error(f"回测失败: {e}")
+                        try:
+                            pos = eq.index.get_loc(t.entry_date)
+                            idx = pos if isinstance(pos, int) else pos.start
+                            ax.scatter(eq.index[idx], float(eq.iloc[idx]),
+                                       color="limegreen", marker="^", s=50, zorder=5)
+                        except (KeyError, IndexError):
+                            pass
+                        try:
+                            pos = eq.index.get_loc(t.exit_date)
+                            idx = pos if isinstance(pos, int) else pos.start
+                            ax.scatter(eq.index[idx], float(eq.iloc[idx]),
+                                       color="red", marker="v", s=50, zorder=5)
+                        except (KeyError, IndexError):
+                            pass
 
-    # -----------------------------------------------------------------------
-    # Row 3 — Signal history + Strategy compare
-    # -----------------------------------------------------------------------
+                ax.axhline(y=10000, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
+                ax.set_title(f"{selected_symbol} — {selected_strategy}")
+                ax.legend(loc="upper left")
+                ax.grid(True, alpha=0.3)
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+                st.pyplot(fig)
+                plt.close(fig)
 
-    col1, col2 = st.columns(2)
+                # Indicator preview
+                with st.expander("最新指标"):
+                    last_row = df_sig.iloc[-1]
+                    indicator_cols = [c for c in df_sig.columns
+                                      if c not in ("Open", "High", "Low", "Close", "Volume", "Signal")]
+                    cols = st.columns(min(len(indicator_cols), 6))
+                    for i, col_name in enumerate(indicator_cols[:18]):
+                        val = last_row[col_name]
+                        if isinstance(val, (float, int)) and not pd.isna(val):
+                            cols[i % 6].metric(col_name, f"{float(val):.4f}")
 
-    with col1:
-        st.subheader("近期信号历史")
-        since = (date.today() - timedelta(days=7)).isoformat()
-        rows = cache.query_signals(scan_date=since)
-        if rows:
-            df_hist = pd.DataFrame(rows)
-            df_hist["signal_label"] = df_hist["signal"].map({1: "买入", -1: "卖出", 0: "—"})
-            st.dataframe(
-                df_hist[["scan_date", "symbol", "strategy", "signal_label", "price"]].tail(20),
-                use_container_width=True, hide_index=True,
-            )
-        else:
-            st.info("近 7 天无信号记录")
+                # Trade details (single-symbol)
+                with st.expander(f"交易明细 ({result.total_trades} 笔)"):
+                    if result.trades:
+                        pf_str = "∞" if result.profit_factor == float("inf") else f"{result.profit_factor:.2f}"
+                        st.caption(
+                            f"胜率 {result.win_rate_pct:.1f}%  |  "
+                            f"盈亏比 {pf_str}  |  "
+                            f"均盈 {result.avg_win_pct:+.2f}%  |  "
+                            f"均亏 {result.avg_loss_pct:+.2f}%"
+                        )
+                        trade_rows = []
+                        for t in result.trades:
+                            trade_rows.append({
+                                "入场日": t.entry_date.strftime("%Y-%m-%d") if hasattr(t.entry_date, "strftime") else str(t.entry_date)[:10],
+                                "出场日": t.exit_date.strftime("%Y-%m-%d") if hasattr(t.exit_date, "strftime") else str(t.exit_date)[:10],
+                                "数量": t.quantity,
+                                "入场价": round(t.entry_price, 2),
+                                "出场价": round(t.exit_price, 2),
+                                "PnL": round(t.pnl, 0),
+                                "PnL%": f"{t.pnl_pct:+.2f}%",
+                                "原因": t.exit_reason,
+                                "持仓天": t.holding_days,
+                            })
+                        st.dataframe(pd.DataFrame(trade_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("无交易记录")
+            else:
+                st.warning(f"无 {selected_symbol} 数据")
+        except Exception as e:
+            st.error(f"回测失败: {e}")
 
-    with col2:
-        st.subheader("策略 Sharpe 对比")
-        strategies_to_compare = ["weekly_macd_kdj", "turtle_trading", "enhanced_macd",
-                                 "donchian_breakout", "bollinger_mean_reversion"]
-        compare_data = []
-        for sn in strategies_to_compare:
-            cls = STRATEGY_MAP.get(sn)
-            if cls is None:
-                continue
-            try:
-                df_cmp = _cached_get_daily(selected_symbol, start, end)
-                if df_cmp is None or df_cmp.empty:
+        # -----------------------------------------------------------------------
+        # Row 3 — Signal history + Strategy compare
+        # -----------------------------------------------------------------------
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("近期信号历史")
+            since = (date.today() - timedelta(days=7)).isoformat()
+            rows = cache.query_signals(scan_date=since)
+            if rows:
+                df_hist = pd.DataFrame(rows)
+                df_hist["signal_label"] = df_hist["signal"].map({1: "买入", -1: "卖出", 0: "—"})
+                st.dataframe(
+                    df_hist[["scan_date", "symbol", "strategy", "signal_label", "price"]].tail(20),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.info("近 7 天无信号记录")
+
+        with col2:
+            st.subheader("策略 Sharpe 对比")
+            strategies_to_compare = ["weekly_macd_kdj", "turtle_trading", "enhanced_macd",
+                                     "donchian_breakout", "bollinger_mean_reversion"]
+            compare_data = []
+            for sn in strategies_to_compare:
+                cls = STRATEGY_MAP.get(sn)
+                if cls is None:
                     continue
-                s = cls()
-                df_s = s.calculate_indicators(df_cmp)
-                eng = BacktestEngine(initial_capital=10000)
-                ben = eng.run(s, df_s)
-                res = eng.get_result(ben)
-                compare_data.append({
-                    "策略": sn,
-                    "Sharpe": round(res.sharpe_ratio, 2),
-                    "收益%": round(res.total_return_pct, 1),
-                    "回撤%": round(res.max_drawdown_pct, 1),
-                    "胜率%": round(res.win_rate_pct, 1),
-                    "交易": res.total_trades,
-                })
-            except Exception:
-                pass
+                try:
+                    df_cmp = _cached_get_daily(selected_symbol, start, end)
+                    if df_cmp is None or df_cmp.empty:
+                        continue
+                    s = cls()
+                    df_s = s.calculate_indicators(df_cmp)
+                    eng = BacktestEngine(initial_capital=10000)
+                    ben = eng.run(s, df_s)
+                    res = eng.get_result(ben)
+                    compare_data.append({
+                        "策略": sn,
+                        "Sharpe": round(res.sharpe_ratio, 2),
+                        "收益%": round(res.total_return_pct, 1),
+                        "回撤%": round(res.max_drawdown_pct, 1),
+                        "胜率%": round(res.win_rate_pct, 1),
+                        "交易": res.total_trades,
+                    })
+                except Exception:
+                    pass
 
-        if compare_data:
-            df_comp = pd.DataFrame(compare_data).sort_values("Sharpe", ascending=False)
-            st.dataframe(df_comp, use_container_width=True, hide_index=True)
+            if compare_data:
+                df_comp = pd.DataFrame(compare_data).sort_values("Sharpe", ascending=False)
+                st.dataframe(df_comp, use_container_width=True, hide_index=True)
 
-# ========================
+    # ========================
 # Tab 2 — 组合回测
 # ========================
 

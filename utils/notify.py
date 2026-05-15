@@ -146,7 +146,7 @@ class Notifier:
             except queue.Empty:
                 continue
             try:
-                self.enqueue(payload)
+                self._send(payload)
             except Exception:
                 logger.exception("通知消费异常")
 
