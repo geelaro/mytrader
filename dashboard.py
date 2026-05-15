@@ -45,6 +45,7 @@ strategy_options = list(STRATEGY_MAP.keys())
 selected_strategy = st.sidebar.selectbox("策略", strategy_options, index=3)
 
 backtest_years = st.sidebar.slider("回测年数", 1, 10, 4)
+allocation_mode = st.sidebar.selectbox("组合分配模式", ["equal", "dynamic_equal"], index=0)
 
 # Initialize data provider (cached)
 @st.cache_resource
@@ -296,15 +297,15 @@ with tab_portfolio:
     from portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
 
     @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
-    def _cached_portfolio_bt(start, end):
+    def _cached_portfolio_bt(start, end, alloc):
         bt = PortfolioBacktest(
             legs=DEFAULT_PORTFOLIO,
             initial_capital=100000,
-            allocation="equal",
+            allocation=alloc,
         )
         return bt.run(start=start, end=end)
 
-    pf_result = _cached_portfolio_bt(start, end)
+    pf_result = _cached_portfolio_bt(start, end, allocation_mode)
 
     # --- Metrics row ---
     m1, m2, m3, m4, m5, m6 = st.columns(6)
