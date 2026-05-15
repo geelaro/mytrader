@@ -25,8 +25,12 @@ Usage
     nf.error("数据源连接失败")                     # 错误告警
 """
 
+import atexit
 import json
+import logging as _logging
 import os
+import queue
+import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -95,12 +99,16 @@ class Notifier:
         app_secret: Optional[str] = None,
         chat_id: Optional[str] = None,
         dry_run: bool = False,
+        async_mode: bool = True,
     ):
         self.url = url or os.getenv("FEISHU_WEBHOOK", "")
         self.app_id = app_id or os.getenv("FEISHU_APP_ID", "")
         self.app_secret = app_secret or os.getenv("FEISHU_APP_SECRET", "")
         self.chat_id = chat_id or os.getenv("FEISHU_CHAT_ID", "")
         self.dry_run = dry_run
+        self._async = async_mode
+        self._queue: queue.Queue = queue.Queue(maxsize=1000)
+        self._worker: Optional[threading.Thread] = None
 
         if self.url:
             self._mode = "webhook"
@@ -111,9 +119,57 @@ class Notifier:
             if not dry_run:
                 logger.warning("飞书通知未配置 — 设置 FEISHU_WEBHOOK 或 FEISHU_APP_ID+FEISHU_APP_SECRET")
 
+        if self._async and self.available:
+            self._start_worker()
+
     @property
     def available(self) -> bool:
         return self._mode != "none" or self.dry_run
+
+    # ------------------------------------------------------------------
+    # Async worker
+    # ------------------------------------------------------------------
+
+    def _start_worker(self):
+        if self._worker and self._worker.is_alive():
+            return
+        self._worker = threading.Thread(
+            target=self._consume, name="notify-worker", daemon=True,
+        )
+        self._worker.start()
+        atexit.register(self.stop)
+
+    def _consume(self):
+        while True:
+            try:
+                payload = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self.enqueue(payload)
+            except Exception:
+                logger.exception("通知消费异常")
+
+    def stop(self):
+        try:
+            atexit.unregister(self.stop)
+        except Exception:
+            pass
+        if self._worker and self._worker.is_alive():
+            self._worker.join(timeout=2)
+
+    def enqueue(self, payload: dict) -> bool:
+        """Enqueue a payload for async delivery. Falls back to sync if async_mode=False."""
+        if not self._async:
+            return self._send(payload)
+        if not self.available:
+            return False
+        try:
+            self._queue.put_nowait(payload)
+            return True
+        except queue.Full:
+            logger.warning("通知队列已满(%d)，丢弃消息", self._queue.maxsize)
+            return False
 
     # ------------------------------------------------------------------
     # Public API
@@ -125,7 +181,7 @@ class Notifier:
             "msg_type": "text",
             "content": {"text": content},
         }
-        return self._send(payload)
+        return self.enqueue(payload)
 
     _strat_cn = {
         "enhanced_macd": "增强MACD",
@@ -344,3 +400,40 @@ class Notifier:
             "tag": "div",
             "text": {"tag": "lark_md", "content": f"**{label}**\n{value}"},
         }
+
+
+# ---------------------------------------------------------------------------
+# Logging → Notification bridge
+# ---------------------------------------------------------------------------
+
+
+class NotifyLogHandler(_logging.Handler):
+    """Bridge Python logging ERROR+ records to Notifier via async queue."""
+
+    def __init__(self, notifier: Optional[Notifier] = None, level: int = _logging.ERROR):
+        super().__init__(level=level)
+        self._notifier = notifier or Notifier()
+        self.setFormatter(_logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+
+    def emit(self, record: _logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self._notifier.error(msg, context=record.name)
+        except Exception:
+            self.handleError(record)
+
+
+def install_notify_log_handler(
+    notifier: Optional[Notifier] = None,
+    level: int = _logging.ERROR,
+    fmt: str = "[%(levelname)s] %(name)s: %(message)s",
+) -> None:
+    """Install NotifyLogHandler on the root logger.  Idempotent."""
+    notifier = notifier or Notifier()
+    root = _logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, NotifyLogHandler):
+            return
+    handler = NotifyLogHandler(notifier, level=level)
+    handler.setFormatter(_logging.Formatter(fmt))
+    root.addHandler(handler)

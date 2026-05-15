@@ -15,16 +15,16 @@ from utils.notify import Notifier
 
 class TestNotifierInit:
     def test_dry_run_mode(self):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.dry_run is True
         assert nf.available is True
 
     def test_webhook_mode(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
         assert nf._mode == "webhook"
 
     def test_app_mode(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
         assert nf._mode == "app"
 
     def test_none_mode_when_no_config(self, monkeypatch):
@@ -32,13 +32,13 @@ class TestNotifierInit:
         monkeypatch.delenv("FEISHU_APP_ID", raising=False)
         monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
         monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
-        nf = Notifier()
+        nf = Notifier(async_mode=False)
         assert nf._mode == "none"
         assert nf.available is False
 
     def test_env_webhook(self, monkeypatch):
         monkeypatch.setenv("FEISHU_WEBHOOK", "https://hooks.example.com/env")
-        nf = Notifier()
+        nf = Notifier(async_mode=False)
         assert nf._mode == "webhook"
         assert nf.url == "https://hooks.example.com/env"
 
@@ -46,7 +46,7 @@ class TestNotifierInit:
         monkeypatch.setenv("FEISHU_APP_ID", "cli_env")
         monkeypatch.setenv("FEISHU_APP_SECRET", "sec_env")
         monkeypatch.setenv("FEISHU_CHAT_ID", "oc_env")
-        nf = Notifier()
+        nf = Notifier(async_mode=False)
         assert nf._mode == "app"
 
 
@@ -57,18 +57,18 @@ class TestNotifierInit:
 
 class TestNotifierDryRun:
     def test_text(self, capsys):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.text("test message") is True
 
     def test_signal_card(self, capsys):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         signals = [
             {"symbol": "AAPL", "strategy": "weekly_macd", "signal": 1, "price": 195.0},
         ]
         assert nf.signal_card(signals, "2025-01-15") is True
 
     def test_signal_card_empty(self, capsys):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         # Empty signals → sends plain text
         assert nf.signal_card([], "2025-01-15") is True
 
@@ -79,19 +79,19 @@ class TestNotifierDryRun:
             quantity=10, order_id="abc123", status=OrderStatus.FILLED,
             avg_fill_price=195.0,
         )
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.trade_card(order) is True
 
     def test_error(self):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.error("something broke", "context") is True
 
     def test_daily_summary(self):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.daily_summary(3, 1, 10, 100000, 5) is True
 
     def test_daily_summary_no_account(self):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf.daily_summary(2, 0, 5) is True
 
 
@@ -102,7 +102,7 @@ class TestNotifierDryRun:
 
 class TestNotifierWebhook:
     def test_send_success(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -116,7 +116,7 @@ class TestNotifierWebhook:
             assert payload["msg_type"] == "text"
 
     def test_send_webhook_error_code(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -127,7 +127,7 @@ class TestNotifierWebhook:
             assert result is False
 
     def test_send_webhook_http_error(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 500
@@ -138,14 +138,14 @@ class TestNotifierWebhook:
             assert result is False
 
     def test_send_webhook_exception(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
 
         with patch("utils.notify.requests.post", side_effect=Exception("timeout")):
             result = nf.text("hello")
             assert result is False
 
     def test_send_card_via_webhook(self):
-        nf = Notifier(url="https://hooks.example.com/test")
+        nf = Notifier(async_mode=False, url="https://hooks.example.com/test")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -169,7 +169,7 @@ class TestNotifierWebhook:
 
 class TestNotifierApp:
     def test_get_token_success(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -185,7 +185,7 @@ class TestNotifierApp:
             assert nf._token == "tok-abc123"
 
     def test_get_token_reuses_cached(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
         nf._token = "cached-tok"
         nf._token_expires = 9999999999  # far future
 
@@ -196,7 +196,7 @@ class TestNotifierApp:
             mock_post.assert_not_called()
 
     def test_get_token_error(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -207,7 +207,7 @@ class TestNotifierApp:
             assert token is None
 
     def test_send_app_no_chat_id(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret")
         nf._token = "tok"
         nf._token_expires = 9999999999
         # No chat_id set
@@ -215,7 +215,7 @@ class TestNotifierApp:
         assert result is False
 
     def test_send_app_success(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
         nf._token = "tok"
         nf._token_expires = 9999999999
 
@@ -230,7 +230,7 @@ class TestNotifierApp:
             assert call_args["receive_id"] == "oc_xxx"
 
     def test_send_app_api_error(self):
-        nf = Notifier(app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
+        nf = Notifier(async_mode=False, app_id="cli_xxx", app_secret="secret", chat_id="oc_xxx")
         nf._token = "tok"
         nf._token_expires = 9999999999
 
@@ -247,7 +247,7 @@ class TestNotifierApp:
         monkeypatch.delenv("FEISHU_APP_ID", raising=False)
         monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
         monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
-        nf = Notifier()
+        nf = Notifier(async_mode=False)
         assert nf._send({"msg_type": "text", "content": {"text": "hi"}}) is False
 
 
@@ -276,7 +276,7 @@ class TestCardBuilders:
         assert "value" in field["text"]["content"]
 
     def test_strat_label(self):
-        nf = Notifier(dry_run=True)
+        nf = Notifier(dry_run=True, async_mode=False)
         assert nf._strat_label("enhanced_macd") == "增强MACD"
         assert nf._strat_label("trend_follower") == "趋势跟踪"
         assert nf._strat_label("weekly_macd") == "周线MACD"
