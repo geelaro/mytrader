@@ -17,6 +17,8 @@ logs/
 # Charts (generated)
 charts/
 ppt/
+reports/
+output/
 
 # DB
 *.db
