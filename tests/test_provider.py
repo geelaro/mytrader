@@ -51,7 +51,6 @@ class TestClassifySymbol:
 class TestSourcePriority:
     def test_us_priority(self):
         assert SOURCE_PRIORITY["us"][0] == "tencent"
-        assert SOURCE_PRIORITY["us"][-1] == "yfinance"
 
     def test_cn_priority(self):
         assert SOURCE_PRIORITY["cn"][0] == "sina"
@@ -160,7 +159,7 @@ class TestSinaNormalise:
 class _MockSource(DataSource):
     """A controlled data source for testing provider routing."""
 
-    def __init__(self, name="yfinance", supports_all=True, data=None):
+    def __init__(self, name="tencent", supports_all=True, data=None):
         self._name = name
         self._supports_all = supports_all
         self._data = data or self._make_data()

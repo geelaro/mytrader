@@ -15,9 +15,9 @@ OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 # Sources are tried in this order for each market
 SOURCE_PRIORITY = {
-    "us": ["tencent", "yfinance"],
+    "us": ["tencent"],
     "cn": ["sina", "tencent", "akshare"],
-    "default": ["yfinance"],
+    "default": ["tencent"],
 }
 
 
