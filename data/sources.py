@@ -99,7 +99,11 @@ class TencentSource(DataSource):
         return "tencent"
 
     def supports(self, symbol: str) -> bool:
-        return symbol.upper() in _TENCENT_CODE_MAP
+        sym = symbol.upper()
+        if sym in _TENCENT_CODE_MAP:
+            return True
+        # Fallback: any US-style ticker (1-5 letters) maps to us{sym}.OQ
+        return sym.isalpha() and 1 <= len(sym) <= 5
 
     def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         sym = symbol.upper()

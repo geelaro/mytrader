@@ -84,6 +84,14 @@ class PortfolioBacktest:
         # --- execution constraints ---
         lot_size: int = 0,
         max_participation_rate: float = 0.0,
+        # --- sizing ---
+        sizing_mode: str = "fixed_capital",
+        risk_per_trade: float = 0.005,
+        risk_atr_mult: float = 2.0,
+        # --- enhanced risk ---
+        max_sector_weight: float = 0.0,
+        sector_map: Optional[dict] = None,
+        cooldown_after_stop_days: int = 0,
     ):
         self.legs = legs
         self.initial_capital = initial_capital
@@ -96,6 +104,28 @@ class PortfolioBacktest:
         self.max_gross_exposure = max_gross_exposure
         self.lot_size = lot_size
         self.max_participation_rate = max_participation_rate
+        self.sizing_mode = sizing_mode
+        self.risk_per_trade = risk_per_trade
+        self.risk_atr_mult = risk_atr_mult
+        self.max_sector_weight = max_sector_weight
+        self.sector_map = sector_map or {}
+        self.cooldown_after_stop_days = cooldown_after_stop_days
+        self._rejections: list = []
+        self._stop_dates: dict[str, Optional[pd.Timestamp]] = {}
+
+    def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
+        """Return position size such that stop_distance loss = risk_per_trade % of capital."""
+        if price <= 0:
+            return 0
+        if atr is None or np.isnan(atr) or atr <= 0:
+            atr = price * 0.02
+        risk_dollar = capital * self.risk_per_trade
+        stop_distance = atr * self.risk_atr_mult
+        if stop_distance <= 0:
+            return 0
+        shares = int(risk_dollar / stop_distance)
+        max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
+        return max(0, min(shares, max_shares))
 
     def run(
         self, start: str = "2018-01-01", end: Optional[str] = None
@@ -191,6 +221,10 @@ class PortfolioBacktest:
                 elif st["position"] == 0 and st["strategy"].entry_signal(df_sig, idx_pos):
                     active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
                     if active_positions >= self.max_positions:
+                        self._rejections.append({
+                            "date": date_idx, "symbol": st["leg"].symbol,
+                            "reason": "仓位上限", "detail": f"活跃仓位{active_positions}≥{self.max_positions}",
+                        })
                         continue
 
                     # Compute current equity for dynamic allocation & risk checks
@@ -198,13 +232,52 @@ class PortfolioBacktest:
                         s["position"] * s.get("last_price", 0) for s in leg_state.values()
                     )
 
+                    # --- risk: cooldown after stop ---
+                    sym = st["leg"].symbol
+                    if self.cooldown_after_stop_days > 0 and sym in self._stop_dates:
+                        last_stop = self._stop_dates[sym]
+                        if last_stop is not None:
+                            days_since = (date_idx - last_stop).days
+                            if days_since < self.cooldown_after_stop_days:
+                                self._rejections.append({
+                                    "date": date_idx, "symbol": sym,
+                                    "reason": "冷却期", "detail": f"距止损{days_since}天 (<{self.cooldown_after_stop_days})",
+                                })
+                                continue
+
+                    # --- risk: sector weight ---
+                    if self.max_sector_weight > 0:
+                        sector = self.sector_map.get(sym, "Unknown")
+                        sector_exposure = sum(
+                            s["position"] * s.get("last_price", 0)
+                            for j, s in leg_state.items()
+                            if self.sector_map.get(s["leg"].symbol, "Unknown") == sector
+                        )
+                        alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
+                        entry_cost = price * (1 + self.slippage_pct) * (1 + self.commission_rate)
+                        new_exposure = (sector_exposure + (alloc if alloc > 0 else 0)) / max(current_equity, 1)
+                        if new_exposure > self.max_sector_weight:
+                            self._rejections.append({
+                                "date": date_idx, "symbol": sym,
+                                "reason": "行业权重",
+                                "detail": f"{sector}敞口{new_exposure*100:.0f}% > {self.max_sector_weight*100:.0f}%",
+                            })
+                            continue
+
                     # Portfolio risk: max_daily_new_positions
                     if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
+                        self._rejections.append({
+                            "date": date_idx, "symbol": sym,
+                            "reason": "日开仓上限", "detail": f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})",
+                        })
                         continue
 
                     alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
                     if alloc > 0:
-                        qty = st["strategy"].position_size(alloc, price, atr)
+                        if self.sizing_mode == "risk_budget":
+                            qty = self._calc_risk_budget_qty(alloc, price, atr)
+                        else:
+                            qty = st["strategy"].position_size(alloc, price, atr)
 
                         # Execution constraints
                         qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
@@ -217,6 +290,11 @@ class PortfolioBacktest:
                         # Portfolio risk: max_symbol_weight
                         if self.max_symbol_weight > 0 and current_equity > 0:
                             if cost / current_equity > self.max_symbol_weight:
+                                self._rejections.append({
+                                    "date": date_idx, "symbol": sym,
+                                    "reason": "标的上限",
+                                    "detail": f"{sym}占比{cost/current_equity*100:.0f}% > {self.max_symbol_weight*100:.0f}%",
+                                })
                                 continue
 
                         # Portfolio risk: max_gross_exposure
@@ -225,6 +303,11 @@ class PortfolioBacktest:
                                 s["position"] * s.get("last_price", 0) for s in leg_state.values()
                             )
                             if (existing_exposure + cost) / current_equity > self.max_gross_exposure:
+                                self._rejections.append({
+                                    "date": date_idx, "symbol": sym,
+                                    "reason": "总敞口上限",
+                                    "detail": f"总敞口{(existing_exposure+cost)/current_equity*100:.0f}% > {self.max_gross_exposure*100:.0f}%",
+                                })
                                 continue
 
                         if cost <= cash and qty > 0:
@@ -264,6 +347,7 @@ class PortfolioBacktest:
             final_equity=final_equity,
             legs=self.legs,
             trades=trades,
+            rejections=self._rejections,
         )
 
     def _close_trade(
@@ -299,6 +383,9 @@ class PortfolioBacktest:
         st["capital_allocated"] = 0
         st["entry_price"] = 0
         st["highest"] = 0
+        # Track stop-loss exit for cooldown
+        if reason.startswith("止损"):
+            self._stop_dates[st["leg"].symbol] = date_idx
         return cash
 
     def _apply_execution_constraints(
@@ -342,6 +429,7 @@ class PortfolioResult:
     final_equity: float
     legs: List[Leg]
     trades: List[PortfolioTrade] = field(default_factory=list)
+    rejections: list = field(default_factory=list)
 
     @property
     def equity_curve(self) -> pd.Series:
@@ -450,6 +538,24 @@ class PortfolioResult:
                 total_pnl = sum(t.pnl or 0 for t in sym_trades)
                 avg_pnl = total_pnl / n
                 print(f"  {sym:<8s} {n:>4d} {wr:>5.0f}% ${total_pnl:>9,.0f} ${avg_pnl:>9,.0f}")
+            print()
+
+        # Rejection log
+        if self.rejections:
+            print(f"  --- 风控拦截 ({len(self.rejections)} 次) ---")
+            # Group by reason
+            by_reason: dict = {}
+            for r in self.rejections:
+                by_reason.setdefault(r["reason"], []).append(r)
+            for reason, items in sorted(by_reason.items()):
+                syms = sorted(set(r.get("symbol", "") for r in items))
+                print(f"  {reason}: {len(items)}次  {', '.join(syms)}")
+            # Show last 5
+            print(f"\n  最近拦截:")
+            for r in self.rejections[-5:]:
+                d = str(r["date"])[:10]
+                sym = r.get("symbol", "")
+                print(f"    {d} {sym:<6s} {r['reason']}: {r['detail']}")
             print()
 
     def plot(self, save_path: str = "charts/portfolio_result.png"):

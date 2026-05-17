@@ -51,6 +51,11 @@ class BacktestResult:
     buy_hold_return_pct: float
     initial_capital: float
     final_equity: float
+    rejections: list = None
+
+    def __post_init__(self):
+        if self.rejections is None:
+            self.rejections = []
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +65,16 @@ class BacktestResult:
 class BacktestEngine:
     """Simulated trading environment with slippage and commission."""
 
-    def __init__(self, initial_capital=10000, commission_rate=0.0003, slippage_pct=0.0001):
+    def __init__(self, initial_capital=10000, commission_rate=0.0003, slippage_pct=0.0001,
+                 sizing_mode="fixed_capital", risk_per_trade=0.005, risk_atr_mult=2.0,
+                 cooldown_after_stop_days: int = 0):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.slippage_pct = slippage_pct
+        self.sizing_mode = sizing_mode
+        self.risk_per_trade = risk_per_trade
+        self.risk_atr_mult = risk_atr_mult
+        self.cooldown_after_stop_days = cooldown_after_stop_days
         self.reset()
 
     def reset(self):
@@ -73,10 +84,27 @@ class BacktestEngine:
         self.equity_history: List[Tuple[pd.Timestamp, float]] = []
         self.current_entry: Optional[Dict] = None
         self._current_price = 0.0
+        self._last_stop_date: Optional[pd.Timestamp] = None
+        self.rejections: List[dict] = []
 
     @property
     def equity(self):
         return self.cash + self.position * self._current_price
+
+    def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
+        """Return position size such that stop_distance loss = risk_per_trade % of capital."""
+        if price <= 0:
+            return 0
+        if atr is None or np.isnan(atr) or atr <= 0:
+            atr = price * 0.02  # fallback: 2 % of price
+        risk_dollar = capital * self.risk_per_trade
+        stop_distance = atr * self.risk_atr_mult
+        if stop_distance <= 0:
+            return 0
+        shares = int(risk_dollar / stop_distance)
+        # Hard cap: never risk more than available cash
+        max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
+        return max(0, min(shares, max_shares))
 
     def buy(self, date, price, quantity):
         if quantity <= 0 or price <= 0:
@@ -119,6 +147,8 @@ class BacktestEngine:
                 self.current_entry = None
             else:
                 self.current_entry = {**e, 'quantity': e['quantity'] - quantity}
+            if trade and trade.exit_reason.startswith("止损"):
+                self._last_stop_date = date
         elif self.position >= 0:
             # Fallback: current_entry lost (edge case), reconstruct from sell price
             trade = Trade(
@@ -130,6 +160,8 @@ class BacktestEngine:
             self.trades.append(trade)
             if self.position == 0:
                 self.current_entry = None
+            if trade and trade.exit_reason.startswith("止损"):
+                self._last_stop_date = date
         return trade
 
     def update(self, date, price):
@@ -177,7 +209,8 @@ class BacktestEngine:
             winning_trades=len([t for t in trades if t.pnl > 0]),
             losing_trades=len([t for t in trades if t.pnl <= 0]),
             buy_hold_return_pct=bh_ret,
-            initial_capital=self.initial_capital, final_equity=final)
+            initial_capital=self.initial_capital, final_equity=final,
+            rejections=self.rejections)
 
     def run(self, strategy, df, close_out: bool = True) -> pd.Series:
         """Execute backtest loop over *df* using *strategy* signals.
@@ -210,10 +243,25 @@ class BacktestEngine:
                     continue
 
             elif strategy.entry_signal(df, i) and self.position == 0:
-                qty = strategy.position_size(self.cash, price, atr)
-                if qty > 0:
-                    self.buy(date_idx, price, qty)
-                    highest = price
+                entry_allowed = True
+                # --- risk: cooldown after stop ---
+                if self.cooldown_after_stop_days > 0 and self._last_stop_date is not None:
+                    days_since_stop = (date_idx - self._last_stop_date).days
+                    if days_since_stop < self.cooldown_after_stop_days:
+                        self.rejections.append({
+                            "date": date_idx, "reason": "冷却期",
+                            "detail": f"距止损仅{days_since_stop}天 (<{self.cooldown_after_stop_days})",
+                        })
+                        entry_allowed = False
+                # --- end risk ---
+                if entry_allowed:
+                    if self.sizing_mode == "risk_budget":
+                        qty = self._calc_risk_budget_qty(self.cash, price, atr)
+                    else:
+                        qty = strategy.position_size(self.cash, price, atr)
+                    if qty > 0:
+                        self.buy(date_idx, price, qty)
+                        highest = price
 
             self.update(date_idx, price)
 
@@ -266,12 +314,22 @@ def _synthetic_ohlcv(symbol, start, end, seed=42):
 
 
 def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
-                 initial_capital=10000, strategy_cls=None, **strategy_params):
+                 initial_capital=10000, strategy_cls=None,
+                 commission_rate=0.0003, slippage_pct=0.0001,
+                 sizing_mode="fixed_capital", risk_per_trade=0.005,
+                 risk_atr_mult=2.0, cooldown_after_stop_days: int = 0,
+                 **strategy_params):
     """Run a full backtest and return results + dataframe.
 
     Args:
         strategy_cls: Strategy class (default: EnhancedMACDStrategy).
                       Use TrendFollower for Chandelier exit strategy.
+        commission_rate: Trading commission rate (default 0.0003 = 3bp).
+        slippage_pct: Slippage percentage (default 0.0001 = 1bp).
+        sizing_mode: "fixed_capital" | "risk_budget".
+        risk_per_trade: Fraction of capital at risk per trade (risk_budget mode).
+        risk_atr_mult: Stop distance = ATR × this (risk_budget mode).
+        cooldown_after_stop_days: Block re-entry for N days after a stop-loss exit.
     """
     if strategy_cls is None:
         strategy_cls = EnhancedMACDStrategy
@@ -291,7 +349,13 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
 
     strategy = strategy_cls(**strategy_params)
     df = strategy.calculate_indicators(df)
-    engine = BacktestEngine(initial_capital=initial_capital)
+    engine = BacktestEngine(initial_capital=initial_capital,
+                            commission_rate=commission_rate,
+                            slippage_pct=slippage_pct,
+                            sizing_mode=sizing_mode,
+                            risk_per_trade=risk_per_trade,
+                            risk_atr_mult=risk_atr_mult,
+                            cooldown_after_stop_days=cooldown_after_stop_days)
     benchmark_rets = engine.run(strategy, df)
     result = engine.get_result(benchmark_rets)
     return result, df
@@ -317,6 +381,13 @@ def print_result(result):
 
     alpha = result.total_return_pct - result.buy_hold_return_pct
     print(f"\n  超额收益:      {alpha:+.2f}%")
+
+    if result.rejections:
+        print(f"\n  风控拦截:      {len(result.rejections)} 次")
+        for r in result.rejections[-5:]:
+            d = str(r["date"])[:10]
+            print(f"    {d}  {r['reason']}: {r['detail']}")
+
     print("=" * 60)
 
     if result.trades:

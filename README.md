@@ -12,13 +12,15 @@
 | 策略库 | 10 个策略（趋势/均值回归/动量突破/波动率），BaseStrategy 统一接口 |
 | 策略选择层 | `active`（实盘执行）+ `monitor`（观察对比），每日扫描全部 |
 | 回测引擎 | 含滑点佣金，退出逻辑收归策略，支持单标 + 组合回测 |
+| 仓位管理 | `fixed_capital`（策略自定） / `risk_budget`（ATR 风险预算）双模式 |
 | 参数优化 | 网格搜索 + Walk-forward 样本外验证（资金连续传递）+ 热力图 |
+| 分析工具 | 成本敏感性网格扫描 + 参数鲁棒性邻域扰动 + 实盘可行性评级 |
 | 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 |
 | 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
-| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、滑点检查、日内亏损上限 |
-| 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/日开仓上限） |
+| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查、日内亏损上限 |
+| 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/行业/日开仓上限） |
 | Dashboard | Streamlit Web UI — Tab 分页（单标/组合），回测图表+买卖点，交易明细筛选与收益归因 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（353 测试） |
+| CI | GitHub Actions — push/PR 自动跑 pytest（399 测试） |
 
 ## 策略
 
@@ -46,8 +48,12 @@ mytrader/
   ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult)
   ├─ portfolio.py    #   组合回测 (PortfolioBacktest/PortfolioTrade)
   └─ optimize.py     #   参数优化 (grid_search/walk_forward)
-  utils/             # 工具 (日志/飞书通知/环境/配置)
-  tests/             # 353 个测试
+  analysis/          # 分析工具
+  ├─ cost_sensitivity.py    #   成本敏感性网格扫描
+  └─ param_robustness.py    #   参数鲁棒性邻域扰动
+  utils/             # 工具 (日志/飞书通知/环境/配置/行业映射)
+  tests/             # 399 个测试
+  reports/           # 自动生成的 CSV + PNG 报告
   daily.py           # 每日回溯扫描 (入口脚本)
   live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
   dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
@@ -89,6 +95,111 @@ pipenv run python live_trader.py --notify
 pipenv run python -m pytest tests/ -v
 ```
 
+## 仓位管理
+
+两种仓位模式，通过 `sizing_mode` 切换：
+
+### fixed_capital（默认）
+
+策略自行决定仓位大小（通常为可用资金的 95%）：
+
+```python
+from engine.trader import run_backtest
+from strategy import WeeklyMACD_KDJ
+
+result, _ = run_backtest("AAPL", "2020-01-01", strategy_cls=WeeklyMACD_KDJ)
+```
+
+### risk_budget（风险预算）
+
+引擎统一按 `风险金额 / 止损距离` 计算仓位：
+
+```
+qty = capital × risk_per_trade / (ATR × risk_atr_mult)
+```
+
+```python
+result, _ = run_backtest(
+    "TSLA", "2020-01-01", strategy_cls=WeeklyMACD_KDJ,
+    sizing_mode="risk_budget",
+    risk_per_trade=0.02,   # 单笔风险 2%
+    risk_atr_mult=2.0,     # 止损 = 2×ATR
+)
+```
+
+| 模式 | 收益特征 | 回撤特征 | 适用场景 |
+|------|:---:|:---:|------|
+| fixed_capital | 高（满仓复利） | 高（TSLA -56%） | 回测研究，了解策略上限 |
+| risk_budget 2% | 中 | 可控（<10%） | 实盘稳健执行 |
+
+## 风控增强
+
+组合回测支持完整的风控层级：
+
+```python
+from engine.portfolio import PortfolioBacktest, Leg
+from utils.sectors import DEFAULT_SECTORS
+
+bt = PortfolioBacktest(
+    legs=[Leg("AAPL", "weekly_macd_kdj"), Leg("NVDA", "weekly_macd_kdj"),
+          Leg("TSLA", "weekly_macd_kdj"), Leg("SPY", "turtle_trading")],
+    initial_capital=100000,
+    allocation="dynamic_equal",
+    # --- 仓位 ---
+    sizing_mode="risk_budget",
+    risk_per_trade=0.02,
+    # --- 组合风控 ---
+    max_symbol_weight=0.25,           # 单标的上限 25%
+    max_sector_weight=0.30,           # 单行业上限 30%
+    max_gross_exposure=0.80,          # 总敞口 ≤ 80%
+    max_daily_new_positions=3,        # 单日最大新开仓
+    cooldown_after_stop_days=10,      # 止损后 10 天内禁止重入
+    # --- 成交约束 ---
+    lot_size=0,                       # 整手取整，0=不限制
+    max_participation_rate=0.01,      # 单笔 ≤ 1% 成交量
+    sector_map=DEFAULT_SECTORS,       # 行业分类映射
+)
+result = bt.run(start="2020-01-01")
+result.summary()
+```
+
+被风控拦截的信号会记录到 `rejections` 列表并在 `summary()` 中展示：
+
+```
+--- 风控拦截 (12 次) ---
+  行业权重: 9次  AAPL, GOOGL, NVDA
+  冷却期: 1次  AAPL
+  标的上限: 2次  AAPL
+
+  最近拦截:
+    2024-04-12 AAPL   行业权重: Technology敞口32% > 30%
+    2025-09-19 AAPL   冷却期: 距止损9天 (<10)
+```
+
+## 分析工具
+
+### 成本敏感性
+
+扫描佣金 × 滑点网格，评估策略在不同交易成本下的表现：
+
+```bash
+pipenv run python analysis/cost_sensitivity.py -s weekly_macd_kdj --symbol AAPL
+pipenv run python analysis/cost_sensitivity.py --sizing-mode risk_budget --risk-per-trade 0.01
+```
+
+输出：`reports/cost_sensitivity_<strategy>_<symbol>.csv` + `.png`（双面板热力图：收益率 + 夏普），附带 A+ ~ D- 实盘可行性评级。
+
+### 参数鲁棒性
+
+IS 寻优 → 邻域 ±10%/±20% 扰动 → OOS 分布统计 → ROBUST/STABLE/SENSITIVE/OVERFIT 评级：
+
+```bash
+pipenv run python analysis/param_robustness.py -s weekly_macd_kdj --symbol AAPL
+pipenv run python analysis/param_robustness.py -s enhanced_macd --sizing-mode risk_budget
+```
+
+输出：`reports/param_robustness_<strategy>_<symbol>.csv` + `.png`（箱线图：各参数 OOS 收益分布 + 敏感度排序）。
+
 ## 飞书通知
 
 支持两种模式：
@@ -120,31 +231,6 @@ log:
   level: DEBUG
 trading:
   daemon_interval_minutes: 10
-```
-
-## 组合回测
-
-多标的共享资金池，支持三种分配模式、组合级风控、成交约束、交易明细与收益归因。
-
-```bash
-pipenv run python engine/portfolio.py
-```
-
-```python
-from engine.portfolio import PortfolioBacktest, Leg
-
-bt = PortfolioBacktest(
-    legs=[Leg("AAPL", "weekly_macd_kdj"), Leg("SPY", "turtle_trading")],
-    initial_capital=100000,
-    allocation="dynamic_equal",      # equal / dynamic_equal / fraction
-    max_symbol_weight=0.25,           # 单标的上限 25%
-    max_daily_new_positions=3,        # 单日最大新开仓
-    max_gross_exposure=1.5,           # 总敞口 ≤ 150%
-    lot_size=100,                     # 整手取整（可选）
-    max_participation_rate=0.01,      # 单笔 ≤ 1% 成交量（可选）
-)
-result = bt.run(start="2020-01-01")
-result.summary()
 ```
 
 ## 添加新标的

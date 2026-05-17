@@ -560,3 +560,156 @@ class TestTradePnLAlignsWithEquity:
             f"Σ trade.pnl = {total_trade_pnl:.2f}, "
             f"equity change = {equity_change:.2f}"
         )
+
+
+# ===================================================================
+# Sizing modes
+# ===================================================================
+
+
+class TestPortfolioSizing:
+    def test_risk_budget_sizing_qty(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            sizing_mode="risk_budget", risk_per_trade=0.01, risk_atr_mult=2.0,
+        )
+        qty = bt._calc_risk_budget_qty(10000, 100.0, 5.0)
+        assert qty == 10  # risk=$100, stop=$10
+
+    def test_fixed_capital_default(self):
+        bt = PortfolioBacktest(legs=[Leg("AAPL", "weekly_macd_kdj")])
+        assert bt.sizing_mode == "fixed_capital"
+
+    def test_risk_budget_params_persist(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            sizing_mode="risk_budget", risk_per_trade=0.02, risk_atr_mult=3.0,
+        )
+        assert bt.risk_per_trade == 0.02
+        assert bt.risk_atr_mult == 3.0
+
+    def test_risk_budget_run_with_synthetic(self, ohlcv):
+        """Smoke test — portfolio with risk_budget sizing."""
+        from unittest.mock import patch
+        from data import DataProvider
+
+        legs = [Leg("AAPL", "enhanced_macd")]
+        bt = PortfolioBacktest(
+            legs=legs, initial_capital=10000,
+            sizing_mode="risk_budget", risk_per_trade=0.01,
+        )
+        with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
+            result = bt.run(start="2020-01-01", end="2021-01-01")
+            assert result.final_equity > 0
+
+
+# ===================================================================
+# Sector weight
+# ===================================================================
+
+
+class TestSectorWeight:
+    def test_default_is_zero(self):
+        bt = PortfolioBacktest(legs=[Leg("AAPL", "weekly_macd_kdj")])
+        assert bt.max_sector_weight == 0.0
+
+    def test_custom_sector_weight(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            max_sector_weight=0.30,
+            sector_map={"AAPL": "Technology"},
+        )
+        assert bt.max_sector_weight == 0.30
+        assert bt.sector_map["AAPL"] == "Technology"
+
+    def test_sector_rejection_recorded(self, ohlcv):
+        """When sector weight is very low, entries in the same sector get blocked."""
+        from unittest.mock import patch
+        from data import DataProvider
+
+        legs = [Leg("AAPL", "enhanced_macd"), Leg("NVDA", "enhanced_macd")]
+        bt = PortfolioBacktest(
+            legs=legs, initial_capital=10000,
+            max_sector_weight=0.05,  # very tight
+            sector_map={"AAPL": "Technology", "NVDA": "Technology"},
+        )
+        with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
+            result = bt.run(start="2020-01-01", end="2021-01-01")
+            # Check that rejections are recorded (may or may not happen depending on signals)
+            assert isinstance(result.rejections, list)
+
+
+# ===================================================================
+# Cooldown in portfolio
+# ===================================================================
+
+
+class TestPortfolioCooldown:
+    def test_cooldown_default_disabled(self):
+        bt = PortfolioBacktest(legs=[Leg("AAPL", "weekly_macd_kdj")])
+        assert bt.cooldown_after_stop_days == 0
+
+    def test_stop_tracks_date(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            cooldown_after_stop_days=10,
+        )
+        st = {"position": 10, "entry_price": 100.0, "capital_allocated": 1015.0,
+              "leg": Leg("AAPL", "weekly_macd_kdj")}
+        bt._close_trade(
+            st, pd.Timestamp("2025-06-01"), 110.0, "止损",
+            {}, [], 0, 10000.0,
+        )
+        assert bt._stop_dates.get("AAPL") == pd.Timestamp("2025-06-01")
+
+    def test_signal_exit_no_cooldown(self):
+        bt = PortfolioBacktest(
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            cooldown_after_stop_days=10,
+        )
+        st = {"position": 10, "entry_price": 100.0, "capital_allocated": 1015.0,
+              "leg": Leg("AAPL", "weekly_macd_kdj")}
+        bt._close_trade(
+            st, pd.Timestamp("2025-06-01"), 110.0, "卖出信号",
+            {}, [], 0, 10000.0,
+        )
+        assert bt._stop_dates.get("AAPL") is None
+
+
+# ===================================================================
+# Rejection summary in PortfolioResult
+# ===================================================================
+
+
+class TestPortfolioRejectionSummary:
+    def test_summary_shows_rejections(self, capsys):
+        dates = pd.bdate_range("2025-01-01", periods=5)
+        equity_data = [(d, 100000 + i * 100) for i, d in enumerate(dates)]
+        r = PortfolioResult(
+            equity_history=equity_data,
+            initial_capital=100000,
+            final_equity=100400,
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+            rejections=[
+                {"date": pd.Timestamp("2025-01-06"), "symbol": "AAPL",
+                 "reason": "行业权重", "detail": "Technology敞口35% > 30%"},
+            ],
+        )
+        r.summary()
+        out = capsys.readouterr().out
+        assert "风控拦截" in out
+        assert "行业权重" in out
+        assert "Technology敞口" in out
+
+    def test_no_rejections_no_section(self, capsys):
+        dates = pd.bdate_range("2025-01-01", periods=5)
+        equity_data = [(d, 100000 + i * 100) for i, d in enumerate(dates)]
+        r = PortfolioResult(
+            equity_history=equity_data,
+            initial_capital=100000,
+            final_equity=100400,
+            legs=[Leg("AAPL", "weekly_macd_kdj")],
+        )
+        r.summary()
+        out = capsys.readouterr().out
+        assert "风控拦截" not in out

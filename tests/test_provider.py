@@ -106,6 +106,19 @@ class TestSourceSupports:
         assert src.supports("QQQ")
         assert not src.supports("510300")
 
+    def test_tencent_supports_non_whitelist_us(self):
+        """AMD was not in the whitelist but should be supported via fallback pattern."""
+        src = TencentSource()
+        assert src.supports("AMD")
+        assert src.supports("MU")
+        assert src.supports("ORCL")
+
+    def test_tencent_rejects_non_alpha(self):
+        src = TencentSource()
+        assert not src.supports("510300")
+        assert not src.supports("TQQQ3L")  # > 5 chars
+        assert src.supports("AMD")  # 3-char US ticker
+
     def test_sina_knows_cn(self):
         src = SinaSource()
         assert src.supports("510300")

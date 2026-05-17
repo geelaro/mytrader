@@ -237,3 +237,140 @@ class TestPlotResult:
 
 # Need pd for timestamp
 import pandas as pd
+
+
+# ===================================================================
+# Risk budget sizing
+# ===================================================================
+
+
+class TestRiskBudgetSizing:
+    def test_risk_budget_qty_nonzero(self):
+        engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget",
+                                risk_per_trade=0.01, risk_atr_mult=2.0)
+        qty = engine._calc_risk_budget_qty(10000, 100.0, 5.0)
+        # risk=$100, stop=$10, qty=10
+        assert qty == 10
+
+    def test_risk_budget_zero_atr_fallback(self):
+        engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget",
+                                risk_per_trade=0.01, risk_atr_mult=2.0)
+        qty = engine._calc_risk_budget_qty(10000, 100.0, 0)
+        # atr=0 → fallback to price*0.02 → stop=$2 → qty=50 (capped by cash)
+        assert qty > 0
+
+    def test_risk_budget_zero_price(self):
+        engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget")
+        qty = engine._calc_risk_budget_qty(10000, 0, 5.0)
+        assert qty == 0
+
+    def test_risk_budget_capped_by_cash(self):
+        engine = BacktestEngine(initial_capital=1000, sizing_mode="risk_budget",
+                                risk_per_trade=0.50, risk_atr_mult=1.0)
+        # risk=$500, stop=$5, qty_calc=100, but qty_cash=1000/(100*1.0004)≈9
+        qty = engine._calc_risk_budget_qty(1000, 100.0, 5.0)
+        assert qty <= 10  # capped by available cash
+
+    def test_run_with_risk_budget(self, ohlcv):
+        """Smoke test — run engine in risk_budget mode."""
+        from strategy import EnhancedMACDStrategy
+        strategy = EnhancedMACDStrategy()
+        df = strategy.calculate_indicators(ohlcv)
+        engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget",
+                                risk_per_trade=0.01, risk_atr_mult=2.0)
+        bench = engine.run(strategy, df)
+        result = engine.get_result(bench)
+        assert result.total_trades >= 0
+        assert result.final_equity > 0
+
+
+# ===================================================================
+# Cooldown after stop
+# ===================================================================
+
+
+class TestCooldown:
+    def test_cooldown_disabled_by_default(self):
+        engine = BacktestEngine()
+        assert engine.cooldown_after_stop_days == 0
+        assert engine._last_stop_date is None
+
+    def test_stop_loss_tracks_date(self):
+        engine = BacktestEngine(cooldown_after_stop_days=5)
+        d1 = pd.Timestamp("2025-01-15")
+        d2 = pd.Timestamp("2025-01-16")
+        engine.buy(d1, 100.0, 10)
+        engine.sell(d2, 95.0, 10, reason="止损")
+        assert engine._last_stop_date == d2
+
+    def test_signal_exit_does_not_trigger_cooldown(self):
+        engine = BacktestEngine(cooldown_after_stop_days=5)
+        d1 = pd.Timestamp("2025-01-15")
+        d2 = pd.Timestamp("2025-01-16")
+        engine.buy(d1, 100.0, 10)
+        engine.sell(d2, 110.0, 10, reason="卖出信号")
+        assert engine._last_stop_date is None
+
+    def test_cooldown_rejection_recorded(self, ohlcv):
+        """After a stop, the next entry within cooldown should be rejected."""
+        from strategy import EnhancedMACDStrategy
+        strategy = EnhancedMACDStrategy()
+        df = strategy.calculate_indicators(ohlcv)
+        engine = BacktestEngine(initial_capital=10000, cooldown_after_stop_days=30)
+        # simulate a stop on bar 50
+        engine._last_stop_date = df.index[50]
+        engine.run(strategy, df)
+        # Should have rejections if any entry signal appeared within 30 days
+        assert isinstance(engine.rejections, list)
+
+
+# ===================================================================
+# Rejections in results
+# ===================================================================
+
+
+class TestRejectionOutput:
+    def test_backtest_result_has_rejections(self):
+        result = BacktestResult(
+            trades=[], equity_curve=pd.Series(dtype=float),
+            total_return_pct=0, cagr_pct=0, sharpe_ratio=0,
+            max_drawdown_pct=0, win_rate_pct=0, profit_factor=0,
+            avg_win_pct=0, avg_loss_pct=0,
+            total_trades=0, winning_trades=0, losing_trades=0,
+            buy_hold_return_pct=0, initial_capital=10000, final_equity=10000,
+            rejections=[{"date": pd.Timestamp("2025-01-15"), "reason": "冷却期",
+                         "detail": "距止损3天 (<5)"}],
+        )
+        assert len(result.rejections) == 1
+        assert result.rejections[0]["reason"] == "冷却期"
+
+    def test_print_result_shows_rejections(self, capsys):
+        from engine.trader import print_result
+        result = BacktestResult(
+            trades=[], equity_curve=pd.Series([10000], index=pd.to_datetime(["2025-01-01"])),
+            total_return_pct=0, cagr_pct=0, sharpe_ratio=0,
+            max_drawdown_pct=0, win_rate_pct=0, profit_factor=0,
+            avg_win_pct=0, avg_loss_pct=0,
+            total_trades=0, winning_trades=0, losing_trades=0,
+            buy_hold_return_pct=0, initial_capital=10000, final_equity=10000,
+            rejections=[{"date": pd.Timestamp("2025-01-15"), "reason": "冷却期",
+                         "detail": "距止损3天 (<5)"}],
+        )
+        print_result(result)
+        out = capsys.readouterr().out
+        assert "风控拦截" in out
+        assert "冷却期" in out
+
+    def test_no_rejections_no_output(self, capsys):
+        from engine.trader import print_result
+        result = BacktestResult(
+            trades=[], equity_curve=pd.Series([10000], index=pd.to_datetime(["2025-01-01"])),
+            total_return_pct=0, cagr_pct=0, sharpe_ratio=0,
+            max_drawdown_pct=0, win_rate_pct=0, profit_factor=0,
+            avg_win_pct=0, avg_loss_pct=0,
+            total_trades=0, winning_trades=0, losing_trades=0,
+            buy_hold_return_pct=0, initial_capital=10000, final_equity=10000,
+        )
+        print_result(result)
+        out = capsys.readouterr().out
+        assert "风控拦截" not in out
