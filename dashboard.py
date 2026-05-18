@@ -294,7 +294,63 @@ with tab_portfolio:
 
     st.header("组合回测")
 
-    from engine.portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO
+    from engine.portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO, PortfolioResult
+
+
+def _drawdown_stats(curve: pd.Series):
+    """Return (current_dd_pct, max_dd_pct, longest_dd_days) from equity curve."""
+    rolling_max = curve.expanding().max()
+    dd = (curve - rolling_max) / rolling_max * 100
+    current_dd = float(dd.iloc[-1])
+
+    # Longest consecutive underwater period (days)
+    is_under = dd < 0
+    longest = 0
+    current_streak = 0
+    for flag in is_under:
+        if flag:
+            current_streak += 1
+            longest = max(longest, current_streak)
+        else:
+            current_streak = 0
+    return current_dd, float(dd.min()), longest
+
+
+def _exposure_from_trades(result: PortfolioResult, curve: pd.Series):
+    """Reconstruct daily net-exposure series and per-symbol weights from trades.
+
+    Returns (exposure_series, last_exposure_pct, top_weights_at_end).
+    """
+    if not result.closed_trades or len(curve) < 2:
+        return pd.Series(dtype=float), 0.0, {}
+
+    df_trades = pd.DataFrame([
+        {"symbol": t.symbol, "entry": t.entry_time, "exit": t.exit_time,
+         "cost": (t.entry_price * t.qty * 1.0004)}  # rough cost with commission
+        for t in result.closed_trades
+    ])
+
+    exposure = pd.Series(0.0, index=curve.index)
+    by_symbol = {sym: pd.Series(0.0, index=curve.index) for sym in df_trades["symbol"].unique()}
+
+    for _, t in df_trades.iterrows():
+        mask = (exposure.index >= t["entry"]) & (exposure.index <= t["exit"])
+        exposure.loc[mask] += t["cost"]
+        if t["symbol"] in by_symbol:
+            by_symbol[t["symbol"]].loc[mask] += t["cost"]
+
+    net_pct = (exposure / curve) * 100
+
+    # Last point with non-zero exposure
+    last_exp = float(net_pct.iloc[-1]) if len(net_pct) > 0 else 0.0
+
+    # Top weights at end
+    top = {}
+    for sym, ser in sorted(by_symbol.items(), key=lambda x: -x[1].iloc[-1])[:3]:
+        top[sym] = round(float(ser.iloc[-1] / curve.iloc[-1] * 100), 1)
+
+    return net_pct, last_exp, top
+
 
     @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
     def _cached_portfolio_bt(start, end, alloc):
@@ -351,6 +407,34 @@ with tab_portfolio:
     plt.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
+
+    # --- Risk dashboard ---
+    st.subheader("风险看板")
+
+    curve = pf_result.equity_curve
+    current_dd, max_dd_pct, longest_dd_days = _drawdown_stats(curve)
+    exposure_series, last_exposure, top_weights = _exposure_from_trades(pf_result, curve)
+
+    r1, r2, r3, r4, r5 = st.columns(5)
+    with r1:
+        st.metric("当前回撤", f"{current_dd:.1f}%",
+                  delta=f"峰值 {max_dd_pct:.1f}%" if current_dd < -0.1 else None)
+    with r2:
+        st.metric("最长回撤天数", f"{longest_dd_days} 天")
+    with r3:
+        st.metric("期末净敞口", f"{last_exposure:.1f}%",
+                  delta=f"峰值 {exposure_series.max():.0f}%" if len(exposure_series) > 0 else None)
+    with r4:
+        avg_exposure = exposure_series.mean() if len(exposure_series) > 0 else 0
+        st.metric("平均敞口", f"{avg_exposure:.1f}%")
+    with r5:
+        active_pct = (exposure_series > 0.1).mean() * 100 if len(exposure_series) > 0 else 0
+        st.metric("持仓时间占比", f"{active_pct:.0f}%")
+
+    # Top weights row
+    if top_weights:
+        st.caption(f"期末 Top 3 标的全重: " +
+                   "  |  ".join(f"**{sym}** {wgt:.1f}%" for sym, wgt in top_weights.items()))
 
     # --- Trade statistics cards ---
     st.subheader("交易统计")
