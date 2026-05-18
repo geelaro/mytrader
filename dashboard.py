@@ -296,61 +296,43 @@ with tab_portfolio:
 
     from engine.portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO, PortfolioResult
 
+    # Risk helpers
+    def _drawdown_stats(curve):
+        rolling_max = curve.expanding().max()
+        dd = (curve - rolling_max) / rolling_max * 100
+        current_dd = float(dd.iloc[-1])
+        is_under = dd < 0
+        longest = 0
+        streak = 0
+        for flag in is_under:
+            if flag:
+                streak += 1
+                longest = max(longest, streak)
+            else:
+                streak = 0
+        return current_dd, float(dd.min()), longest
 
-def _drawdown_stats(curve: pd.Series):
-    """Return (current_dd_pct, max_dd_pct, longest_dd_days) from equity curve."""
-    rolling_max = curve.expanding().max()
-    dd = (curve - rolling_max) / rolling_max * 100
-    current_dd = float(dd.iloc[-1])
-
-    # Longest consecutive underwater period (days)
-    is_under = dd < 0
-    longest = 0
-    current_streak = 0
-    for flag in is_under:
-        if flag:
-            current_streak += 1
-            longest = max(longest, current_streak)
-        else:
-            current_streak = 0
-    return current_dd, float(dd.min()), longest
-
-
-def _exposure_from_trades(result: PortfolioResult, curve: pd.Series):
-    """Reconstruct daily net-exposure series and per-symbol weights from trades.
-
-    Returns (exposure_series, last_exposure_pct, top_weights_at_end).
-    """
-    if not result.closed_trades or len(curve) < 2:
-        return pd.Series(dtype=float), 0.0, {}
-
-    df_trades = pd.DataFrame([
-        {"symbol": t.symbol, "entry": t.entry_time, "exit": t.exit_time,
-         "cost": (t.entry_price * t.qty * 1.0004)}  # rough cost with commission
-        for t in result.closed_trades
-    ])
-
-    exposure = pd.Series(0.0, index=curve.index)
-    by_symbol = {sym: pd.Series(0.0, index=curve.index) for sym in df_trades["symbol"].unique()}
-
-    for _, t in df_trades.iterrows():
-        mask = (exposure.index >= t["entry"]) & (exposure.index <= t["exit"])
-        exposure.loc[mask] += t["cost"]
-        if t["symbol"] in by_symbol:
-            by_symbol[t["symbol"]].loc[mask] += t["cost"]
-
-    net_pct = (exposure / curve) * 100
-
-    # Last point with non-zero exposure
-    last_exp = float(net_pct.iloc[-1]) if len(net_pct) > 0 else 0.0
-
-    # Top weights at end
-    top = {}
-    for sym, ser in sorted(by_symbol.items(), key=lambda x: -x[1].iloc[-1])[:3]:
-        top[sym] = round(float(ser.iloc[-1] / curve.iloc[-1] * 100), 1)
-
-    return net_pct, last_exp, top
-
+    def _exposure_from_trades(result, curve):
+        if not result.closed_trades or len(curve) < 2:
+            return pd.Series(dtype=float), 0.0, {}
+        df_trades = pd.DataFrame([
+            {"symbol": t.symbol, "entry": t.entry_time, "exit": t.exit_time,
+             "cost": t.entry_price * t.qty * 1.0004}
+            for t in result.closed_trades
+        ])
+        exposure = pd.Series(0.0, index=curve.index)
+        by_symbol = {sym: pd.Series(0.0, index=curve.index) for sym in df_trades["symbol"].unique()}
+        for _, t in df_trades.iterrows():
+            mask = (exposure.index >= t["entry"]) & (exposure.index <= t["exit"])
+            exposure.loc[mask] += t["cost"]
+            if t["symbol"] in by_symbol:
+                by_symbol[t["symbol"]].loc[mask] += t["cost"]
+        net_pct = (exposure / curve) * 100
+        last_exp = float(net_pct.iloc[-1]) if len(net_pct) > 0 else 0.0
+        top = {}
+        for sym, ser in sorted(by_symbol.items(), key=lambda x: -x[1].iloc[-1])[:3]:
+            top[sym] = round(float(ser.iloc[-1] / curve.iloc[-1] * 100), 1)
+        return net_pct, last_exp, top
 
     @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
     def _cached_portfolio_bt(start, end, alloc):
