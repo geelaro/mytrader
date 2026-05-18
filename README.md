@@ -20,7 +20,7 @@
 | 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查、日内亏损上限 |
 | 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/行业/日开仓上限） |
 | Dashboard | Streamlit Web UI — Tab 分页（单标/组合），回测图表+买卖点，交易明细筛选与收益归因 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（399 测试） |
+| CI | GitHub Actions — push/PR 自动跑 pytest（406 测试） |
 
 ## 策略
 
@@ -52,7 +52,7 @@ mytrader/
   ├─ cost_sensitivity.py    #   成本敏感性网格扫描
   └─ param_robustness.py    #   参数鲁棒性邻域扰动
   utils/             # 工具 (日志/飞书通知/环境/配置/行业映射)
-  tests/             # 399 个测试
+  tests/             # 406 个测试
   reports/           # 自动生成的 CSV + PNG 报告
   daily.py           # 每日回溯扫描 (入口脚本)
   live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
