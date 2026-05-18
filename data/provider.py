@@ -23,7 +23,6 @@ from .protocol import (
     CN_SYMBOLS,
 )
 from .sources import (
-    YFinanceSource,
     TencentSource,
     SinaSource,
     AKShareSource,
@@ -63,7 +62,6 @@ class DataProvider:
             TencentSource(),
             SinaSource(),
             AKShareSource(),
-            YFinanceSource(),
         ]
 
     # ------------------------------------------------------------------
