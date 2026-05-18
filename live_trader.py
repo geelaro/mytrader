@@ -128,9 +128,12 @@ class LiveTrader:
     def run(self, target_date: Optional[str] = None) -> List[Order]:
         """Run one trading cycle.
 
-        1. Fetch signals for all watchlist symbols
-        2. Compare with broker positions
-        3. Generate & submit orders
+        1. Warmup broker (connections, trade contexts)
+        2. Refresh market prices (watchlist + positions)
+        3. Get account & positions
+        4. Generate signals
+        5. Compare & generate orders
+        6. Submit orders
         """
         if target_date is None:
             target_date = date.today().isoformat()
@@ -140,12 +143,14 @@ class LiveTrader:
         print(f"  券商: {self.broker.name}  {'[模拟模式]' if self.dry_run else '[实盘模式]'}")
         print(f"{'=' * 60}")
 
-        # 1. Refresh market prices
-        self._refresh_market_prices()
-
-        # 2. Get broker state
+        # 1. Warmup broker (trade contexts, connections)
         watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
         self.broker.warmup(watchlist_symbols)
+
+        # 2. Refresh market prices (watchlist + existing positions)
+        self._refresh_market_prices()
+
+        # 3. Get broker state
         account = self.broker.get_account()
         positions = {p.symbol: p for p in self.broker.get_positions()}
         self._init_risk(account)
@@ -161,26 +166,19 @@ class LiveTrader:
                       f"均价 ${pos.avg_price:.2f}  市值 ${pos.market_value:,.0f}  "
                       f"浮盈 ${pos.unrealized_pnl:+,.0f}")
 
-        # 3. Generate signals
+        # 4. Generate signals
         signals = self._scan_signals(target_date)
 
-        # Real-time price override + deviation filter (FutuBroker)
+        # Real-time price override (FutuBroker)
         for s in signals:
-            daily_close = s['price']
             live_price = self.broker.last_prices.get(s['symbol'], 0)
-            if live_price > 0 and daily_close > 0:
-                deviation = abs(live_price - daily_close) / daily_close
-                if deviation > 0.02:
-                    print(f"  ! {s['symbol']} 价格偏离 {deviation*100:.1f}% > 2%，信号跳过 "
-                          f"(昨收 {daily_close:.2f} → 实时 {live_price:.2f})")
-                    s['signal'] = 0
-                else:
-                    s['price'] = live_price
+            if live_price > 0:
+                s['price'] = live_price
 
-        # 4. Compare → Orders
+        # 5. Compare → Orders
         orders = self._generate_orders(signals, positions, account)
 
-        # 5. Submit
+        # 6. Submit
         submitted = []
         for order in orders:
             if self.dry_run:
@@ -225,12 +223,20 @@ class LiveTrader:
     # ------------------------------------------------------------------
 
     def _refresh_market_prices(self):
-        """Fetch latest prices for all watchlist symbols.
+        """Fetch latest prices for watchlist + existing positions.
 
-        Uses broker.refresh_prices() if available (FutuBroker),
-        otherwise updates last_prices from scan data.
+        Merges position symbols to avoid PnL=0 display for holdings
+        not in the current watchlist (e.g. GOOG vs GOOGL mismatch).
         """
         symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
+        # Also cover existing position symbols
+        try:
+            for p in self.broker.get_positions():
+                if p.symbol not in symbols:
+                    symbols.append(p.symbol)
+        except Exception:
+            pass
+
         if not symbols:
             return
 

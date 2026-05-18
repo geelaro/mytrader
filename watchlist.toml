@@ -28,7 +28,7 @@ active = "weekly_macd_kdj"
 monitor = ["turtle_trading", "enhanced_macd"]
 
 [[watchlist]]
-symbol = "GOOGL"
+symbol = "GOOG"
 name = "Alphabet"
 active = "weekly_macd_kdj"
 monitor = ["turtle_trading"]
