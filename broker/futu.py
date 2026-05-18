@@ -25,6 +25,7 @@ import time
 from futu import (
     OpenSecTradeContext,
     OpenQuoteContext,
+    SimAccType,
     TrdEnv,
     TrdMarket,
     TrdSide,
@@ -132,10 +133,13 @@ class FutuBroker(Broker):
         host: str = "127.0.0.1",
         port: int = 11111,
         initial_cash: float = 10000.0,
+        sim_acc_type: SimAccType = SimAccType.STOCK_AND_OPTION,
     ):
         self._host = host
         self._port = port
         self._initial_cash = initial_cash
+        self._sim_acc_type = sim_acc_type
+        self._acc_id = 0  # resolved lazily from get_acc_list
         self._quote_ctx: Optional[OpenQuoteContext] = None
         self._trade_ctxs: Dict[int, OpenSecTradeContext] = {}
         self.last_prices: Dict[str, float] = {}
@@ -145,9 +149,17 @@ class FutuBroker(Broker):
     # ------------------------------------------------------------------
 
     def connect(self):
-        """Establish connections to FutuOpenD."""
-        self._quote_ctx = OpenQuoteContext(host=self._host, port=self._port)
-        self._quote_ctx.start()
+        """Establish connections to FutuOpenD.
+
+        Raises ConnectionError if FutuOpenD is not reachable.
+        """
+        try:
+            self._quote_ctx = OpenQuoteContext(host=self._host, port=self._port)
+            self._quote_ctx.start()
+        except Exception as e:
+            raise ConnectionError(
+                f"无法连接 FutuOpenD ({self._host}:{self._port}): {e}"
+            ) from e
 
     def disconnect(self):
         """Close all connections."""
@@ -177,10 +189,40 @@ class FutuBroker(Broker):
                     port=self._port,
                     filter_trdmarket=market,
                 )
+                self._resolve_acc_id(ctx)
                 self._trade_ctxs[market] = ctx
             except Exception:
                 return None
         return self._trade_ctxs[market]
+
+    def _resolve_acc_id(self, ctx) -> None:
+        """Resolve acc_id for the configured sim_acc_type.
+
+        Calls get_acc_list(), filters for SIMULATE + sim_acc_type match.
+        Raises RuntimeError if no matching SIMULATE account found —
+        we NEVER fall back to a real account.
+        """
+        if self._acc_id != 0:
+            return
+        import logging
+        _log = logging.getLogger("futu")
+        try:
+            ret, data = ctx.get_acc_list()
+            if ret == 0 and not data.empty:
+                mask = (data["trd_env"] == TrdEnv.SIMULATE) & (data["sim_acc_type"] == self._sim_acc_type)
+                if mask.any():
+                    self._acc_id = int(data[mask]["acc_id"].values[0])
+                    return
+                _log.warning("账户列表: %d 个账户, 无匹配 SIMULATE+%s", len(data), self._sim_acc_type)
+        except Exception as e:
+            _log.error("get_acc_list 失败: %s", e)
+            raise RuntimeError(
+                f"无法获取模拟账户列表 (FutuOpenD 是否已启动？): {e}"
+            ) from e
+        raise RuntimeError(
+            f"未找到模拟账户 (sim_acc_type={self._sim_acc_type})，"
+            f"请确认 FutuOpenD 已启动模拟盘功能"
+        )
 
     # ------------------------------------------------------------------
     # Broker identity
@@ -194,6 +236,16 @@ class FutuBroker(Broker):
     # Account
     # ------------------------------------------------------------------
 
+    def warmup(self, symbols: List[str]) -> bool:
+        """Pre-create trade contexts for the markets of given symbols.
+
+        Call before get_account()/get_positions() to ensure trade contexts exist.
+        Returns True if at least one trade context was created.
+        """
+        for sym in symbols:
+            self._get_trade_ctx(sym)
+        return len(self._trade_ctxs) > 0
+
     def get_account(self) -> Account:
         """Query account info from Futu — aggregates across all markets."""
         equity_parts = []
@@ -205,7 +257,10 @@ class FutuBroker(Broker):
             if ctx is None:
                 continue
             try:
-                ret, data = ctx.accinfo_query()
+                ret, data = ctx.accinfo_query(
+                    trd_env=TrdEnv.SIMULATE,
+                    acc_id=self._acc_id,
+                )
                 if ret == 0 and not data.empty:
                     has_data = True
                     row = data.iloc[0]
@@ -243,7 +298,10 @@ class FutuBroker(Broker):
             if ctx is None:
                 continue
             try:
-                ret, data = ctx.position_list_query()
+                ret, data = ctx.position_list_query(
+                    trd_env=TrdEnv.SIMULATE,
+                    acc_id=self._acc_id,
+                )
                 if ret != 0 or data.empty:
                     continue
                 for _, row in data.iterrows():
@@ -288,6 +346,7 @@ class FutuBroker(Broker):
                 trd_side=_to_futu_side(order.side),
                 order_type=_to_futu_order_type(order.order_type),
                 trd_env=TrdEnv.SIMULATE,
+                acc_id=self._acc_id,
             )
             if ret == 0 and not data.empty:
                 row = data.iloc[0]
@@ -315,6 +374,7 @@ class FutuBroker(Broker):
                 ret, data = ctx.cancel_order(
                     order_id=order_id,
                     trd_env=TrdEnv.SIMULATE,
+                    acc_id=self._acc_id,
                 )
                 if ret == 0:
                     return True
@@ -331,6 +391,7 @@ class FutuBroker(Broker):
                 ret, data = ctx.order_list_query(
                     order_id=order_id,
                     trd_env=TrdEnv.SIMULATE,
+                    acc_id=self._acc_id,
                 )
                 if ret == 0 and not data.empty:
                     row = data.iloc[0]

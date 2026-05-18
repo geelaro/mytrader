@@ -144,6 +144,9 @@ class LiveTrader:
         self._refresh_market_prices()
 
         # 2. Get broker state
+        watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
+        if hasattr(self.broker, 'warmup'):
+            self.broker.warmup(watchlist_symbols)
         account = self.broker.get_account()
         positions = {p.symbol: p for p in self.broker.get_positions()}
         self._init_risk(account)
@@ -162,17 +165,32 @@ class LiveTrader:
         # 3. Generate signals
         signals = self._scan_signals(target_date)
 
-        # 3. Compare → Orders
+        # Real-time price override + deviation filter (FutuBroker)
+        if hasattr(self.broker, 'last_prices'):
+            for s in signals:
+                daily_close = s['price']
+                live_price = self.broker.last_prices.get(s['symbol'], 0)
+                if live_price > 0 and daily_close > 0:
+                    deviation = abs(live_price - daily_close) / daily_close
+                    if deviation > 0.02:
+                        print(f"  ! {s['symbol']} 价格偏离 {deviation*100:.1f}% > 2%，信号跳过 "
+                              f"(昨收 {daily_close:.2f} → 实时 {live_price:.2f})")
+                        s['signal'] = 0
+                    else:
+                        s['price'] = live_price
+
+        # 4. Compare → Orders
         orders = self._generate_orders(signals, positions, account)
 
-        # 4. Submit
+        # 5. Submit
         submitted = []
         for order in orders:
             if self.dry_run:
                 order.status = OrderStatus.FILLED
                 if hasattr(self.broker, 'last_prices'):
                     fill_price = self.broker.last_prices.get(order.symbol, 0)
-                    order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
+                    if fill_price > 0:
+                        order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
                     order.filled_qty = order.quantity
                 self._print_order(order)
                 submitted.append(order)
@@ -587,6 +605,11 @@ class LiveTrader:
 def main():
     parser = argparse.ArgumentParser(description="LiveTrader — 实盘信号执行引擎")
     parser.add_argument("--config", default="watchlist.toml", help="配置文件")
+    parser.add_argument("--broker", choices=["mock", "futu"], default="mock",
+                        help="券商适配器: mock(模拟) / futu(富途OpenD)")
+    parser.add_argument("--futu-host", default="127.0.0.1", help="FutuOpenD 地址")
+    parser.add_argument("--futu-port", type=int, default=11111, help="FutuOpenD 端口 (模拟盘:11111)")
+    parser.add_argument("--initial-cash", type=float, default=100000, help="初始资金 (mock模式)")
     parser.add_argument("--dry-run", action="store_true", help="模拟运行，不实际下单")
     parser.add_argument("--date", help="交易日期 (YYYY-MM-DD)，默认今天")
     parser.add_argument("--notify", action="store_true", help="推送成交/告警到飞书")
@@ -597,7 +620,15 @@ def main():
 
     os.chdir(Path(__file__).parent)
 
-    broker = MockBroker(initial_cash=100000)
+    if args.broker == "futu":
+        from broker.futu import FutuBroker
+        broker = FutuBroker(
+            host=args.futu_host,
+            port=args.futu_port,
+            initial_cash=args.initial_cash,
+        )
+    else:
+        broker = MockBroker(initial_cash=args.initial_cash)
     notifier = Notifier() if args.notify else Notifier(dry_run=True)
     trader = LiveTrader(
         broker=broker,
