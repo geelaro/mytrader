@@ -376,8 +376,10 @@ class TestYFinanceSourceFetch:
 
         src = YFinanceSource()
         with patch("yfinance.download", side_effect=Exception("fail")):
-            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
-            assert df.empty
+            with patch("data.sources.logger") as mock_logger:
+                df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+                assert df.empty
+                mock_logger.exception.assert_called_once()
 
 
 class TestAKShareSourceFetch:
