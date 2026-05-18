@@ -46,6 +46,8 @@ selected_strategy = st.sidebar.selectbox("策略", strategy_options, index=3)
 
 backtest_years = st.sidebar.slider("回测年数", 1, 10, 4)
 allocation_mode = st.sidebar.selectbox("组合分配模式", ["equal", "dynamic_equal"], index=0)
+pf_strategy = st.sidebar.selectbox("组合策略", strategy_options, index=3,
+                                   help="所有标的使用统一策略")
 
 # Initialize data provider (cached)
 @st.cache_resource
@@ -294,7 +296,7 @@ with tab_portfolio:
 
     st.header("组合回测")
 
-    from engine.portfolio import PortfolioBacktest, DEFAULT_PORTFOLIO, PortfolioResult
+    from engine.portfolio import PortfolioBacktest, Leg, PortfolioResult
 
     # Risk helpers
     def _drawdown_stats(curve):
@@ -335,15 +337,17 @@ with tab_portfolio:
         return net_pct, last_exp, top
 
     @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
-    def _cached_portfolio_bt(start, end, alloc):
+    def _cached_portfolio_bt(start, end, alloc, strategy):
+        # Build legs from watchlist symbols with the selected strategy
+        legs = [Leg(item["symbol"], strategy) for item in config.get("watchlist", [])]
         bt = PortfolioBacktest(
-            legs=DEFAULT_PORTFOLIO,
+            legs=legs,
             initial_capital=100000,
             allocation=alloc,
         )
         return bt.run(start=start, end=end)
 
-    pf_result = _cached_portfolio_bt(start, end, allocation_mode)
+    pf_result = _cached_portfolio_bt(start, end, allocation_mode, pf_strategy)
 
     # --- Metrics row ---
     m1, m2, m3, m4, m5, m6 = st.columns(6)
