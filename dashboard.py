@@ -551,6 +551,9 @@ with tab_portfolio:
     st.subheader("交易明细")
 
     if pf_result.closed_trades:
+        import io
+        import base64
+
         # Build base dataframe
         trade_rows = []
         for t in pf_result.closed_trades:
@@ -572,14 +575,26 @@ with tab_portfolio:
             })
         df_trades = pd.DataFrame(trade_rows)
 
-        # Filters row
-        fc1, fc2, fc3 = st.columns(3)
-        with fc1:
+        # --- Filters (2 rows) ---
+        fr1, fr2, fr3, fr4 = st.columns(4)
+        with fr1:
             symbols = sorted(df_trades["标的"].unique().tolist())
             filter_sym = st.multiselect("标的", symbols, default=symbols, key="pf_filter_sym")
-        with fc2:
-            filter_pnl = st.selectbox("盈亏", ["全部", "盈利", "亏损"], key="pf_filter_pnl")
-        with fc3:
+        with fr2:
+            reasons = sorted(df_trades["原因"].unique().tolist())
+            filter_reason = st.multiselect("原因", reasons, default=reasons, key="pf_filter_reason")
+        with fr3:
+            min_pnl = int(df_trades["PnL"].min())
+            max_pnl = int(df_trades["PnL"].max())
+            filter_pnl_range = st.slider("PnL ($)", min_pnl, max_pnl,
+                                         (min_pnl, max_pnl), step=100, key="pf_filter_pnl_range")
+        with fr4:
+            max_hold = int(df_trades["持仓天"].max())
+            filter_hold = st.slider("持仓天数", 0, max(1, max_hold),
+                                    (0, max_hold), step=1, key="pf_filter_hold")
+
+        fr5, fr6, fr7, fr8 = st.columns(4)
+        with fr5:
             if not df_trades["入场"].isna().all():
                 min_date = df_trades["入场"].min().date()
                 max_date = df_trades["出场"].max().date() if not df_trades["出场"].isna().all() else pd.Timestamp.today().date()
@@ -587,17 +602,39 @@ with tab_portfolio:
 
         # Apply filters
         df_filtered = df_trades[df_trades["标的"].isin(filter_sym)]
-        if filter_pnl == "盈利":
-            df_filtered = df_filtered[df_filtered["PnL"] > 0]
-        elif filter_pnl == "亏损":
-            df_filtered = df_filtered[df_filtered["PnL"] < 0]
+        df_filtered = df_filtered[df_filtered["原因"].isin(filter_reason)]
+        df_filtered = df_filtered[(df_filtered["PnL"] >= filter_pnl_range[0]) &
+                                   (df_filtered["PnL"] <= filter_pnl_range[1])]
+        df_filtered = df_filtered[(df_filtered["持仓天"] >= filter_hold[0]) &
+                                   (df_filtered["持仓天"] <= filter_hold[1])]
         if isinstance(filter_dates, tuple) and len(filter_dates) == 2:
             d1, d2 = pd.Timestamp(filter_dates[0]), pd.Timestamp(filter_dates[1])
             df_filtered = df_filtered[(df_filtered["入场"] >= d1) & (df_filtered["入场"] <= d2)]
 
-        st.caption(f"共 {len(df_filtered)} 笔（筛选自 {len(df_trades)} 笔）")
+        # --- Summary + Export row ---
+        ec1, ec2, ec3, ec4 = st.columns(4)
+        with ec1:
+            st.caption(f"共 {len(df_filtered)} 笔（筛选自 {len(df_trades)} 笔）")
+        with ec2:
+            filtered_pnl = df_filtered["PnL"].sum()
+            st.metric("筛选PnL合计", f"${filtered_pnl:+,.0f}")
+        with ec3:
+            csv_buffer = io.StringIO()
+            display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
+            df_filtered[display_cols].to_csv(csv_buffer, index=False)
+            st.download_button("⬇ CSV", csv_buffer.getvalue(),
+                               f"trades_{pf_strategy}_{attr_start}_{attr_end}.csv",
+                               "text/csv", key="dl_csv")
+        with ec4:
+            xlsx_buffer = io.BytesIO()
+            with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
+                df_filtered[display_cols].to_excel(writer, index=False, sheet_name="交易明细")
+            st.download_button("⬇ Excel", xlsx_buffer.getvalue(),
+                               f"trades_{pf_strategy}_{attr_start}_{attr_end}.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="dl_xlsx")
 
-        display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
+        # Display table (outside columns for full width)
         st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True)
     else:
         st.info("无交易记录")
