@@ -54,7 +54,7 @@ mytrader/
   ├─ cost_sensitivity.py    #   成本敏感性网格扫描
   └─ param_robustness.py    #   参数鲁棒性邻域扰动
   utils/             # 工具 (日志/飞书通知/环境/配置/行业映射)
-  tests/             # 406 个测试 (含黄金样本回归)
+  tests/             # 406 个测试 (含黄金样本回归 test_golden.py)
   reports/           # 自动生成的 CSV + PNG 报告
   daily.py           # 每日回溯扫描 (入口脚本)
   live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
