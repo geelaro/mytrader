@@ -112,12 +112,16 @@ class Broker(ABC):
     ------------------
     6. `connect()` / `disconnect()` — for brokers that need sessions
     7. `on_order_update(callback)` — for async/push-based brokers
+    8. `warmup(symbols)` / `refresh_prices(symbols)` / `last_prices` — market data
 
     Safety rules for implementations:
     - Never raise from submit_order — return Order with REJECTED status on failure
     - get_positions MUST return the broker's ground-truth, not local cache
     - All monetary values in the account's base currency
     """
+
+    def __init__(self):
+        self.last_prices: Dict[str, float] = {}
 
     @property
     @abstractmethod
@@ -161,6 +165,14 @@ class Broker(ABC):
     def disconnect(self):
         """Optional: tear down session."""
         pass
+
+    def warmup(self, symbols: List[str]) -> bool:
+        """Optional: pre-connect / pre-load data for symbols. Returns True on success."""
+        return True
+
+    def refresh_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Optional: fetch latest prices for symbols, return {symbol: price}."""
+        return {}
 
     def __repr__(self):
         return f"<Broker:{self.name}>"

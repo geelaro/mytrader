@@ -20,6 +20,7 @@ Usage
 """
 
 from typing import Dict, List, Optional
+import logging
 import time
 
 from futu import (
@@ -48,6 +49,9 @@ from .base import (
 # ---------------------------------------------------------------------------
 # Symbol mapping: mytrader format ↔ Futu format
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
 
 def _to_futu_symbol(symbol: str) -> str:
     """Convert mytrader symbol to Futu format (US.AAPL, HK.00700, SH.510300)."""
@@ -135,6 +139,7 @@ class FutuBroker(Broker):
         initial_cash: float = 10000.0,
         sim_acc_type: SimAccType = SimAccType.STOCK_AND_OPTION,
     ):
+        super().__init__()
         self._host = host
         self._port = port
         self._initial_cash = initial_cash
@@ -191,7 +196,8 @@ class FutuBroker(Broker):
                 )
                 self._resolve_acc_id(ctx)
                 self._trade_ctxs[market] = ctx
-            except Exception:
+            except Exception as e:
+                logger.warning("_get_trade_ctx 失败 [%s] market=%s: %s", symbol, market, e)
                 return None
         return self._trade_ctxs[market]
 
@@ -204,8 +210,6 @@ class FutuBroker(Broker):
         """
         if self._acc_id != 0:
             return
-        import logging
-        _log = logging.getLogger("futu")
         try:
             ret, data = ctx.get_acc_list()
             if ret == 0 and not data.empty:
@@ -213,9 +217,9 @@ class FutuBroker(Broker):
                 if mask.any():
                     self._acc_id = int(data[mask]["acc_id"].values[0])
                     return
-                _log.warning("账户列表: %d 个账户, 无匹配 SIMULATE+%s", len(data), self._sim_acc_type)
+                logger.warning("账户列表: %d 个账户, 无匹配 SIMULATE+%s", len(data), self._sim_acc_type)
         except Exception as e:
-            _log.error("get_acc_list 失败: %s", e)
+            logger.error("get_acc_list 失败: %s", e)
             raise RuntimeError(
                 f"无法获取模拟账户列表 (FutuOpenD 是否已启动？): {e}"
             ) from e

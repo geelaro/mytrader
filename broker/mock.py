@@ -7,6 +7,7 @@ Simulates:
 - Position tracking across buy/sell
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -20,6 +21,8 @@ from .base import (
     OrderType,
     Position,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MockBroker(Broker):
@@ -37,6 +40,7 @@ class MockBroker(Broker):
         commission_rate: float = 0.0003,
         slippage_pct: float = 0.0005,
     ):
+        super().__init__()
         self._cash = initial_cash
         self._initial_cash = initial_cash
         self._commission_rate = commission_rate
@@ -56,7 +60,7 @@ class MockBroker(Broker):
         """Mock: clear stale prices so data pipeline refills fresh each cycle."""
         for s in symbols:
             self.last_prices.pop(s, None)
-        print(f"  [Mock] 日线收盘价 (Tencent/Sina, {len(symbols)} 个标的)")
+        logger.info("行情刷新 (Tencent/Sina, %d 个标的)", len(symbols))
 
     # ------------------------------------------------------------------
     # Account / Positions

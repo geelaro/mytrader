@@ -145,8 +145,7 @@ class LiveTrader:
 
         # 2. Get broker state
         watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
-        if hasattr(self.broker, 'warmup'):
-            self.broker.warmup(watchlist_symbols)
+        self.broker.warmup(watchlist_symbols)
         account = self.broker.get_account()
         positions = {p.symbol: p for p in self.broker.get_positions()}
         self._init_risk(account)
@@ -166,18 +165,17 @@ class LiveTrader:
         signals = self._scan_signals(target_date)
 
         # Real-time price override + deviation filter (FutuBroker)
-        if hasattr(self.broker, 'last_prices'):
-            for s in signals:
-                daily_close = s['price']
-                live_price = self.broker.last_prices.get(s['symbol'], 0)
-                if live_price > 0 and daily_close > 0:
-                    deviation = abs(live_price - daily_close) / daily_close
-                    if deviation > 0.02:
-                        print(f"  ! {s['symbol']} 价格偏离 {deviation*100:.1f}% > 2%，信号跳过 "
-                              f"(昨收 {daily_close:.2f} → 实时 {live_price:.2f})")
-                        s['signal'] = 0
-                    else:
-                        s['price'] = live_price
+        for s in signals:
+            daily_close = s['price']
+            live_price = self.broker.last_prices.get(s['symbol'], 0)
+            if live_price > 0 and daily_close > 0:
+                deviation = abs(live_price - daily_close) / daily_close
+                if deviation > 0.02:
+                    print(f"  ! {s['symbol']} 价格偏离 {deviation*100:.1f}% > 2%，信号跳过 "
+                          f"(昨收 {daily_close:.2f} → 实时 {live_price:.2f})")
+                    s['signal'] = 0
+                else:
+                    s['price'] = live_price
 
         # 4. Compare → Orders
         orders = self._generate_orders(signals, positions, account)
@@ -187,11 +185,10 @@ class LiveTrader:
         for order in orders:
             if self.dry_run:
                 order.status = OrderStatus.FILLED
-                if hasattr(self.broker, 'last_prices'):
-                    fill_price = self.broker.last_prices.get(order.symbol, 0)
-                    if fill_price > 0:
-                        order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
-                    order.filled_qty = order.quantity
+                fill_price = self.broker.last_prices.get(order.symbol, 0)
+                if fill_price > 0:
+                    order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
+                order.filled_qty = order.quantity
                 self._print_order(order)
                 submitted.append(order)
                 self.notifier.trade_card(order)
@@ -237,17 +234,16 @@ class LiveTrader:
         if not symbols:
             return
 
-        if hasattr(self.broker, 'refresh_prices'):
-            try:
-                self.broker.refresh_prices(symbols)
-                updated = {s: self.broker.last_prices.get(s, 0)
-                           for s in symbols if self.broker.last_prices.get(s, 0) > 0}
-                if updated:
-                    logger.info("行情刷新: %d 个标的", len(updated))
-                    for s, p in updated.items():
-                        print(f"  {s:<8s} ${p:.2f}")
-            except Exception as e:
-                logger.warning("行情刷新失败: %s", e)
+        try:
+            self.broker.refresh_prices(symbols)
+            updated = {s: self.broker.last_prices.get(s, 0)
+                       for s in symbols if self.broker.last_prices.get(s, 0) > 0}
+            if updated:
+                logger.info("行情刷新: %d 个标的", len(updated))
+                for s, p in updated.items():
+                    print(f"  {s:<8s} ${p:.2f}")
+        except Exception as e:
+            logger.warning("行情刷新失败: %s", e)
 
     # ------------------------------------------------------------------
     # Signal generation
@@ -307,7 +303,7 @@ class LiveTrader:
                 })
 
                 # Fill broker last_prices only if not already set (FutuBroker has real-time)
-                if hasattr(self.broker, "last_prices") and symbol not in self.broker.last_prices:
+                if symbol not in self.broker.last_prices:
                     self.broker.last_prices[symbol] = price
 
         return results
@@ -443,7 +439,7 @@ class LiveTrader:
         # Slippage guard — compare signal price vs broker last price
         sym = signal.get("symbol", "")
         signal_price = signal.get("price", 0)
-        if hasattr(self.broker, 'last_prices') and sym in self.broker.last_prices:
+        if sym in self.broker.last_prices:
             last_price = self.broker.last_prices[sym]
             if last_price > 0 and signal_price > 0:
                 slippage = abs(signal_price - last_price) / last_price
