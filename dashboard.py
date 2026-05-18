@@ -315,20 +315,42 @@ with tab_portfolio:
         return current_dd, float(dd.min()), longest
 
     def _exposure_from_trades(result, curve):
+        """Reconstruct daily net exposure via mark-to-market (linear interpolation).
+
+        Each position's value is interpolated from entry_cost to exit_value
+        across its holding period, then summed per day.
+        """
         if not result.closed_trades or len(curve) < 2:
             return pd.Series(dtype=float), 0.0, {}
-        df_trades = pd.DataFrame([
-            {"symbol": t.symbol, "entry": t.entry_time, "exit": t.exit_time,
-             "cost": t.entry_price * t.qty * 1.0004}
-            for t in result.closed_trades
-        ])
+
         exposure = pd.Series(0.0, index=curve.index)
-        by_symbol = {sym: pd.Series(0.0, index=curve.index) for sym in df_trades["symbol"].unique()}
-        for _, t in df_trades.iterrows():
-            mask = (exposure.index >= t["entry"]) & (exposure.index <= t["exit"])
-            exposure.loc[mask] += t["cost"]
-            if t["symbol"] in by_symbol:
-                by_symbol[t["symbol"]].loc[mask] += t["cost"]
+        symbols = list({t.symbol for t in result.closed_trades})
+        by_symbol = {sym: pd.Series(0.0, index=curve.index) for sym in symbols}
+
+        for t in result.closed_trades:
+            entry_cost = t.entry_price * t.qty * 1.0004
+            exit_value = entry_cost + (t.pnl or 0)
+
+            # Find dates within holding period
+            mask = (exposure.index >= t.entry_time) & (exposure.index <= t.exit_time)
+            dates_in = exposure.index[mask]
+
+            if len(dates_in) < 2:
+                # Single-day trade — use entry_cost
+                exposure.loc[mask] += entry_cost
+                if t.symbol in by_symbol:
+                    by_symbol[t.symbol].loc[mask] += entry_cost
+                continue
+
+            # Linear interpolation: entry_cost → exit_value
+            total_days = (dates_in[-1] - dates_in[0]).days or 1
+            for d in dates_in:
+                frac = (d - dates_in[0]).days / total_days
+                mtm_value = entry_cost + (exit_value - entry_cost) * frac
+                exposure.loc[d] += mtm_value
+                if t.symbol in by_symbol:
+                    by_symbol[t.symbol].loc[d] += mtm_value
+
         net_pct = (exposure / curve) * 100
         last_exp = float(net_pct.iloc[-1]) if len(net_pct) > 0 else 0.0
         top = {}
