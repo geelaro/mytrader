@@ -432,25 +432,120 @@ with tab_portfolio:
     s5.metric("平均亏损", f"${pf_result.avg_loss:,.0f}")
     s6.metric("平均持仓天", f"{pf_result.avg_hold_days:.1f}")
 
-    # --- Per-symbol PnL attribution ---
-    st.subheader("收益归因 · 按标的")
+    # --- PnL Attribution ---
+    st.subheader("收益归因")
+
     if pf_result.closed_trades:
-        by_symbol: dict = {}
+        # Build attribution dataframe
+        attr_rows = []
         for t in pf_result.closed_trades:
-            by_symbol.setdefault(t.symbol, []).append(t)
-        sym_rows = []
-        for sym, sym_trades in sorted(by_symbol.items()):
-            n = len(sym_trades)
-            wr = sum(1 for t in sym_trades if t.pnl is not None and t.pnl > 0) / n * 100
-            total_pnl = sum(t.pnl or 0 for t in sym_trades)
-            sym_rows.append({
-                "标的": sym, "笔数": n, "胜率%": round(wr, 1),
-                "总PnL": round(total_pnl, 0), "平均PnL": round(total_pnl / n, 0),
-                "最大单笔PnL": round(max(t.pnl or 0 for t in sym_trades), 0),
-                "最小单笔PnL": round(min(t.pnl or 0 for t in sym_trades), 0),
+            pnl = t.pnl or 0
+            attr_rows.append({
+                "symbol": t.symbol,
+                "month": pd.Timestamp(t.entry_time).strftime("%Y-%m"),
+                "pnl": pnl,
+                "pnl_pct": t.pnl_pct or 0,
+                "entry": pd.Timestamp(t.entry_time),
             })
-        df_sym = pd.DataFrame(sym_rows).sort_values("总PnL", ascending=False)
-        st.dataframe(df_sym, use_container_width=True, hide_index=True)
+        df_attr = pd.DataFrame(attr_rows)
+        total_pnl = df_attr["pnl"].sum()
+
+        # Date filter
+        fc1, fc2, fc3 = st.columns([1, 1, 2])
+        with fc1:
+            min_date = df_attr["entry"].min().date()
+            max_date = df_attr["entry"].max().date()
+            attr_start = st.date_input("筛选起始", min_date, key="attr_start")
+        with fc2:
+            attr_end = st.date_input("筛选结束", max_date, key="attr_end")
+
+        mask = (df_attr["entry"] >= pd.Timestamp(attr_start)) & (df_attr["entry"] <= pd.Timestamp(attr_end))
+        df_filt = df_attr[mask]
+        filt_pnl = df_filt["pnl"].sum()
+
+        with fc3:
+            st.metric("区间总PnL", f"${filt_pnl:+,.0f}",
+                      delta=f"全期 ${total_pnl:+,.0f}" if abs(filt_pnl - total_pnl) > 1 else None)
+
+        # By Symbol + By Month (side by side)
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.caption("按标的")
+
+            # PnL by symbol bar chart
+            by_sym = df_filt.groupby("symbol")["pnl"].sum().sort_values()
+            colors = ["#d62728" if v < 0 else "#2ca02c" for v in by_sym]
+            fig_sym, ax_sym = plt.subplots(figsize=(6, 2 + len(by_sym) * 0.35))
+            ax_sym.barh(by_sym.index, by_sym.values, color=colors, height=0.6)
+            ax_sym.axvline(x=0, color="gray", linewidth=0.5)
+            ax_sym.set_xlabel("PnL ($)")
+            for i, v in enumerate(by_sym.values):
+                ax_sym.text(v + (50 if v >= 0 else -50), i, f"${v:+,.0f}",
+                            va="center", fontsize=9, ha="left" if v >= 0 else "right")
+            ax_sym.grid(axis="x", alpha=0.3)
+            st.pyplot(fig_sym)
+            plt.close(fig_sym)
+
+            # Contribution table
+            by_sym_detail = df_filt.groupby("symbol").agg(
+                总PnL=("pnl", "sum"), 笔数=("pnl", "count"),
+                胜率=("pnl", lambda x: (x > 0).mean() * 100),
+                平均PnL=("pnl", "mean"), 最大=("pnl", "max"), 最小=("pnl", "min"),
+            ).sort_values("总PnL", ascending=False)
+            by_sym_detail["贡献%"] = (by_sym_detail["总PnL"] / filt_pnl * 100).round(1) if filt_pnl != 0 else 0
+            by_sym_detail["总PnL"] = by_sym_detail["总PnL"].round(0).astype(int)
+            by_sym_detail["平均PnL"] = by_sym_detail["平均PnL"].round(0).astype(int)
+            by_sym_detail["胜率"] = by_sym_detail["胜率"].round(1)
+            st.dataframe(by_sym_detail, use_container_width=True)
+
+        with col_right:
+            st.caption("按月份")
+
+            # PnL by month bar chart
+            by_month = df_filt.groupby("month")["pnl"].sum()
+            if len(by_month) > 0:
+                colors_m = ["#d62728" if v < 0 else "#2ca02c" for v in by_month]
+                fig_mo, ax_mo = plt.subplots(figsize=(6, 2 + len(by_month) * 0.35))
+                ax_mo.barh(by_month.index, by_month.values, color=colors_m, height=0.6)
+                ax_mo.axvline(x=0, color="gray", linewidth=0.5)
+                ax_mo.set_xlabel("PnL ($)")
+                for i, v in enumerate(by_month.values):
+                    ax_mo.text(v + (50 if v >= 0 else -50), i, f"${v:+,.0f}",
+                               va="center", fontsize=9, ha="left" if v >= 0 else "right")
+                ax_mo.grid(axis="x", alpha=0.3)
+                ax_mo.invert_yaxis()
+                st.pyplot(fig_mo)
+                plt.close(fig_mo)
+
+                # Monthly detail table
+                by_mo_detail = df_filt.groupby("month").agg(
+                    总PnL=("pnl", "sum"), 笔数=("pnl", "count"),
+                    胜率=("pnl", lambda x: (x > 0).mean() * 100),
+                    月均PnL=("pnl_pct", "mean"),
+                ).sort_index(ascending=False)
+                by_mo_detail["累计PnL"] = by_mo_detail["总PnL"].cumsum()
+                by_mo_detail["总PnL"] = by_mo_detail["总PnL"].round(0).astype(int)
+                by_mo_detail["胜率"] = by_mo_detail["胜率"].round(1)
+                by_mo_detail["月均PnL"] = by_mo_detail["月均PnL"].round(2)
+                by_mo_detail["累计PnL"] = by_mo_detail["累计PnL"].round(0).astype(int)
+                st.dataframe(by_mo_detail, use_container_width=True)
+
+        # Top contributors / detractors summary
+        st.caption("贡献源 & 拖累源")
+        c1, c2 = st.columns(2)
+        with c1:
+            top3 = df_filt.groupby("symbol")["pnl"].sum().nlargest(3)
+            for sym, p in top3.items():
+                pct = f"{p/filt_pnl*100:.0f}%" if filt_pnl != 0 else "—"
+                st.metric(f"↑ {sym}", f"${p:+,.0f}", delta=pct)
+        with c2:
+            bot3 = df_filt.groupby("symbol")["pnl"].sum().nsmallest(3)
+            for sym, p in bot3.items():
+                pct = f"{p/filt_pnl*100:.0f}%" if filt_pnl != 0 else "—"
+                st.metric(f"↓ {sym}", f"${p:+,.0f}", delta=pct)
+    else:
+        st.info("无交易记录")
 
     # --- Filtered trade details ---
     st.subheader("交易明细")
