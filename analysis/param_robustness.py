@@ -266,7 +266,7 @@ def _compute_stats(df: pd.DataFrame, base_oos: dict) -> dict:
 
 
 def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.DataFrame) -> dict:
-    """Generate a human-readable robustness conclusion."""
+    """Generate a human-readable robustness + viability conclusion."""
     ret_base = base_oos["return_pct"]
     ret_median = stats["return_pct"]["median"]
     ret_q05 = stats["return_pct"]["q05"]
@@ -274,13 +274,14 @@ def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.Data
 
     sharpe_base = base_oos["sharpe"]
     sharpe_median = stats["sharpe"]["median"]
+    trades_base = base_oos["trades"]
 
     # Count what fraction of perturbations are still profitable
     n_profitable = (df["return_pct"] > 0).sum()
     n_total = len(df)
     profit_ratio = n_profitable / n_total if n_total > 0 else 0
 
-    # Find most sensitive parameter (largest return spread across its perturbed values)
+    # Find most sensitive parameter
     param_cols = [c for c in df.columns if c.startswith("p_")]
     sensitivities = {}
     for col in param_cols:
@@ -292,19 +293,51 @@ def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.Data
             sensitivities[name] = round(vals.max() - vals.min(), 2)
     most_sensitive = max(sensitivities, key=sensitivities.get) if sensitivities else "N/A"
 
-    # Rating logic
+    # ---- Robustness rating ----
     if profit_ratio >= 0.9 and ret_degrad < 20 and ret_q05 > 0:
-        rating = "ROBUST"
-        rating_label = "鲁棒 — 参数邻域内表现稳定，90%+扰动仍盈利"
+        robustness = "ROBUST"
+        robustness_label = "鲁棒 — 参数邻域内表现稳定，90%+扰动仍盈利"
     elif profit_ratio >= 0.7 and ret_q05 > 0:
-        rating = "STABLE"
-        rating_label = "稳定 — 多数扰动保持盈利，下分位仍为正"
+        robustness = "STABLE"
+        robustness_label = "稳定 — 多数扰动保持盈利，下分位仍为正"
     elif profit_ratio >= 0.5:
-        rating = "SENSITIVE"
-        rating_label = "敏感 — 半数以上扰动盈利，但边缘组合出现亏损"
+        robustness = "SENSITIVE"
+        robustness_label = "敏感 — 半数以上扰动盈利，但边缘组合出现亏损"
     else:
-        rating = "OVERFIT"
-        rating_label = "过拟合 — 多数扰动导致亏损，参数高度敏感"
+        robustness = "OVERFIT"
+        robustness_label = "过拟合 — 多数扰动导致亏损，参数高度敏感"
+
+    # ---- Strategy viability ----
+    if ret_base <= 0:
+        viability = "NEGATIVE"
+        viability_label = "策略亏损，无论参数如何调整都无法盈利"
+    elif trades_base < 3:
+        viability = "NO_SIGNAL"
+        viability_label = "交易次数不足3笔，统计无意义，信号过于稀疏"
+    elif ret_base < 5:
+        viability = "WEAK"
+        viability_label = f"OOS收益仅{ret_base:+.1f}%，策略未捕获显著alpha，建议换策略或扩大参数搜索空间"
+    elif trades_base < 5:
+        viability = "MARGINAL"
+        viability_label = f"OOS收益{ret_base:+.1f}%但仅{trades_base}笔交易，样本偏小，需更长回测期验证"
+    elif sharpe_base < 0.5 and ret_base < 10:
+        viability = "MARGINAL"
+        viability_label = f"OOS收益{ret_base:+.1f}%但Sharpe仅{sharpe_base:.2f}，风险调整后吸引力不足"
+    else:
+        viability = "VIABLE"
+        viability_label = f"OOS收益{ret_base:+.1f}%，Sharpe {sharpe_base:.2f}，具有实盘跟踪价值"
+
+    # ---- Combined verdict ----
+    if robustness == "OVERFIT" or viability in ("NEGATIVE", "NO_SIGNAL"):
+        verdict = "✗ 不建议使用"
+    elif viability == "WEAK" and robustness in ("ROBUST", "STABLE"):
+        verdict = "△ 参数稳定但策略乏力，换策略优先于调参数"
+    elif viability == "WEAK":
+        verdict = "✗ 参数敏感且收益微弱，双重不利"
+    elif viability == "MARGINAL":
+        verdict = "△ 可观察，需更长回测期或更优策略替代"
+    else:
+        verdict = "✓ 可纳入实盘候选"
 
     # Sensitivity per parameter
     param_lines = []
@@ -312,11 +345,12 @@ def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.Data
         param_lines.append(f"  {name}: Δ{spread:+.1f}%")
 
     lines = [
-        f"参数鲁棒性评级: {rating}",
-        f"  {rating_label}",
+        f"鲁棒性: {robustness}  |  策略质量: {viability}  |  结论: {verdict}",
+        f"  {robustness_label}",
+        f"  {viability_label}",
         "",
         f"最优参数: {base_params}",
-        f"OOS 基准: 收益 {ret_base:+.1f}%  Sharpe {sharpe_base:.2f}",
+        f"OOS 基准: 收益 {ret_base:+.1f}%  Sharpe {sharpe_base:.2f}  交易 {trades_base} 笔",
         "",
         f"邻域分布 ({n_total} 个扰动点):",
         f"  收益中位数: {ret_median:+.1f}%  (最优→中位衰减 {ret_degrad:+.1f}%)",
@@ -332,7 +366,7 @@ def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.Data
         f"最敏感参数: {most_sensitive}",
     ]
 
-    return {"text": "\n".join(lines), "rating": rating}
+    return {"text": "\n".join(lines), "rating": robustness, "viability": viability, "verdict": verdict}
 
 
 # ---------------------------------------------------------------------------
