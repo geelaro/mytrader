@@ -11,7 +11,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
 
 from .protocol import DataSource, OHLCV_COLUMNS, CN_SYMBOLS
 
@@ -49,6 +48,7 @@ class YFinanceSource(DataSource):
 
     def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         try:
+            import yfinance as yf
             df = yf.download(symbol, start=start, end=end, progress=False)
             if df is None or df.empty:
                 return pd.DataFrame(columns=OHLCV_COLUMNS)

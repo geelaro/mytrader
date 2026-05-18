@@ -358,7 +358,7 @@ class TestYFinanceSourceFetch:
         }, index=pd.to_datetime(["2025-01-02", "2025-01-03"]))
 
         src = YFinanceSource()
-        with patch("data.sources.yf.download", return_value=mock_df):
+        with patch("yfinance.download", return_value=mock_df):
             df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
             assert len(df) == 2
             assert list(df.columns) == OHLCV_COLUMNS
@@ -367,7 +367,7 @@ class TestYFinanceSourceFetch:
         from data.sources import YFinanceSource
 
         src = YFinanceSource()
-        with patch("data.sources.yf.download", return_value=pd.DataFrame()):
+        with patch("yfinance.download", return_value=pd.DataFrame()):
             df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
             assert df.empty
 
@@ -375,7 +375,7 @@ class TestYFinanceSourceFetch:
         from data.sources import YFinanceSource
 
         src = YFinanceSource()
-        with patch("data.sources.yf.download", side_effect=Exception("fail")):
+        with patch("yfinance.download", side_effect=Exception("fail")):
             df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
             assert df.empty
 
