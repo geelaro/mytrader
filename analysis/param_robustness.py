@@ -450,7 +450,7 @@ def generate_report(results: dict, output_dir: Optional[str] = None):
 
     # CSV
     csv_path = out / f"{stem}.csv"
-    results["oos_results"].to_csv(csv_path, index=False)
+    results["oos_results"].to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"CSV 已保存: {csv_path}")
 
     # PNG

@@ -184,7 +184,7 @@ def generate_report(df: pd.DataFrame, strategy: str, symbol: str,
 
     # CSV
     csv_path = out / f"{stem}.csv"
-    df.to_csv(csv_path, index=False)
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"CSV 已保存: {csv_path}")
 
     # PNG
@@ -328,7 +328,7 @@ def main():
     if args.csv:
         path = Path(args.csv)
         path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(path, index=False)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
         print(f"\n结果已保存至: {path}")
     elif not args.no_report:
         generate_report(df, args.strategy, args.symbol)

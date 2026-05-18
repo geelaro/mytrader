@@ -621,7 +621,7 @@ with tab_portfolio:
         with ec3:
             csv_buffer = io.StringIO()
             display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
-            df_filtered[display_cols].to_csv(csv_buffer, index=False)
+            df_filtered[display_cols].to_csv(csv_buffer, index=False, encoding="utf-8-sig")
             st.download_button("⬇ CSV", csv_buffer.getvalue(),
                                f"trades_{pf_strategy}_{attr_start}_{attr_end}.csv",
                                "text/csv", key="dl_csv")
