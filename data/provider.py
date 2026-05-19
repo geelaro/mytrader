@@ -63,6 +63,7 @@ class DataProvider:
             SinaSource(),
             AKShareSource(),
         ]
+        self._fetch_failures: set = set()  # symbols that failed this session
 
     # ------------------------------------------------------------------
     # Public API
@@ -107,12 +108,21 @@ class DataProvider:
             if self._is_complete(df, start, end):
                 return df
 
-        # Identify gaps and fetch
+        # Identify gaps and fetch (skip symbols that failed before)
+        if force_refresh and sym in self._fetch_failures:
+            self._fetch_failures.discard(sym)
+        if sym in self._fetch_failures:
+            return self._load_from_cache(sym, start, end)
+
         gaps = self._find_gaps(sym, start, end, force_refresh)
+        any_fetched = False
         for gap_start, gap_end in gaps:
             fetched, actual_source = self._fetch_from_sources(sym, gap_start, gap_end)
             if fetched is not None and not fetched.empty:
                 self.cache.save(sym, fetched, source=actual_source or "unknown")
+                any_fetched = True
+        if gaps and not any_fetched:
+            self._fetch_failures.add(sym)
 
         return self._load_from_cache(sym, start, end)
 
@@ -172,13 +182,17 @@ class DataProvider:
 
     @staticmethod
     def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
-        """Heuristic: does *df* cover the entire requested range?"""
+        """Heuristic: does *df* cover up to the requested end date?
+
+        Only checks the tail — if we already have data through *end*,
+        don't re-fetch.  The beginning may never be fully backfillable
+        for some symbols (e.g. orphan positions with limited sources),
+        and we accept that rather than re-fetching every cycle.
+        """
         if df is None or df.empty:
             return False
-        first = df.index[0]
         last = df.index[-1]
-        expected_first = pd.Timestamp(start)
         expected_last = pd.Timestamp(end)
         # Allow ~3 business days of slack (weekends / minor holidays)
         slack = pd.Timedelta(days=5)
-        return (first <= expected_first + slack) and (last >= expected_last - slack)
+        return last >= expected_last - slack

@@ -100,14 +100,11 @@ def setup_logging(
 
 
 def _setup_named_logger(logger: logging.Logger, name: str):
-    """Give *logger* its own console + file handler; stop propagation
-    so its messages don't also land in the shared mytrader.log."""
-    logger.setLevel(logging.DEBUG)
+    """Give *logger* its own file handler; stop propagation so its
+    messages don't land in the shared mytrader.log or root console.
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.DEBUG)
-    console.setFormatter(logging.Formatter(CONSOLE_FORMAT, datefmt="%H:%M:%S"))
-    logger.addHandler(console)
+    Named loggers only write to file, not console — use print() for
+    interactive terminal output."""
 
     log_path = Path(_log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
@@ -120,8 +117,16 @@ def _setup_named_logger(logger: logging.Logger, name: str):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     logger.addHandler(file_handler)
-
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
+
+    # Route sub-module logs to the same file, suppress console noise
+    if name == "live":
+        for lib in ["futu", "data"]:
+            lib_logger = logging.getLogger(lib)
+            lib_logger.setLevel(logging.INFO)
+            lib_logger.addHandler(file_handler)
+            lib_logger.propagate = False
 
 
 def get_logger(name: str) -> logging.Logger:
