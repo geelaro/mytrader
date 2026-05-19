@@ -193,6 +193,6 @@ class DataProvider:
             return False
         last = df.index[-1]
         expected_last = pd.Timestamp(end)
-        # Allow ~3 business days of slack (weekends / minor holidays)
-        slack = pd.Timedelta(days=5)
+        # Allow weekend gap (Fri→Mon = 3 days), but trigger fetch if older
+        slack = pd.Timedelta(days=2)
         return last >= expected_last - slack
