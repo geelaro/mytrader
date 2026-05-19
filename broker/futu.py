@@ -438,3 +438,31 @@ class FutuBroker(Broker):
         except Exception:
             pass
         return self.last_prices
+
+    def get_historical_kline(self, symbol: str, start: str, end: str) -> "pd.DataFrame":
+        """Fetch daily OHLCV kline from FutuOpenD. Returns empty DataFrame on failure."""
+        import pandas as pd
+        from futu import KLType, AuType
+
+        if self._quote_ctx is None:
+            self.connect()
+        if self._quote_ctx is None:
+            return pd.DataFrame()
+
+        code = _to_futu_symbol(symbol)
+        try:
+            ret, data, _ = self._quote_ctx.request_history_kline(
+                code, start=start, end=end,
+                ktype=KLType.K_DAY, autype=AuType.QFQ, max_count=2000,
+            )
+            if ret == 0 and not data.empty:
+                df = pd.DataFrame({
+                    "date": pd.to_datetime(data["time_key"]),
+                    "Open": data["open"], "High": data["high"],
+                    "Low": data["low"], "Close": data["close"],
+                    "Volume": data["volume"],
+                }).set_index("date").sort_index()
+                return df
+        except Exception:
+            logger.warning("Futu kline fetch failed for %s", symbol)
+        return pd.DataFrame()

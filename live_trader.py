@@ -335,6 +335,14 @@ class LiveTrader:
             strategy_names = [active_strat] if active_strat else []
 
             df = self.provider.get_daily(symbol, start=start, end=target_date)
+
+            # Orphan with thin data: try FutuBroker for historical kline
+            if is_orphan and (df is None or len(df) < 50) and hasattr(self.broker, "get_historical_kline"):
+                futu_df = self.broker.get_historical_kline(symbol, start, target_date)
+                if not futu_df.empty:
+                    self.cache.save(symbol, futu_df, source="futu")
+                    df = self.provider.get_daily(symbol, start=start, end=target_date)
+
             if df is None or df.empty:
                 continue
 
