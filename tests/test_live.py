@@ -938,9 +938,14 @@ class TestVolatilitySizing:
         trader._ms_vol_scalar = 0.7
         trader._market_state = MagicMock()
         trader._market_state.volatility = Volatility.NORMAL
-        qty = trader._calc_position_size(
+        qty_normal = trader._calc_position_size(
             {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
-        assert qty > 0
+
+        # Disabled should produce same qty as NORMAL vol
+        trader._ms_enabled = False
+        qty_disabled = trader._calc_position_size(
+            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
+        assert qty_normal == qty_disabled
 
     def test_disabled_no_scaling(self):
         trader = self._make_trader()

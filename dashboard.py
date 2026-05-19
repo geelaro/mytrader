@@ -112,7 +112,7 @@ if ms_cfg.get("enabled", False):
     else:
         st.info(f"市场状态: {proxy_sym} 数据不可用")
 
-st.divider()
+    st.divider()
 
 # ---------------------------------------------------------------------------
 # Row 1 — Today's signals + Account overview

@@ -4,8 +4,8 @@ Usage:
     from utils.market_state import MarketStateClassifier
 
     classifier = MarketStateClassifier(spy_df)
-    classifier.calculate()
-    regime, vol = classifier.classify()
+    state = classifier.classify()
+    print(state.regime, state.volatility)
 """
 
 from dataclasses import dataclass
@@ -40,6 +40,7 @@ class MarketState:
     bb_width_pct: float
 
 
+# When adding a new strategy to STRATEGY_MAP, also classify it here.
 _TREND_STRATEGIES = {
     "enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj",
     "donchian_breakout", "atr_breakout", "bollinger_squeeze", "turtle_trading",
@@ -112,13 +113,11 @@ class MarketStateClassifier:
         df["MA_mid"] = df["Close"].rolling(self.ma_mid).mean()
         df["MA_long"] = df["Close"].rolling(self.ma_long).mean()
 
-        # ADX — need ATR first
-        from strategy.base import compute_atr
-        df["ATR_calc"] = compute_atr(df, 14)
-        compute_adx(df, 14)  # adds ADX, +DI, -DI
+        # ADX (internally computes its own ATR)
+        compute_adx(df, 14)
 
         # BB
-        compute_bollinger(df, self.bb_period)
+        df = compute_bollinger(df, self.bb_period)
 
         # BB bandwidth percentile over lookback
         if "BB_width" in df.columns:
@@ -165,7 +164,7 @@ class MarketStateClassifier:
             regime = MarketRegime.TRENDING_UP
         elif trend_strength_ok and ma_aligned_down:
             regime = MarketRegime.TRENDING_DOWN
-        elif adx < 20:
+        elif adx < max(20, self.adx_threshold - 5):
             regime = MarketRegime.RANGING
         else:
             regime = MarketRegime.TRANSITIONAL

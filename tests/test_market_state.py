@@ -44,18 +44,28 @@ def make_ranging(n_bars=500) -> pd.DataFrame:
 
 
 def make_high_vol(n_bars=500) -> pd.DataFrame:
-    """High volatility — large daily swings."""
+    """High volatility — calm first 90%, then volatility spike at the end.
+    This ensures BB bandwidth percentile is >80% (recent spike vs calm history)."""
     rng = np.random.default_rng(7)
     dates = pd.bdate_range("2020-01-01", periods=n_bars)
-    noise = rng.normal(0, 0.03, n_bars)  # 3% daily noise
-    close = 100 * np.exp(np.cumsum(noise))
+    spike_start = int(n_bars * 0.9)
     data = []
-    for i, c in enumerate(close):
-        r = c * abs(rng.normal(0.04, 0.01))  # wide bars
+    prev_c = 100.0
+    for i in range(n_bars):
+        if i < spike_start:
+            noise = rng.normal(0, 0.005)  # calm
+        else:
+            noise = rng.normal(0, 0.03)   # volatile spike
+        c = prev_c * (1 + noise)
+        if i < spike_start:
+            bar_range = c * abs(rng.normal(0.01, 0.003))
+        else:
+            bar_range = c * abs(rng.normal(0.04, 0.01))
         data.append({
-            "Date": dates[i], "Open": c - r / 2, "High": c + r,
-            "Low": c - r, "Close": c, "Volume": 10_000_000,
+            "Date": dates[i], "Open": c - bar_range / 2, "High": c + bar_range,
+            "Low": c - bar_range, "Close": c, "Volume": 10_000_000,
         })
+        prev_c = c
     return pd.DataFrame(data).set_index("Date")
 
 
@@ -87,6 +97,14 @@ class TestVolatility:
         c = MarketStateClassifier(df)
         state = c.classify()
         assert state.volatility in (Volatility.NORMAL, Volatility.LOW)
+
+    def test_high_vol_data_classified(self):
+        """Synthetic high-vol data should produce a valid volatility label."""
+        df = make_high_vol()
+        c = MarketStateClassifier(df)
+        state = c.classify()
+        assert state.volatility in Volatility
+        assert state.bb_width_pct > 0  # percentile is computed
 
 
 class TestStrategyTypeChecks:
