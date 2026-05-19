@@ -129,6 +129,7 @@ class LiveTrader:
         self._orphan_symbols: set = set()  # symbols in positions but not watchlist
         self._trading_paused = False
         self._pause_reason = ""
+        self._alert_sent = False
         ms = self.config.get("market_state", {})
         self._ms_proxy = ms.get("proxy_symbol", "SPY")
         self._ms_vol_scalar = ms.get("vol_high_scalar", 0.7)
@@ -590,6 +591,7 @@ class LiveTrader:
         if r._date != today:
             self._trading_paused = False
             self._pause_reason = ""
+            self._alert_sent = False
 
         # Daily loss limit
         if r._day_start_equity > 0 and equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
@@ -608,7 +610,11 @@ class LiveTrader:
 
         if self._trading_paused:
             print(f"\n  !! 交易暂停: {self._pause_reason}")
-            self.notifier.error("交易暂停", self._pause_reason)
+            if not self._alert_sent:
+                self.notifier.error("交易暂停", self._pause_reason)
+                self._alert_sent = True
+        else:
+            self._alert_sent = False
 
     def _update_risk_state(self, order: Order):
         """Update circuit breaker and daily trade count after a fill."""
@@ -687,6 +693,7 @@ class LiveTrader:
                     self.risk._daily_trade_count = 0
                     self._trading_paused = False
                     self._pause_reason = ""
+                    self._alert_sent = False
                     self._persist_risk_state()
                     logger.info("新交易日: %s，日交易计数重置", today)
 
