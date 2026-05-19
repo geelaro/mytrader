@@ -21,11 +21,12 @@ from data.cache import CacheManager
 from strategy import STRATEGY_MAP, SIGNAL_LABEL
 from engine.trader import BacktestEngine, plot_result, print_result
 from utils import load_toml, get_logger
+from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 
 logger = get_logger("dashboard")
 
-st.set_page_config(page_title="mytrader", layout="wide")
-st.title("mytrader Dashboard")
+st.set_page_config(page_title="Mytrader", layout="wide")
+st.title("Mytrader Dashboard")
 
 # ---------------------------------------------------------------------------
 # Sidebar — controls
@@ -60,6 +61,58 @@ def get_cache():
 
 provider = get_provider()
 cache = get_cache()
+
+# ---------------------------------------------------------------------------
+# Market state
+# ---------------------------------------------------------------------------
+
+ms_cfg = config.get("market_state", {})
+if ms_cfg.get("enabled", False):
+    st.subheader("市场状态")
+
+    proxy_sym = ms_cfg.get("proxy_symbol", "SPY")
+    lookback = config.get("default", {}).get("lookback_years", 3)
+    ms_start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
+    ms_df = provider.get_daily(proxy_sym, start=ms_start, end=target_date.isoformat())
+
+    if ms_df is not None and not ms_df.empty:
+        classifier = MarketStateClassifier(ms_df)
+        state = classifier.classify()
+
+        regime = state.regime
+        vol = state.volatility
+        regime_color = {
+            MarketRegime.TRENDING_UP: "#2ca02c",
+            MarketRegime.TRENDING_DOWN: "#d62728",
+            MarketRegime.RANGING: "#ff7f0e",
+            MarketRegime.TRANSITIONAL: "#7f7f7f",
+        }
+        regime_label = {
+            MarketRegime.TRENDING_UP: "上升趋势",
+            MarketRegime.TRENDING_DOWN: "下降趋势",
+            MarketRegime.RANGING: "震荡",
+            MarketRegime.TRANSITIONAL: "过渡期",
+        }
+        vol_label = {Volatility.HIGH: "高波动", Volatility.NORMAL: "正常", Volatility.LOW: "低波动"}
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("市场状态", regime_label.get(regime, regime.name))
+        c2.metric("波动率", vol_label.get(vol, vol.name))
+        c3.metric("ADX", f"{state.adx:.1f}")
+        c4.metric("MA20", f"{state.ma20:.2f}")
+        c5.metric("MA200", f"{state.ma200:.2f}")
+        c6.metric("BB带宽分位", f"{state.bb_width_pct:.0f}%")
+
+        st.markdown(
+            f"<span style='display:inline-block;padding:4px 12px;border-radius:8px;"
+            f"background:{regime_color.get(regime, '#7f7f7f')};color:white;font-weight:bold;'>"
+            f"{regime_label.get(regime, regime.name)} × {vol_label.get(vol, vol.name)}</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info(f"市场状态: {proxy_sym} 数据不可用")
+
+st.divider()
 
 # ---------------------------------------------------------------------------
 # Row 1 — Today's signals + Account overview

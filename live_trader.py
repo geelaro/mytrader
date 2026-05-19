@@ -40,6 +40,10 @@ from broker import (
     Position,
 )
 from utils import get_logger, load_toml
+from utils.market_state import (
+    MarketStateClassifier, is_trend_strategy, is_mean_reversion_strategy,
+    MarketRegime, Volatility,
+)
 from utils.notify import Notifier
 
 logger = get_logger("live")
@@ -125,6 +129,11 @@ class LiveTrader:
         self._orphan_symbols: set = set()  # symbols in positions but not watchlist
         self._trading_paused = False
         self._pause_reason = ""
+        ms = self.config.get("market_state", {})
+        self._ms_proxy = ms.get("proxy_symbol", "SPY")
+        self._ms_vol_scalar = ms.get("vol_high_scalar", 0.7)
+        self._ms_enabled = ms.get("enabled", False)
+        self._market_state = None  # set during run()
         self._restore_risk_state()
 
     # ------------------------------------------------------------------
@@ -177,7 +186,10 @@ class LiveTrader:
                       f"均价 ${pos.avg_price:.2f}  市值 ${pos.market_value:,.0f}  "
                       f"浮盈 ${pos.unrealized_pnl:+,.0f}{tag}")
 
-        # 4. Generate signals
+        # 4. Market state classification
+        self._market_state = self._classify_market_state(target_date)
+
+        # 5. Generate signals
         signals = self._scan_signals(target_date, positions)
 
         # Real-time price override (FutuBroker)
@@ -186,10 +198,10 @@ class LiveTrader:
             if live_price > 0:
                 s['price'] = live_price
 
-        # 5. Compare → Orders
+        # 6. Compare → Orders
         orders = self._generate_orders(signals, positions, account)
 
-        # 6. Submit (with polling for partial fills + timeout cancellation)
+        # 7. Submit (with polling for partial fills + timeout cancellation)
         submitted = []
         for order in orders:
             signal_price = self.broker.last_prices.get(order.symbol, 0)
@@ -263,6 +275,34 @@ class LiveTrader:
                     print(f"  {s:<8s} ${p:.2f}")
         except Exception as e:
             logger.warning("行情刷新失败: %s", e)
+
+    # ------------------------------------------------------------------
+    # Market state
+    # ------------------------------------------------------------------
+
+    def _classify_market_state(self, target_date: str):
+        """Fetch proxy data, classify market regime + volatility."""
+        if not self._ms_enabled:
+            return None
+
+        try:
+            lookback = self.config.get("default", {}).get("lookback_years", 3)
+            start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
+            df = self.provider.get_daily(self._ms_proxy, start=start, end=target_date)
+            if df is None or df.empty:
+                logger.warning("市场状态: %s 无数据，跳过", self._ms_proxy)
+                return None
+
+            classifier = MarketStateClassifier(df)
+            state = classifier.classify()
+            print(f"\n  市场状态: {state.regime.name}  |  波动率: {state.volatility.name}"
+                  f"  (ADX={state.adx:.1f}  BB带宽={state.bb_width_pct:.0f}%)")
+            logger.info("市场状态: regime=%s vol=%s adx=%.1f bb_pct=%.0f",
+                        state.regime.name, state.volatility.name, state.adx, state.bb_width_pct)
+            return state
+        except Exception:
+            logger.exception("市场状态分类失败")
+            return None
 
     # ------------------------------------------------------------------
     # Signal generation
@@ -372,6 +412,8 @@ class LiveTrader:
                 if self._trading_paused:
                     print(f"  ! {sym} 买入信号但交易已暂停 ({self._pause_reason})，跳过")
                     continue
+                if self._filter_by_regime(sig):
+                    continue
                 qty = self._calc_position_size(sig, account.total_equity)
                 if qty <= 0:
                     print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
@@ -434,7 +476,31 @@ class LiveTrader:
             qty = int(equity * 0.30 / price)
 
         max_qty = int(equity * r.max_position_pct / price)
-        return max(1, min(qty, max_qty))
+        qty = max(1, min(qty, max_qty))
+
+        # Volatility scaling from market state
+        if self._ms_enabled and self._market_state is not None:
+            if self._market_state.volatility == Volatility.HIGH:
+                qty = max(1, int(qty * self._ms_vol_scalar))
+
+        return qty
+
+    def _filter_by_regime(self, sig: dict) -> bool:
+        """Return True if this BUY signal should be filtered by market regime."""
+        if not self._ms_enabled or self._market_state is None:
+            return False
+
+        regime = self._market_state.regime
+        strat = sig.get("strategy", "")
+
+        if regime == MarketRegime.RANGING and is_trend_strategy(strat):
+            print(f"  ! {sig['symbol']} {strat} 买入信号被过滤（震荡市不追趋势）")
+            return True
+        if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) and is_mean_reversion_strategy(strat):
+            print(f"  ! {sig['symbol']} {strat} 买入信号被过滤（趋势市不做均值回归）")
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Risk checks

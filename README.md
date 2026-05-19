@@ -88,7 +88,7 @@ print_result(r)
 ### 2. Dashboard（5 min）
 
 ```bash
-pipenv run streamlit run dashboard.py   # http://localhost:8501
+pipenv run streamlit run dashboard.py  --server.port 8501 --server.headless true # http://localhost:8501
 ```
 
 - **单标 Tab**：选标的/策略 → 权益曲线 + 买卖点 + 策略对比

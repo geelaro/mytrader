@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr
+from .base import BaseStrategy, StrategyParams, compute_atr, compute_adx
 
 
 @dataclass(frozen=True)
@@ -54,21 +54,7 @@ class TrendFollower(BaseStrategy):
         df["ATR"] = compute_atr(df, p.atr_period)
 
         # ADX
-        high_diff = df["High"].diff()
-        low_diff = -df["Low"].diff()
-        plus_dm = pd.Series((high_diff > low_diff) & (high_diff > 0)) * high_diff
-        plus_dm = plus_dm.clip(lower=0)
-        minus_dm = pd.Series((low_diff > high_diff) & (low_diff > 0)) * low_diff
-        minus_dm = minus_dm.clip(lower=0)
-
-        atr_s = df["ATR"].replace(0, np.nan)
-        plus_di = 100 * plus_dm.ewm(alpha=1 / p.adx_period, adjust=False).mean() / atr_s
-        minus_di = 100 * minus_dm.ewm(alpha=1 / p.adx_period, adjust=False).mean() / atr_s
-
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-        df["ADX"] = dx.ewm(alpha=1 / p.adx_period, adjust=False).mean()
-        df["+DI"] = plus_di
-        df["-DI"] = minus_di
+        compute_adx(df, p.adx_period)
 
         # Entry signals only
         df["Signal"] = 0

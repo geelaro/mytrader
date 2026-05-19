@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from live_trader import LiveTrader, RiskLimits
+from utils.market_state import MarketRegime, Volatility
 from broker import (
     Order, OrderSide, OrderStatus, OrderType, Position, Account, MockBroker,
 )
@@ -837,3 +838,113 @@ class TestRiskPersistence:
             assert trader.risk._date == today
         finally:
             self._clean_risk_db()
+
+
+# ===================================================================
+# Market state integration — regime filtering + volatility sizing
+# ===================================================================
+
+
+class TestRegimeFiltering:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader.risk._day_start_equity = 100000
+        return trader
+
+    def test_disabled_does_nothing(self):
+        """When market_state is disabled, no filtering."""
+        trader = self._make_trader()
+        trader._ms_enabled = False
+        # Should return False (not filtered)
+        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+
+    def test_null_state_does_nothing(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._market_state = None
+        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+
+    def test_trend_strategy_blocked_in_ranging(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._market_state = MagicMock()
+        trader._market_state.regime = MarketRegime.RANGING
+        trader._market_state.volatility = Volatility.NORMAL
+        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is True
+
+    def test_trend_strategy_allowed_in_trending_up(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._market_state = MagicMock()
+        trader._market_state.regime = MarketRegime.TRENDING_UP
+        trader._market_state.volatility = Volatility.NORMAL
+        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+
+    def test_mean_reversion_blocked_in_trending(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._market_state = MagicMock()
+        trader._market_state.regime = MarketRegime.TRENDING_UP
+        trader._market_state.volatility = Volatility.NORMAL
+        assert trader._filter_by_regime(
+            {"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}) is True
+
+    def test_mean_reversion_allowed_in_ranging(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._market_state = MagicMock()
+        trader._market_state.regime = MarketRegime.RANGING
+        trader._market_state.volatility = Volatility.NORMAL
+        assert trader._filter_by_regime(
+            {"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}) is False
+
+    def test_mixed_strategy_never_blocked(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        for regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN,
+                       MarketRegime.RANGING, MarketRegime.TRANSITIONAL):
+            trader._market_state = MagicMock()
+            trader._market_state.regime = regime
+            trader._market_state.volatility = Volatility.NORMAL
+            assert trader._filter_by_regime(
+                {"symbol": "AAPL", "strategy": "daily_macd_kdj"}) is False
+
+
+class TestVolatilitySizing:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader.risk._day_start_equity = 100000
+        return trader
+
+    def test_high_vol_reduces_size(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._ms_vol_scalar = 0.7
+        trader._market_state = MagicMock()
+        trader._market_state.volatility = Volatility.HIGH
+        qty = trader._calc_position_size(
+            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
+        assert qty > 0
+        # Full size at 195, 2% risk, 2xATR stop: ~102 shares. ×0.7 → ~71
+        assert qty <= 120  # well below full size
+
+    def test_normal_vol_no_scaling(self):
+        trader = self._make_trader()
+        trader._ms_enabled = True
+        trader._ms_vol_scalar = 0.7
+        trader._market_state = MagicMock()
+        trader._market_state.volatility = Volatility.NORMAL
+        qty = trader._calc_position_size(
+            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
+        assert qty > 0
+
+    def test_disabled_no_scaling(self):
+        trader = self._make_trader()
+        trader._ms_enabled = False
+        qty = trader._calc_position_size(
+            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
+        assert qty > 0
