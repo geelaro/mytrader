@@ -5,6 +5,11 @@
 [default]
 lookback_years = 3
 
+[defaults]
+# 孤儿持仓（不在 watchlist 中的已有持仓）使用的策略
+# 只响应卖出信号，不产生买入信号，让持仓自然退出
+orphan_strategy = "daily_macd_kdj"
+
 # ---------------------------------------------------------------------------
 # 监控标的列表
 # ---------------------------------------------------------------------------
@@ -66,12 +71,6 @@ monitor = ["turtle_trading", "enhanced_macd", "donchian_breakout", "daily_macd_k
 [[watchlist]]
 symbol = "SPY"
 name = "S&P 500 ETF"
-active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
-
-[[watchlist]]
-symbol = "510300"
-name = "沪深300ETF"
 active = "weekly_macd_kdj"
 monitor = ["turtle_trading"]
 

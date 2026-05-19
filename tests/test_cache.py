@@ -113,5 +113,90 @@ class TestSignalHistory:
         assert rows[0]["symbol"] == "AAPL"
 
 
+class TestRiskState:
+    def test_save_and_load(self, temp_cache):
+        temp_cache.save_risk_state("consecutive_losses", "2")
+        val = temp_cache.load_risk_state("consecutive_losses")
+        assert val == "2"
+
+    def test_overwrite(self, temp_cache):
+        temp_cache.save_risk_state("daily_trade_count", "3")
+        temp_cache.save_risk_state("daily_trade_count", "5")
+        val = temp_cache.load_risk_state("daily_trade_count")
+        assert val == "5"
+
+    def test_nonexistent_key(self, temp_cache):
+        val = temp_cache.load_risk_state("no_such_key")
+        assert val is None
+
+    def test_multiple_keys(self, temp_cache):
+        temp_cache.save_risk_state("date", "2025-06-01")
+        temp_cache.save_risk_state("consecutive_losses", "1")
+        temp_cache.save_risk_state("daily_trade_count", "4")
+        assert temp_cache.load_risk_state("date") == "2025-06-01"
+        assert temp_cache.load_risk_state("consecutive_losses") == "1"
+        assert temp_cache.load_risk_state("daily_trade_count") == "4"
+
+
+class TestEntryPrices:
+    def test_save_and_load_single(self, temp_cache):
+        temp_cache.save_entry_price("AAPL", 195.0, "2025-06-01")
+        result = temp_cache.load_entry_price("AAPL")
+        assert result is not None
+        assert result[0] == 195.0
+        assert result[1] == "2025-06-01"
+
+    def test_load_all(self, temp_cache):
+        temp_cache.save_entry_price("AAPL", 195.0, "2025-06-01")
+        temp_cache.save_entry_price("NVDA", 850.0, "2025-06-02")
+        temp_cache.save_entry_price("TSLA", 240.0, "2025-06-01")
+        all_prices = temp_cache.load_all_entry_prices()
+        assert len(all_prices) == 3
+        assert all_prices["AAPL"] == (195.0, "2025-06-01")
+        assert all_prices["NVDA"] == (850.0, "2025-06-02")
+
+    def test_delete(self, temp_cache):
+        temp_cache.save_entry_price("AAPL", 195.0, "2025-06-01")
+        temp_cache.delete_entry_price("AAPL")
+        result = temp_cache.load_entry_price("AAPL")
+        assert result is None
+
+    def test_nonexistent(self, temp_cache):
+        result = temp_cache.load_entry_price("NOEXIST")
+        assert result is None
+
+    def test_load_all_empty(self, temp_cache):
+        all_prices = temp_cache.load_all_entry_prices()
+        assert all_prices == {}
+
+    def test_upsert(self, temp_cache):
+        temp_cache.save_entry_price("AAPL", 195.0, "2025-06-01")
+        temp_cache.save_entry_price("AAPL", 200.0, "2025-06-05")
+        result = temp_cache.load_entry_price("AAPL")
+        assert result[0] == 200.0
+        assert result[1] == "2025-06-05"
+        # Only one row in DB
+        all_prices = temp_cache.load_all_entry_prices()
+        assert len(all_prices) == 1
+
+
+class TestSchemaNewTables:
+    def test_risk_state_table_exists(self, temp_cache):
+        temp_cache.init_schema()
+        tables = temp_cache.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        names = {r[0] for r in tables}
+        assert "risk_state" in names
+
+    def test_entry_prices_table_exists(self, temp_cache):
+        temp_cache.init_schema()
+        tables = temp_cache.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        names = {r[0] for r in tables}
+        assert "entry_prices" in names
+
+
 # Need pd for asserts
 import pandas as pd

@@ -74,6 +74,17 @@ class CacheManager:
             CREATE INDEX IF NOT EXISTS idx_signal_scan ON signal_history(scan_date);
             CREATE INDEX IF NOT EXISTS idx_signal_sym  ON signal_history(symbol);
 
+            CREATE TABLE IF NOT EXISTS risk_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS entry_prices (
+                symbol     TEXT PRIMARY KEY,
+                price      REAL NOT NULL,
+                entry_date TEXT NOT NULL
+            );
+
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
         """)
@@ -220,6 +231,55 @@ class CacheManager:
         rows = self.conn.execute(query, params).fetchall()
         return [dict(zip(["id", "scan_date", "symbol", "strategy", "bar_date",
                           "signal", "price", "atr", "indicators"], row)) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Risk state persistence
+    # ------------------------------------------------------------------
+
+    def save_risk_state(self, key: str, value: str):
+        self.init_schema()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
+            [key, value],
+        )
+        self.conn.commit()
+
+    def load_risk_state(self, key: str) -> Optional[str]:
+        self.init_schema()
+        row = self.conn.execute(
+            "SELECT value FROM risk_state WHERE key = ?", [key]
+        ).fetchone()
+        return row[0] if row else None
+
+    def save_entry_price(self, symbol: str, price: float, entry_date: str):
+        self.init_schema()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO entry_prices (symbol, price, entry_date) VALUES (?, ?, ?)",
+            [symbol.upper(), price, entry_date],
+        )
+        self.conn.commit()
+
+    def load_entry_price(self, symbol: str) -> Optional[tuple]:
+        self.init_schema()
+        row = self.conn.execute(
+            "SELECT price, entry_date FROM entry_prices WHERE symbol = ?",
+            [symbol.upper()],
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def load_all_entry_prices(self) -> dict:
+        self.init_schema()
+        rows = self.conn.execute(
+            "SELECT symbol, price, entry_date FROM entry_prices"
+        ).fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def delete_entry_price(self, symbol: str):
+        self.init_schema()
+        self.conn.execute(
+            "DELETE FROM entry_prices WHERE symbol = ?", [symbol.upper()]
+        )
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # Incremental helpers

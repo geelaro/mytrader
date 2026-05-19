@@ -120,6 +120,12 @@ class LiveTrader:
         self.risk = RiskLimits.from_config(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
         self._entry_prices: Dict[str, float] = {}  # for circuit breaker tracking
+        self._orphan_strategy = self.config.get("defaults", {}).get("orphan_strategy", "")
+        self._watchlist_symbols: List[str] = []  # populated in run()
+        self._orphan_symbols: set = set()  # symbols in positions but not watchlist
+        self._trading_paused = False
+        self._pause_reason = ""
+        self._restore_risk_state()
 
     # ------------------------------------------------------------------
     # Main entry
@@ -144,8 +150,8 @@ class LiveTrader:
         print(f"{'=' * 60}")
 
         # 1. Warmup broker (trade contexts, connections)
-        watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
-        self.broker.warmup(watchlist_symbols)
+        self._watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
+        self.broker.warmup(self._watchlist_symbols)
 
         # 2. Refresh market prices (watchlist + existing positions)
         self._refresh_market_prices()
@@ -155,19 +161,24 @@ class LiveTrader:
         positions = {p.symbol: p for p in self.broker.get_positions()}
         self._init_risk(account)
 
+        self._check_global_risk(account, positions)
+
         print(f"\n  账户权益: ${account.total_equity:,.0f}  "
               f"可用: ${account.available_cash:,.0f}  "
               f"持仓: {len(positions)} 个")
 
         if positions:
+            # Identify orphans before display
+            orphan_syms = {s for s in positions if s not in self._watchlist_symbols}
             print(f"\n  当前持仓:")
             for sym, pos in positions.items():
+                tag = " [孤儿]" if sym in orphan_syms else ""
                 print(f"    {sym:<8s}  {pos.quantity:>5} 股  "
                       f"均价 ${pos.avg_price:.2f}  市值 ${pos.market_value:,.0f}  "
-                      f"浮盈 ${pos.unrealized_pnl:+,.0f}")
+                      f"浮盈 ${pos.unrealized_pnl:+,.0f}{tag}")
 
         # 4. Generate signals
-        signals = self._scan_signals(target_date)
+        signals = self._scan_signals(target_date, positions)
 
         # Real-time price override (FutuBroker)
         for s in signals:
@@ -178,12 +189,13 @@ class LiveTrader:
         # 5. Compare → Orders
         orders = self._generate_orders(signals, positions, account)
 
-        # 6. Submit
+        # 6. Submit (with polling for partial fills + timeout cancellation)
         submitted = []
         for order in orders:
+            signal_price = self.broker.last_prices.get(order.symbol, 0)
             if self.dry_run:
                 order.status = OrderStatus.FILLED
-                fill_price = self.broker.last_prices.get(order.symbol, 0)
+                fill_price = signal_price
                 if fill_price > 0:
                     order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
                 order.filled_qty = order.quantity
@@ -191,7 +203,7 @@ class LiveTrader:
                 submitted.append(order)
                 self.notifier.trade_card(order)
             else:
-                result = self.broker.submit_order(order)
+                result = self._submit_and_wait(order)
                 self._log_order(result)
                 submitted.append(result)
                 status = "✓" if result.status == OrderStatus.FILLED else "✗"
@@ -202,6 +214,7 @@ class LiveTrader:
                 logger.info("订单: %s", msg)
                 if result.status == OrderStatus.FILLED:
                     self.notifier.trade_card(result)
+                    self._record_slippage(result, signal_price)
                 elif result.status == OrderStatus.REJECTED:
                     self.notifier.error(f"订单被拒: {result.symbol} {result.side.value}",
                                         str(result.broker_data))
@@ -255,16 +268,29 @@ class LiveTrader:
     # Signal generation
     # ------------------------------------------------------------------
 
-    def _scan_signals(self, target_date: str) -> List[dict]:
-        """Run strategies across watchlist, return signal dicts."""
+    def _scan_signals(self, target_date: str, positions: Dict[str, Position]) -> List[dict]:
+        """Run strategies across watchlist + orphan positions, return signal dicts."""
         default_lookback = self.config.get("default", {}).get("lookback_years", 3)
         start = (pd.Timestamp(target_date) - pd.DateOffset(years=default_lookback)).strftime("%Y-%m-%d")
         results = []
 
-        for item in self.config.get("watchlist", []):
+        # Collect all symbols to scan: watchlist + orphan positions
+        scan_items = list(self.config.get("watchlist", []))
+        self._orphan_symbols = set()
+        if self._orphan_strategy:
+            for sym, pos in positions.items():
+                if sym not in self._watchlist_symbols and abs(pos.quantity) > 0:
+                    self._orphan_symbols.add(sym)
+                    scan_items.append({
+                        "symbol": sym, "name": sym,
+                        "active": self._orphan_strategy,
+                        "_orphan": True,
+                    })
+
+        for item in scan_items:
             symbol = item["symbol"]
             name = item.get("name", symbol)
-            # Only execute the active strategy for live trading
+            is_orphan = item.get("_orphan", False)
             active_strat = item.get("active", "")
             strategy_names = [active_strat] if active_strat else []
 
@@ -294,7 +320,6 @@ class LiveTrader:
                 price = float(df_sig["Close"].iloc[last_idx])
                 atr = float(df_sig["ATR"].iloc[last_idx]) if "ATR" in df_sig.columns else 0
 
-                # Collect indicators
                 indicators = {}
                 for col in df_sig.columns:
                     if col not in ("Open", "High", "Low", "Close", "Volume", "Signal"):
@@ -306,9 +331,9 @@ class LiveTrader:
                     "symbol": symbol, "name": name, "strategy": strat_name,
                     "signal": signal, "price": price, "atr": atr,
                     "bar_date": bar_date, "indicators": indicators,
+                    "orphan": is_orphan,
                 })
 
-                # Fill broker last_prices only if not already set (FutuBroker has real-time)
                 if symbol not in self.broker.last_prices:
                     self.broker.last_prices[symbol] = price
 
@@ -342,7 +367,11 @@ class LiveTrader:
             has_position = pos is not None and abs(pos.quantity) > 0
 
             if sig["signal"] == 1 and not has_position:
-                # Buy signal + no position → BUY
+                if sig.get("orphan"):
+                    continue
+                if self._trading_paused:
+                    print(f"  ! {sym} 买入信号但交易已暂停 ({self._pause_reason})，跳过")
+                    continue
                 qty = self._calc_position_size(sig, account.total_equity)
                 if qty <= 0:
                     print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
@@ -416,6 +445,28 @@ class LiveTrader:
         if self.risk._date != today:
             self.risk._day_start_equity = account.total_equity
             self.risk._date = today
+            self._persist_risk_state()
+
+    def _restore_risk_state(self):
+        """Restore risk state and entry prices from SQLite after restart."""
+        stored_date = self.cache.load_risk_state("date")
+        today = date.today().isoformat()
+        if stored_date == today:
+            cl = self.cache.load_risk_state("consecutive_losses")
+            dt = self.cache.load_risk_state("daily_trade_count")
+            self.risk._date = today
+            self.risk._consecutive_losses = int(cl) if cl else 0
+            self.risk._daily_trade_count = int(dt) if dt else 0
+        # Entry prices survive across days (needed for circuit breaker)
+        self._entry_prices = {
+            sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
+        }
+
+    def _persist_risk_state(self):
+        """Write current risk state to SQLite."""
+        self.cache.save_risk_state("date", self.risk._date)
+        self.cache.save_risk_state("consecutive_losses", str(self.risk._consecutive_losses))
+        self.cache.save_risk_state("daily_trade_count", str(self.risk._daily_trade_count))
 
     def _passes_risk(self, signal: dict, qty: int, account) -> bool:
         """Run all risk checks before order submission."""
@@ -455,6 +506,36 @@ class LiveTrader:
 
         return True
 
+    def _check_global_risk(self, account, positions: dict):
+        """Check global risk thresholds. Pause trading (new BUYs) if breached."""
+        r = self.risk
+        equity = account.total_equity
+
+        # New day → unpause
+        today = date.today().isoformat()
+        if r._date != today:
+            self._trading_paused = False
+            self._pause_reason = ""
+
+        # Daily loss limit
+        if r._day_start_equity > 0 and equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
+            loss_pct = (r._day_start_equity - equity) / r._day_start_equity * 100
+            self._trading_paused = True
+            self._pause_reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
+        elif r._consecutive_losses >= r.max_consecutive_losses:
+            self._trading_paused = True
+            self._pause_reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"
+        elif positions:
+            total_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
+            exposure_pct = total_exposure / equity if equity > 0 else 0
+            if exposure_pct > r.max_total_exposure_pct:
+                self._trading_paused = True
+                self._pause_reason = f"总敞口超限 ({exposure_pct*100:.1f}% > {r.max_total_exposure_pct*100:.0f}%)"
+
+        if self._trading_paused:
+            print(f"\n  !! 交易暂停: {self._pause_reason}")
+            self.notifier.error("交易暂停", self._pause_reason)
+
     def _update_risk_state(self, order: Order):
         """Update circuit breaker and daily trade count after a fill."""
         r = self.risk
@@ -463,15 +544,19 @@ class LiveTrader:
 
         if order.side == OrderSide.BUY:
             self._entry_prices[sym] = fill_price
+            self.cache.save_entry_price(sym, fill_price, date.today().isoformat())
             r._daily_trade_count += 1
         elif order.side == OrderSide.SELL:
             entry = self._entry_prices.pop(sym, None)
-            if entry is not None and fill_price < entry:
-                r._consecutive_losses += 1
-                logger.warning("连续亏损 %d/%d: %s", r._consecutive_losses,
-                               r.max_consecutive_losses, sym)
-            elif entry is not None:
-                r._consecutive_losses = 0
+            if entry is not None:
+                self.cache.delete_entry_price(sym)
+                if fill_price < entry:
+                    r._consecutive_losses += 1
+                    logger.warning("连续亏损 %d/%d: %s", r._consecutive_losses,
+                                   r.max_consecutive_losses, sym)
+                else:
+                    r._consecutive_losses = 0
+        self._persist_risk_state()
 
     # ------------------------------------------------------------------
     # Daemon
@@ -526,6 +611,9 @@ class LiveTrader:
                 if self.risk._date != today:
                     self.risk._date = today
                     self.risk._daily_trade_count = 0
+                    self._trading_paused = False
+                    self._pause_reason = ""
+                    self._persist_risk_state()
                     logger.info("新交易日: %s，日交易计数重置", today)
 
                 print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] 第 {cycle} 轮")
@@ -595,6 +683,58 @@ class LiveTrader:
             [order.order_id, order.symbol, order.side.value,
              order.filled_qty, order.avg_fill_price,
              order.status.value, order.created_at],
+        )
+        self.cache.conn.commit()
+
+    def _submit_and_wait(self, order: Order) -> Order:
+        """Submit order and poll until filled, cancelled, or timeout."""
+        import time as _time
+
+        result = self.broker.submit_order(order)
+        if result.status in (OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.CANCELLED):
+            return result
+
+        # Poll for completion
+        is_limit = order.order_type == OrderType.LIMIT
+        timeout_s = 300 if is_limit else 60  # 5 min for limit, 60 s for market
+        poll_interval = 3
+        elapsed = 0
+
+        while elapsed < timeout_s:
+            _time.sleep(poll_interval)
+            elapsed += poll_interval
+            updated = self.broker.get_order(result.order_id)
+            if updated is None:
+                continue
+            result = updated
+            if result.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                return result
+
+        # Timeout — cancel if limit order
+        if is_limit and result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED):
+            logger.warning("限价单超时，撤单: %s %s", order.symbol, order.order_id)
+            self.broker.cancel_order(result.order_id)
+            result.status = OrderStatus.CANCELLED
+
+        return result
+
+    def _record_slippage(self, order: Order, signal_price: float):
+        """Record slippage stats to DB."""
+        if signal_price <= 0 or order.avg_fill_price <= 0:
+            return
+        slippage = (order.avg_fill_price - signal_price) / signal_price
+        self.cache.conn.execute(
+            "CREATE TABLE IF NOT EXISTS slippage_log ("
+            "  order_id TEXT, symbol TEXT, side TEXT,"
+            "  signal_price REAL, fill_price REAL, slippage_pct REAL,"
+            "  created_at TEXT"
+            ")"
+        )
+        self.cache.conn.execute(
+            "INSERT INTO slippage_log VALUES (?,?,?,?,?,?,?)",
+            [order.order_id, order.symbol, order.side.value,
+             signal_price, order.avg_fill_price, round(slippage * 100, 4),
+             order.created_at],
         )
         self.cache.conn.commit()
 

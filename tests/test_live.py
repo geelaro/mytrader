@@ -522,3 +522,318 @@ class TestAdaptiveSizing:
             equity=100000,
         )
         assert qty > 0
+
+
+# ===================================================================
+# Orphan position handling
+# ===================================================================
+
+
+class TestOrphanPositions:
+    def _make_trader(self, orphan_strategy="daily_macd_kdj"):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0, "MSFT": 420.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader.risk._day_start_equity = 100000
+        trader._orphan_strategy = orphan_strategy
+        trader._watchlist_symbols = ["AAPL"]
+        return trader
+
+    def test_orphan_buy_blocked(self):
+        trader = self._make_trader()
+        signals = [{
+            "symbol": "MSFT", "name": "Microsoft", "strategy": "daily_macd_kdj",
+            "signal": 1, "price": 420.0, "atr": 8.0, "orphan": True,
+        }]
+        positions = {}
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 0  # orphan buy blocked
+
+    def test_orphan_sell_allowed(self):
+        trader = self._make_trader()
+        signals = [{
+            "symbol": "MSFT", "name": "Microsoft", "strategy": "daily_macd_kdj",
+            "signal": -1, "price": 420.0, "atr": 8.0, "orphan": True,
+        }]
+        positions = {
+            "MSFT": Position(symbol="MSFT", quantity=20, avg_price=410.0,
+                             market_value=8400, unrealized_pnl=200),
+        }
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.SELL
+
+    def test_orphan_hold_no_order(self):
+        trader = self._make_trader()
+        signals = [{
+            "symbol": "MSFT", "name": "Microsoft", "strategy": "daily_macd_kdj",
+            "signal": 0, "price": 420.0, "atr": 8.0, "orphan": True,
+        }]
+        positions = {}
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 0
+
+    def test_watchlist_buy_still_works(self):
+        """Non-orphan symbols should still generate BUY orders."""
+        trader = self._make_trader()
+        signals = [{
+            "symbol": "AAPL", "name": "Apple", "strategy": "weekly_macd_kdj",
+            "signal": 1, "price": 195.0, "atr": 5.0, "orphan": False,
+        }]
+        positions = {}
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.BUY
+
+
+# ===================================================================
+# Trading pause (global risk guard)
+# ===================================================================
+
+
+class TestTradingPause:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader.risk._day_start_equity = 100000
+        return trader
+
+    def test_paused_blocks_buy(self):
+        trader = self._make_trader()
+        trader._trading_paused = True
+        trader._pause_reason = "test"
+        signals = [{
+            "symbol": "AAPL", "name": "Apple", "strategy": "w",
+            "signal": 1, "price": 195.0, "atr": 5.0,
+        }]
+        positions = {}
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 0
+
+    def test_paused_allows_sell(self):
+        trader = self._make_trader()
+        trader._trading_paused = True
+        trader._pause_reason = "test"
+        signals = [{
+            "symbol": "AAPL", "name": "Apple", "strategy": "w",
+            "signal": -1, "price": 195.0, "atr": 5.0,
+        }]
+        positions = {
+            "AAPL": Position(symbol="AAPL", quantity=50, avg_price=190.0,
+                             market_value=9750, unrealized_pnl=250),
+        }
+        account = type("Account", (), {"total_equity": 100000})()
+        orders = trader._generate_orders(signals, positions, account)
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.SELL
+
+
+class TestGlobalRiskCheck:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader.risk._day_start_equity = 100000
+        trader.risk._date = "2025-06-15"
+        return trader
+
+    def test_daily_loss_pauses_trading(self):
+        trader = self._make_trader()
+        trader.risk.max_daily_loss_pct = 0.05
+        trader.risk._day_start_equity = 100000
+        account = type("Account", (), {"total_equity": 94000})()
+        trader._check_global_risk(account, {})
+        assert trader._trading_paused is True
+        assert "日内亏损超限" in trader._pause_reason
+
+    def test_consecutive_losses_pause(self):
+        trader = self._make_trader()
+        trader.risk._consecutive_losses = 3
+        trader.risk.max_consecutive_losses = 3
+        account = type("Account", (), {"total_equity": 100000})()
+        trader._check_global_risk(account, {})
+        assert trader._trading_paused is True
+        assert "连续亏损熔断" in trader._pause_reason
+
+    def test_exposure_pause(self):
+        trader = self._make_trader()
+        trader.risk.max_total_exposure_pct = 0.80
+        positions = {
+            "AAPL": Position(symbol="AAPL", quantity=420, avg_price=195.0,
+                             market_value=82000, unrealized_pnl=0),
+        }
+        account = type("Account", (), {"total_equity": 100000})()
+        trader._check_global_risk(account, positions)
+        assert trader._trading_paused is True
+        assert "总敞口超限" in trader._pause_reason
+
+    def test_normal_passes(self):
+        trader = self._make_trader()
+        account = type("Account", (), {"total_equity": 101000})()
+        positions = {
+            "AAPL": Position(symbol="AAPL", quantity=50, avg_price=190.0,
+                             market_value=9750, unrealized_pnl=250),
+        }
+        trader._check_global_risk(account, positions)
+        assert trader._trading_paused is False
+
+    def test_new_day_unpauses(self):
+        trader = self._make_trader()
+        trader._trading_paused = True
+        trader._pause_reason = "old"
+        trader.risk._date = "2025-06-14"  # different from today
+        account = type("Account", (), {"total_equity": 100000})()
+        trader._check_global_risk(account, {})
+        assert trader._trading_paused is False
+
+
+# ===================================================================
+# Slippage recording
+# ===================================================================
+
+
+class TestSlippageRecording:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        return LiveTrader(broker=broker, dry_run=True)
+
+    def test_records_slippage(self):
+        trader = self._make_trader()
+        trader.cache.conn.execute(
+            "CREATE TABLE IF NOT EXISTS slippage_log ("
+            "  order_id TEXT, symbol TEXT, side TEXT,"
+            "  signal_price REAL, fill_price REAL, slippage_pct REAL,"
+            "  created_at TEXT"
+            ")"
+        )
+        trader.cache.conn.execute("DELETE FROM slippage_log")
+        trader.cache.conn.commit()
+        order = Order(
+            symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+            quantity=10, order_id="slip-1", status=OrderStatus.FILLED,
+            avg_fill_price=196.0,
+        )
+        trader._record_slippage(order, signal_price=195.0)
+        rows = trader.cache.conn.execute(
+            "SELECT * FROM slippage_log WHERE order_id=?", ["slip-1"]
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][1] == "AAPL"
+        # slippage: (196 - 195) / 195 * 100 ≈ 0.5128
+        assert abs(rows[0][5] - 0.5128) < 0.01
+
+    def test_zero_signal_price_skips(self):
+        trader = self._make_trader()
+        trader._record_slippage(Order(
+            symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+            quantity=10, order_id="dummy", status=OrderStatus.FILLED,
+            avg_fill_price=195.0), signal_price=195.0)  # ensure table exists
+        trader.cache.conn.execute("DELETE FROM slippage_log")
+        trader.cache.conn.commit()
+        order = Order(
+            symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+            quantity=10, order_id="slip-2", status=OrderStatus.FILLED,
+            avg_fill_price=196.0,
+        )
+        trader._record_slippage(order, signal_price=0)
+        rows = trader.cache.conn.execute(
+            "SELECT * FROM slippage_log WHERE order_id=?", ["slip-2"]
+        ).fetchall()
+        assert len(rows) == 0
+
+    def test_negative_slippage(self):
+        trader = self._make_trader()
+        trader._record_slippage(Order(
+            symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+            quantity=10, order_id="dummy2", status=OrderStatus.FILLED,
+            avg_fill_price=195.0), signal_price=195.0)  # ensure table exists
+        trader.cache.conn.execute("DELETE FROM slippage_log")
+        trader.cache.conn.commit()
+        order = Order(
+            symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+            quantity=10, order_id="slip-3", status=OrderStatus.FILLED,
+            avg_fill_price=194.0,
+        )
+        trader._record_slippage(order, signal_price=195.0)
+        rows = trader.cache.conn.execute(
+            "SELECT * FROM slippage_log WHERE order_id=?", ["slip-3"]
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][5] < 0  # negative slippage (price improvement)
+
+
+# ===================================================================
+# Risk state persistence (DB restore)
+# ===================================================================
+
+
+class TestRiskPersistence:
+    def _clean_risk_db(self):
+        """Clean risk tables BEFORE creating a trader (so __init__ doesn't
+        pick up stale data from other tests)."""
+        from data.cache import CacheManager
+        cache = CacheManager()
+        cache.conn.execute("DELETE FROM risk_state")
+        cache.conn.execute("DELETE FROM entry_prices")
+        cache.conn.commit()
+
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        return LiveTrader(broker=broker, dry_run=True)
+
+    def test_persist_and_restore(self):
+        self._clean_risk_db()
+        try:
+            trader = self._make_trader()
+            today = __import__("datetime").date.today().isoformat()
+            trader.risk._date = today
+            trader.risk._consecutive_losses = 2
+            trader.risk._daily_trade_count = 3
+            trader._entry_prices = {"AAPL": 195.0, "NVDA": 850.0}
+            trader._persist_risk_state()
+            trader.cache.save_entry_price("AAPL", 195.0, today)
+            trader.cache.save_entry_price("NVDA", 850.0, today)
+
+            trader2 = self._make_trader()
+            trader2.cache = trader.cache
+            trader2._restore_risk_state()
+            assert trader2.risk._consecutive_losses == 2
+            assert trader2.risk._daily_trade_count == 3
+            assert trader2._entry_prices == {"AAPL": 195.0, "NVDA": 850.0}
+        finally:
+            self._clean_risk_db()
+
+    def test_restore_different_day_skips_counts(self):
+        self._clean_risk_db()
+        try:
+            trader = self._make_trader()
+            trader.cache.save_risk_state("date", "2020-01-01")
+            trader.cache.save_risk_state("consecutive_losses", "5")
+            trader.cache.save_risk_state("daily_trade_count", "10")
+            trader._restore_risk_state()
+            assert trader.risk._consecutive_losses == 0
+            assert trader.risk._daily_trade_count == 0
+        finally:
+            self._clean_risk_db()
+
+    def test_restore_today_restores_counts(self):
+        self._clean_risk_db()
+        try:
+            trader = self._make_trader()
+            today = __import__("datetime").date.today().isoformat()
+            trader.cache.save_risk_state("date", today)
+            trader.cache.save_risk_state("consecutive_losses", "3")
+            trader.cache.save_risk_state("daily_trade_count", "4")
+            trader._restore_risk_state()
+            assert trader.risk._consecutive_losses == 3
+            assert trader.risk._daily_trade_count == 4
+            assert trader.risk._date == today
+        finally:
+            self._clean_risk_db()
