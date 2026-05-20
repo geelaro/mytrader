@@ -1,3 +1,5 @@
+# Requires Docker Desktop (Windows/Mac) — uses host.docker.internal for FutuOpenD.
+# On Linux, replace host.docker.internal with the host IP or use --add-host.
 FROM python:3.10-slim
 
 WORKDIR /app

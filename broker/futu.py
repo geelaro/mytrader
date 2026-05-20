@@ -424,7 +424,8 @@ class FutuBroker(Broker):
         """Update last_prices from real-time quotes."""
         if self._quote_ctx is None:
             self.connect()
-        assert self._quote_ctx is not None
+        if self._quote_ctx is None:
+            return self.last_prices
 
         futu_symbols = [_to_futu_symbol(s) for s in symbols]
         try:
@@ -447,8 +448,8 @@ class FutuBroker(Broker):
 
         if self._quote_ctx is None:
             self.connect()
-        assert self._quote_ctx is not None, "FutuOpenD not connected"
         if self._quote_ctx is None:
+            logger.warning("FutuOpenD not connected — cannot fetch kline")
             return pd.DataFrame()
 
         code = _to_futu_symbol(symbol)

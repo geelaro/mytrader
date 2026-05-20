@@ -681,6 +681,7 @@ with tab_portfolio:
             filter_hold = st.slider("持仓天数", 0, max(1, max_hold),
                                     (0, max_hold), step=1, key="pf_filter_hold")
 
+        filter_dates = None
         fr5, fr6, fr7, fr8 = st.columns(4)
         with fr5:
             if not df_trades["入场"].isna().all():
