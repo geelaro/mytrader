@@ -157,5 +157,26 @@ class TestFutuBrokerInterface:
     def test_disconnect_cleanup(self):
         broker = FutuBroker()
         broker.disconnect()  # should not raise
+
+
+class TestRefreshPrices:
+    def test_no_connection_returns_empty(self):
+        broker = FutuBroker()
+        broker.connect = lambda: None  # prevent real connection
+        broker._quote_ctx = None
+        result = broker.refresh_prices(["AAPL"])
+        assert isinstance(result, dict)
+        assert result == {}
+
+    def test_mocked_prices_filled(self):
+        """refresh_prices with mocked quote ctx fills last_prices."""
+        broker = FutuBroker()
+        broker._quote_ctx = MagicMock()
+        # Mock get_market_snapshot to return a DataFrame-like response
+        import pandas as pd
+        data = pd.DataFrame([{"code": "US.AAPL", "last_price": 195.0}])
+        broker._quote_ctx.get_market_snapshot.return_value = (0, data)
+        result = broker.refresh_prices(["AAPL"])
+        assert result.get("AAPL") == 195.0
         # Second disconnect is also safe
         broker.disconnect()

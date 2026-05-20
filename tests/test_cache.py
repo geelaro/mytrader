@@ -229,5 +229,39 @@ class TestBatchMode:
         assert val == ("44",)
 
 
+class TestOpsLog:
+    def test_log_ops_writes(self, temp_cache):
+        temp_cache.log_ops("trading_paused", detail="test pause")
+        rows = temp_cache.conn.execute(
+            "SELECT event, detail FROM ops_log WHERE event='trading_paused'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][1] == "test pause"
+
+    def test_log_ops_all_event_types(self, temp_cache):
+        events = ["trading_paused", "slippage", "slippage_rejected",
+                   "gate_reject", "risk_reject"]
+        for e in events:
+            temp_cache.log_ops(e, symbol="TEST", detail=e, value=1.0)
+        row_count = temp_cache.conn.execute("SELECT COUNT(*) FROM ops_log").fetchone()[0]
+        assert row_count == len(events)
+        # Verify each event type
+        for e in events:
+            r = temp_cache.conn.execute(
+                "SELECT symbol, detail, value FROM ops_log WHERE event=?", [e]
+            ).fetchone()
+            assert r is not None
+            assert r[0] == "TEST"
+
+    def test_log_ops_idempotent(self, temp_cache):
+        """Calling log_ops twice should insert two rows (no PK conflict)."""
+        temp_cache.log_ops("test_event", symbol="A")
+        temp_cache.log_ops("test_event", symbol="B")
+        rows = temp_cache.conn.execute(
+            "SELECT symbol FROM ops_log WHERE event='test_event' ORDER BY ts"
+        ).fetchall()
+        assert len(rows) == 2
+
+
 # Need pd for asserts
 import pandas as pd

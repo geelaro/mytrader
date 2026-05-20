@@ -928,3 +928,91 @@ class TestVolatilitySizing:
         from utils.signal_gate import SignalGate
         g = SignalGate(ms_enabled=False, vol_high_scalar=0.7)
         assert g.vol_scaled_qty(100) == 100
+
+
+# ===================================================================
+# _submit_and_wait — order lifecycle (polling, timeout, cancel)
+# ===================================================================
+
+
+class TestSubmitAndWait:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        trader = LiveTrader(broker=broker, dry_run=False)
+        return trader
+
+    def test_immediate_fill_returns_immediately(self):
+        """FILLED from submit_order → no polling."""
+        trader = self._make_trader()
+        trader.broker.last_prices["AAPL"] = 195.0
+        order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
+        result = trader._submit_and_wait(order)
+        assert result.status == OrderStatus.FILLED
+
+    def test_rejected_returns_immediately(self):
+        trader = self._make_trader()
+        order = Order(symbol="NONEXIST", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
+        result = trader._submit_and_wait(order)
+        assert result.status == OrderStatus.REJECTED
+
+    def test_poll_until_filled(self):
+        """SUBMITTED → polls → FILLED after 1 poll."""
+        trader = self._make_trader()
+        call_count = [0]
+
+        def _submit(o):
+            o.status = OrderStatus.SUBMITTED
+            o.order_id = "poll-me"
+            return o
+
+        def _get_order(oid):
+            call_count[0] += 1
+            o = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
+                      quantity=10, order_id="poll-me", status=OrderStatus.FILLED,
+                      avg_fill_price=195.0)
+            return o
+
+        trader.broker.submit_order = _submit
+        trader.broker.get_order = _get_order
+
+        order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
+        result = trader._submit_and_wait(order)
+        assert result.status == OrderStatus.FILLED
+        assert call_count[0] >= 1
+
+    def test_timeout_cancels_limit_order(self):
+        """Limit order timeout → cancel called, status CANCELLED."""
+        trader = self._make_trader()
+        cancel_called = [False]
+
+        def _submit(o):
+            o.status = OrderStatus.SUBMITTED
+            o.order_id = "limit-timeout"
+            return o
+
+        def _get_order(oid):
+            # Never returns terminal status
+            return Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.LIMIT,
+                         quantity=10, order_id="limit-timeout", status=OrderStatus.SUBMITTED)
+
+        def _cancel(oid):
+            cancel_called[0] = True
+            return True
+
+        trader.broker.submit_order = _submit
+        trader.broker.get_order = _get_order
+        trader.broker.cancel_order = _cancel
+
+        # Override timeout for fast test
+        import live_trader as lt
+        orig = getattr(lt.LiveTrader, '_submit_and_wait', None)
+        # Patch timeout to 0 so we timeout immediately
+        order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.LIMIT, quantity=10)
+        # Directly test by using a tiny timeout via monkey-patch
+        import time as _time_module
+        real_sleep = _time_module.sleep
+        _time_module.sleep = lambda x: None  # disable sleep
+        result = trader._submit_and_wait(order)
+        _time_module.sleep = real_sleep
+        assert result.status == OrderStatus.CANCELLED
+        assert cancel_called[0] is True
