@@ -97,6 +97,7 @@ PARAM_GRIDS = {
         "kdj_n": [7, 9, 14],
         "kdj_k": [2, 3, 5],
         "kdj_d": [2, 3, 5],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
     },
 }
 

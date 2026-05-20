@@ -851,3 +851,30 @@ with st.expander("实盘交易记录", expanded=False):
         st.metric("合计 PnL", f"${total_pnl:+,.0f}")
     else:
         st.info("暂无成交记录")
+
+# ---------------------------------------------------------------------------
+# 多策略信号对比
+# ---------------------------------------------------------------------------
+
+with st.expander("多策略信号对比", expanded=False):
+    ms_sym = st.selectbox("标的", symbols, key="ms_sym")
+    st.caption(f"{ms_sym} — 各策略最新信号")
+
+    from daily import scan_day as _scan
+    ms_results = _scan(config, target_date=target_date.isoformat(), provider=provider, cache=cache)
+    ms_sym_results = [r for r in ms_results if r["symbol"] == ms_sym]
+
+    if ms_sym_results:
+        rows = []
+        for r in ms_sym_results:
+            bar_date = r.get("bar_date", "")
+            rows.append({
+                "策略": r["strategy"],
+                "信号": SIGNAL_LABEL[r["signal"]],
+                "价格": f"${r['price']:.2f}",
+                "K线日期": bar_date,
+                "ATR": f"{r.get('atr', 0):.2f}",
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("无信号数据")
