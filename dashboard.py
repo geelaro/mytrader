@@ -734,7 +734,7 @@ for sym in watchlist_syms:
 if len(returns) >= 2:
     corr_df = pd.DataFrame(returns).corr()
     import matplotlib.pyplot as _plt
-    fig, ax = _plt.subplots(figsize=(5, 4))
+    fig, ax = _plt.subplots(figsize=(3.5, 3))
     im = ax.imshow(corr_df.values, vmin=-1, vmax=1, cmap="RdYlGn")
     ax.set_xticks(range(len(corr_df.columns)))
     ax.set_yticks(range(len(corr_df.index)))
