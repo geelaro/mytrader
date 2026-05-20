@@ -198,5 +198,36 @@ class TestSchemaNewTables:
         assert "entry_prices" in names
 
 
+class TestBatchMode:
+    def test_batch_defers_commit(self, temp_cache):
+        temp_cache.enable_batch()
+        temp_cache.save_risk_state("test_key", "42")
+        # In batch mode, data should not be visible to another connection
+        import sqlite3
+        c2 = sqlite3.connect(str(temp_cache.db_path))
+        val = c2.execute("SELECT value FROM risk_state WHERE key='test_key'").fetchone()
+        c2.close()
+        assert val is None  # not committed yet
+
+    def test_commit_batch_flushes(self, temp_cache):
+        temp_cache.enable_batch()
+        temp_cache.save_risk_state("test_key", "43")
+        temp_cache.commit_batch()
+        # After commit, data visible to another connection
+        import sqlite3
+        c2 = sqlite3.connect(str(temp_cache.db_path))
+        val = c2.execute("SELECT value FROM risk_state WHERE key='test_key'").fetchone()
+        c2.close()
+        assert val == ("43",)
+
+    def test_normal_mode_commits_immediately(self, temp_cache):
+        temp_cache.save_risk_state("test_key", "44")
+        import sqlite3
+        c2 = sqlite3.connect(str(temp_cache.db_path))
+        val = c2.execute("SELECT value FROM risk_state WHERE key='test_key'").fetchone()
+        c2.close()
+        assert val == ("44",)
+
+
 # Need pd for asserts
 import pandas as pd

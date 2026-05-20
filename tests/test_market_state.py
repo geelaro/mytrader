@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import MagicMock
 
 from utils.market_state import (
     MarketStateClassifier, MarketRegime, Volatility, MarketState,
@@ -119,3 +120,45 @@ class TestStrategyTypeChecks:
         assert is_mean_reversion_strategy("bollinger_mean_reversion") is True
         assert is_mean_reversion_strategy("turtle_trading") is False
         assert is_mean_reversion_strategy("daily_macd_kdj") is False
+
+
+class TestSignalGate:
+    def test_disabled_passes_all(self):
+        from utils.signal_gate import SignalGate
+        g = SignalGate(ms_enabled=False)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is True
+
+    def test_ranging_blocks_trend(self):
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.regime = MarketRegime.RANGING; ms.volatility = Volatility.NORMAL
+        g = SignalGate(ms_enabled=True, market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is False
+
+    def test_trending_blocks_mean_reversion(self):
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
+        g = SignalGate(ms_enabled=True, market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
+        assert ok is False
+
+    def test_pause_blocks_buy(self):
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
+        g = SignalGate(ms_enabled=True, market_state=ms, trading_paused=True, pause_reason="x")
+        ok, reason = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is False
+
+    def test_sell_always_pass(self):
+        from utils.signal_gate import SignalGate
+        g = SignalGate(ms_enabled=True, trading_paused=True, pause_reason="x")
+        ok, _ = g.allow_sell({"symbol": "AAPL"})
+        assert ok is True
+
+    def test_vol_scaling(self):
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.volatility = Volatility.HIGH
+        g = SignalGate(ms_enabled=True, market_state=ms, vol_high_scalar=0.7)
+        assert g.vol_scaled_qty(100) == 70
+        assert g.vol_scaled_qty(1) == 1  # floor at 1
