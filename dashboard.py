@@ -836,7 +836,11 @@ with st.expander("Monte Carlo 风控快照", expanded=False):
 # ---------------------------------------------------------------------------
 
 with st.expander("实盘交易记录", expanded=False):
-    trades = cache.query_trade_pnl(limit=30)
+    try:
+        trades = cache.query_trade_pnl(limit=30)
+    except AttributeError:
+        st.info("请重启 Streamlit 加载最新代码")
+        trades = []
     if trades:
         rows = []
         for t in trades:
