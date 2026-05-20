@@ -23,15 +23,14 @@ class WeeklyMACDKDJParams(StrategyParams):
     kdj_n: int = 9
     kdj_k: int = 3
     kdj_d: int = 3
-    trail_atr_mult: float = 4.0
     max_position_pct: float = 0.95
 
 
 class WeeklyMACD_KDJ(BaseStrategy):
-    """Weekly KDJ golden cross for buy, MACD death cross + trailing stop for sell.
+    """Weekly KDJ golden cross for buy, MACD death cross for sell.
 
     Entry: K line crosses above D line (KDJ golden cross).
-    Exit:  MACD death cross OR price breaks trailing stop.
+    Exit:  MACD line crosses below signal line (MACD death cross).
     """
 
     params: WeeklyMACDKDJParams
@@ -72,15 +71,3 @@ class WeeklyMACD_KDJ(BaseStrategy):
         if price <= 0:
             return 0
         return int(capital * self.params.max_position_pct / price)
-
-    def check_exit(
-        self, df, i, entry_price, highest_since_entry, position=None
-    ) -> Tuple[bool, str]:
-        price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
-        trail_stop = highest_since_entry - self.params.trail_atr_mult * atr
-        if price <= trail_stop:
-            return True, "移动止损"
-        if int(df["Signal"].iloc[i]) == -1:
-            return True, "MACD死叉"
-        return False, ""

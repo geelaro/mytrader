@@ -97,7 +97,6 @@ max_position_pct = 0.95
 macd_fast = 12
 macd_slow = 26
 macd_signal = 9
-trail_atr_mult = 4.0
 
 [strategy.weekly_macd_kdj]
 macd_fast = 12
@@ -106,7 +105,6 @@ macd_signal = 9
 kdj_n = 9
 kdj_k = 3
 kdj_d = 3
-trail_atr_mult = 4.0
 
 [strategy.daily_macd_kdj]
 macd_fast = 12

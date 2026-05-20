@@ -214,7 +214,7 @@ class TestWeeklyMACD:
             idx = df.index.get_loc(sell_bars.index[0])
             exit_now, reason = s.check_exit(df, idx, 100, 100)
             assert exit_now
-            assert reason in ("MACD死叉", "移动止损")
+            assert reason == "卖出信号"
 
 
 # ===================================================================

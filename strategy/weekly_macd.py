@@ -1,7 +1,6 @@
 """WeeklyMACD — single MACD crossover on weekly bars."""
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -13,15 +12,15 @@ class WeeklyMACDParams(StrategyParams):
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
-    trail_atr_mult: float = 4.0
     max_position_pct: float = 0.95
 
 
 class WeeklyMACD(BaseStrategy):
-    """MACD golden/death cross on weekly bars + trailing stop.
+    """MACD golden/death cross on weekly bars. Low trade frequency.
 
     Entry: MACD crosses above signal line (golden cross) on weekly close.
-    Exit:  MACD death cross OR price breaks trailing stop.
+    Exit:  MACD crosses below signal line (death cross).
+    No stop-loss, no take-profit.
     """
 
     params: WeeklyMACDParams
@@ -60,15 +59,3 @@ class WeeklyMACD(BaseStrategy):
         if price <= 0:
             return 0
         return int(capital * self.params.max_position_pct / price)
-
-    def check_exit(
-        self, df, i, entry_price, highest_since_entry, position=None
-    ) -> Tuple[bool, str]:
-        price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
-        trail_stop = highest_since_entry - self.params.trail_atr_mult * atr
-        if price <= trail_stop:
-            return True, "移动止损"
-        if int(df["Signal"].iloc[i]) == -1:
-            return True, "MACD死叉"
-        return False, ""
