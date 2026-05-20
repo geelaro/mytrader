@@ -830,3 +830,24 @@ with st.expander("Monte Carlo 风控快照", expanded=False):
                     st.error("回撤风险: 高 — 建议检查策略参数或市场状态")
             else:
                 st.info(f"交易数量不足 ({len(pnl_pcts)}笔)，至少需要 5 笔")
+
+# ---------------------------------------------------------------------------
+# 实盘交易记录
+# ---------------------------------------------------------------------------
+
+with st.expander("实盘交易记录", expanded=False):
+    trades = cache.query_trade_pnl(limit=30)
+    if trades:
+        rows = []
+        for t in trades:
+            rows.append({
+                "标的": t["symbol"], "方向": t["side"], "数量": t["qty"],
+                "买入价": f"${t['entry_price']:.2f}", "卖出价": f"${t['exit_price']:.2f}",
+                "PnL": f"${t['pnl']:+,.0f}", "PnL%": f"{t['pnl_pct']:+.1f}%",
+                "日期": t["exit_date"],
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+        total_pnl = sum(t["pnl"] for t in trades)
+        st.metric("合计 PnL", f"${total_pnl:+,.0f}")
+    else:
+        st.info("暂无成交记录")

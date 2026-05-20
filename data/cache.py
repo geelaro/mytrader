@@ -286,6 +286,42 @@ class CacheManager:
         )
         self.conn.commit()
 
+    def save_trade_pnl(self, symbol: str, side: str, qty: int,
+                       entry_price: float, exit_price: float,
+                       exit_date: str, order_id: str):
+        """Record a completed round-trip trade PnL."""
+        pnl = (exit_price - entry_price) * qty
+        pnl_pct = (exit_price / entry_price - 1) * 100
+        self.init_schema()
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS trade_pnl ("
+            "  symbol TEXT, side TEXT, qty INTEGER,"
+            "  entry_price REAL, exit_price REAL,"
+            "  pnl REAL, pnl_pct REAL, exit_date TEXT,"
+            "  order_id TEXT PRIMARY KEY"
+            ")"
+        )
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trade_pnl VALUES (?,?,?,?,?,?,?,?,?)",
+            [symbol.upper(), side, qty, entry_price, exit_price,
+             round(pnl, 2), round(pnl_pct, 2), exit_date, order_id],
+        )
+        self.conn.commit()
+
+    def query_trade_pnl(self, symbol: str = None, limit: int = 50) -> list[dict]:
+        """Return recent trade PnL records."""
+        self.init_schema()
+        query = "SELECT * FROM trade_pnl"
+        params = []
+        if symbol:
+            query += " WHERE symbol = ?"
+            params.append(symbol.upper())
+        query += " ORDER BY exit_date DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(zip(["symbol","side","qty","entry_price","exit_price",
+                         "pnl","pnl_pct","exit_date","order_id"], row)) for row in rows]
+
     # ------------------------------------------------------------------
     # Incremental helpers
     # ------------------------------------------------------------------

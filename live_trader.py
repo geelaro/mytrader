@@ -630,12 +630,18 @@ class LiveTrader:
             entry = self._entry_prices.pop(sym, None)
             if entry is not None:
                 self.cache.delete_entry_price(sym)
+                self.cache.save_trade_pnl(
+                    sym, "SELL", order.filled_qty, entry, fill_price,
+                    date.today().isoformat(), order.order_id,
+                )
                 if fill_price < entry:
                     r._consecutive_losses += 1
-                    logger.warning("连续亏损 %d/%d: %s", r._consecutive_losses,
-                                   r.max_consecutive_losses, sym)
+                    logger.warning("连续亏损 %d/%d: %s  PnL=$%.2f",
+                                   r._consecutive_losses, r.max_consecutive_losses,
+                                   sym, (fill_price - entry) * order.filled_qty)
                 else:
                     r._consecutive_losses = 0
+                    logger.info("交易PnL: %s  $%.2f", sym, (fill_price - entry) * order.filled_qty)
         self._persist_risk_state()
 
     # ------------------------------------------------------------------
