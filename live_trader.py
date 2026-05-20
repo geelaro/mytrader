@@ -119,8 +119,8 @@ class LiveTrader:
         self.broker = broker
         self.dry_run = dry_run
         self.config = self._load_config(config_path)
-        self.provider = DataProvider()
         self.cache = CacheManager()
+        self.provider = DataProvider(cache=self.cache)
         self.risk = RiskLimits.from_config(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
         self._entry_prices: Dict[str, float] = {}  # for circuit breaker tracking

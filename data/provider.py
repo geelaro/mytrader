@@ -170,8 +170,10 @@ class DataProvider:
                 if df is not None and not df.empty:
                     logger.info("  → got %d bars from %s", len(df), source_name)
                     return df, source_name
+            except (ConnectionError, TimeoutError, OSError, ValueError, KeyError):
+                logger.warning("Source %s failed for %s", source_name, symbol)
             except Exception:
-                logger.exception("Source %s failed for %s", source_name, symbol)
+                logger.exception("Source %s unexpected error for %s", source_name, symbol)
         return pd.DataFrame(columns=OHLCV_COLUMNS), None
 
     def _find_source_by_name(self, name: str) -> Optional[DataSource]:

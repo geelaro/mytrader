@@ -158,9 +158,8 @@ def compute_kdj(
     high_n = df["High"].rolling(n).max()
     rsv = (df["Close"] - low_n) / (high_n - low_n).replace(0, np.nan) * 100
 
-    # K = EMA of RSV, seeded at 50 for the initial bar
-    rsv.iloc[0] = 50.0
-    rsv = rsv.fillna(50.0)
+    # Forward-fill gaps (e.g. zero-range bars), then seed initial bar at 50
+    rsv = rsv.ffill().fillna(50.0)
 
     df["K"] = rsv.ewm(alpha=1 / k_period, adjust=False).mean()
     df["D"] = df["K"].ewm(alpha=1 / d_period, adjust=False).mean()
@@ -210,7 +209,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     ).astype(float) * low_diff
     minus_dm = minus_dm.clip(lower=0)
 
-    atr_s = compute_atr(df, period).replace(0, np.nan)
+    atr_s = compute_atr(df, period).replace(0, np.nan).clip(lower=1e-8)
     plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s
     minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s
 
