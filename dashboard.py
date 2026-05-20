@@ -123,21 +123,33 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader(f"今日信号 ({target_date})")
 
-    # Run scan
     from daily import scan_day
 
     results = scan_day(config, target_date=target_date.isoformat(),
                        provider=provider, cache=cache)
 
-    buys = [r for r in results if r["signal"] == 1]
-    sells = [r for r in results if r["signal"] == -1]
+    active_signals = [r for r in results if r["signal"] != 0]
+    if active_signals:
+        # Group by symbol
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for r in active_signals:
+            grouped[r["symbol"]].append(r)
 
-    if buys or sells:
-        for r in buys:
-            active_tag = "★" if r["strategy"] == config["watchlist"][0].get("active", "") else ""
-            st.success(f"{r['symbol']} — {r['strategy']} {SIGNAL_LABEL[r['signal']]} @ ${r['price']:.2f} {active_tag}")
-        for r in sells:
-            st.error(f"{r['symbol']} — {r['strategy']} {SIGNAL_LABEL[r['signal']]} @ ${r['price']:.2f}")
+        for sym, sigs in sorted(grouped.items()):
+            parts = []
+            has_buy = any(s["signal"] == 1 for s in sigs)
+            has_sell = any(s["signal"] == -1 for s in sigs)
+            for s in sigs:
+                tag = "★" if s["strategy"] == next((item.get("active", "") for item in config.get("watchlist", []) if item["symbol"] == sym), "") else ""
+                parts.append(f"{s['strategy']}{tag} {SIGNAL_LABEL[s['signal']]} @ ${s['price']:.2f}")
+            line = f"{sym}:  " + "  |  ".join(parts)
+            if has_sell:
+                st.error(line)
+            elif has_buy:
+                st.success(line)
+            else:
+                st.info(line)
     else:
         st.info("今日无买入/卖出信号")
 
