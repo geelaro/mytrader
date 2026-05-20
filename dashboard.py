@@ -768,3 +768,64 @@ with st.expander("持仓行业分布", expanded=False):
             st.caption(f"{sec}: {', '.join(sector_symbols[sec])}")
     else:
         st.info("无数据")
+
+# ---------------------------------------------------------------------------
+# Monte Carlo 风控快照
+# ---------------------------------------------------------------------------
+
+with st.expander("Monte Carlo 风控快照", expanded=False):
+    from engine.portfolio import PortfolioBacktest, Leg
+    import numpy as np
+
+    mc_sym = st.selectbox("标的", symbols, key="mc_sym")
+    mc_strat = st.selectbox("策略", strategy_options, index=3, key="mc_strat")
+    mc_years = st.slider("回测年数", 2, 8, 4, key="mc_years")
+
+    if st.button("运行 Monte Carlo", key="mc_run"):
+        mc_start = (pd.Timestamp(target_date) - pd.DateOffset(years=mc_years)).strftime("%Y-%m-%d")
+        mc_end = target_date.isoformat()
+
+        with st.spinner("Monte Carlo 运行中..."):
+            legs = [Leg(mc_sym, mc_strat)]
+            pf = PortfolioBacktest(legs, initial_capital=10000)
+            result = pf.run(start=mc_start, end=mc_end)
+
+            pnl_pcts = np.array([
+                t.pnl / result.initial_capital * 100
+                for t in result.trades if t.pnl is not None
+            ])
+
+            if len(pnl_pcts) >= 5:
+                # Monte Carlo: 1000 shuffles
+                n_sims = 1000
+                max_dds = []
+                rng = np.random.default_rng(42)
+                for _ in range(n_sims):
+                    shuffled = rng.permutation(pnl_pcts)
+                    equity = 100.0; peak = 100.0; max_dd = 0.0
+                    for pnl in shuffled:
+                        equity *= (1 + pnl / 100)
+                        if equity > peak: peak = equity
+                        dd = (peak - equity) / peak * 100
+                        if dd > max_dd: max_dd = dd
+                    max_dds.append(max_dd)
+                max_dds = np.array(max_dds)
+
+                p95 = np.percentile(max_dds, 95)
+                p50 = np.percentile(max_dds, 50)
+                win_rate = (pnl_pcts > 0).sum() / len(pnl_pcts) * 100
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("P95 最坏回撤", f"{p95:.1f}%")
+                c2.metric("中位回撤", f"{p50:.1f}%")
+                c3.metric("交易数", len(pnl_pcts))
+                c4.metric("胜率", f"{win_rate:.0f}%")
+
+                if p95 <= 15:
+                    st.success("回撤风险: 低 — 策略质量正常")
+                elif p95 <= 25:
+                    st.warning("回撤风险: 中 — 关注策略表现")
+                else:
+                    st.error("回撤风险: 高 — 建议检查策略参数或市场状态")
+            else:
+                st.info(f"交易数量不足 ({len(pnl_pcts)}笔)，至少需要 5 笔")
