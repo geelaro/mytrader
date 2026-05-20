@@ -137,14 +137,14 @@ class TestEnhancedMACD:
         assert isinstance(reason, str)
 
     def test_stop_loss_triggers_exit(self, ohlcv):
-        s = EnhancedMACDStrategy(atr_stop_mult=2.0)
+        s = EnhancedMACDStrategy(trail_atr_mult=2.0)
         df = s.calculate_indicators(ohlcv)
         # Find a bar where Signal == -1 (natural exit) or simulate stop-loss
         # Stop-loss: entry_price - 2 * ATR < current price → exit
         exit_now, reason = s.check_exit(df, s.min_bars + 10, entry_price=200, highest_since_entry=205)
         # If current price is much lower than entry, stop-loss should trigger
         if exit_now:
-            assert reason in ("止损", "止盈", "卖出信号")
+            assert reason in ("移动止损", "止盈", "卖出信号")
 
     def test_position_size_returns_zero_for_bad_inputs(self):
         s = EnhancedMACDStrategy()
@@ -214,7 +214,7 @@ class TestWeeklyMACD:
             idx = df.index.get_loc(sell_bars.index[0])
             exit_now, reason = s.check_exit(df, idx, 100, 100)
             assert exit_now
-            assert reason == "卖出信号"
+            assert reason in ("MACD死叉", "移动止损")
 
 
 # ===================================================================

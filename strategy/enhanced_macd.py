@@ -25,7 +25,7 @@ class EnhancedMACDParams(StrategyParams):
     rsi_oversold: float = 30.0
     rsi_overbought: float = 70.0
     atr_period: int = 14
-    atr_stop_mult: float = 2.0
+    trail_atr_mult: float = 2.0
     take_profit_mult: float = 4.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
@@ -111,7 +111,7 @@ class EnhancedMACDStrategy(BaseStrategy):
         if pd.isna(atr) or atr <= 0 or price <= 0:
             return 0
         risk_dollar = capital * self.params.risk_per_trade
-        stop_distance = atr * self.params.atr_stop_mult
+        stop_distance = atr * self.params.trail_atr_mult
         if stop_distance <= 0:
             return 0
         shares = int(risk_dollar / stop_distance)
@@ -132,11 +132,11 @@ class EnhancedMACDStrategy(BaseStrategy):
         atr = float(df["ATR"].iloc[i])
         p = self.params
 
-        stop_loss = entry_price - atr * p.atr_stop_mult
+        trail_stop = highest_since_entry - atr * p.trail_atr_mult
         take_profit = entry_price + atr * p.take_profit_mult
 
-        if price <= stop_loss:
-            return True, "止损"
+        if price <= trail_stop:
+            return True, "移动止损"
         if price >= take_profit:
             return True, "止盈"
         if int(df["Signal"].iloc[i]) == -1:

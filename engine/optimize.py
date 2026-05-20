@@ -44,7 +44,7 @@ PARAM_GRIDS = {
     "enhanced_macd": {
         "short_ma": [10, 20, 30],
         "long_ma": [40, 50, 60],
-        "atr_stop_mult": [1.5, 2.0, 3.0],
+        "trail_atr_mult": [1.5, 2.0, 3.0],
         "take_profit_mult": [3.0, 4.0, 5.0],
     },
     "trend_follower": {

@@ -23,12 +23,12 @@ class DailyMACDKDJParams(StrategyParams):
     kdj_k: int = 3
     kdj_d: int = 3
     atr_period: int = 14
-    atr_stop_mult: float = 3.0
+    trail_atr_mult: float = 3.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
     def validate(self):
-        if not (self.atr_stop_mult > 0): raise ValueError("validation failed")
+        if not (self.trail_atr_mult > 0): raise ValueError("validation failed")
 
 
 class DailyMACD_KDJ(BaseStrategy):
@@ -76,7 +76,7 @@ class DailyMACD_KDJ(BaseStrategy):
         if pd.isna(atr) or atr <= 0 or price <= 0:
             return 0
         risk_dollar = capital * self.params.risk_per_trade
-        stop_distance = atr * self.params.atr_stop_mult
+        stop_distance = atr * self.params.trail_atr_mult
         if stop_distance <= 0:
             return 0
         shares = int(risk_dollar / stop_distance)
@@ -96,9 +96,9 @@ class DailyMACD_KDJ(BaseStrategy):
         price = float(df["Close"].iloc[i])
         atr = float(df["ATR"].iloc[i])
 
-        stop_loss = entry_price - atr * self.params.atr_stop_mult
-        if price <= stop_loss:
-            return True, "止损"
+        trail_stop = highest_since_entry - atr * self.params.trail_atr_mult
+        if price <= trail_stop:
+            return True, "移动止损"
 
         if int(df["Signal"].iloc[i]) == -1:
             return True, "MACD死叉"
