@@ -29,10 +29,25 @@ class CacheManager:
             db_path = os.environ.get("MYTRADER_DB", "trading_data.db")
         self.db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
+        self._batch_mode = False
 
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
+
+    def _commit(self):
+        """Commit only when not batching."""
+        if not self._batch_mode:
+            self.conn.commit()
+
+    def enable_batch(self):
+        """Defer all commits — caller must call commit_batch() once."""
+        self._batch_mode = True
+
+    def commit_batch(self):
+        """Flush all deferred writes in one commit."""
+        self.conn.commit()
+        self._batch_mode = False
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -52,7 +67,7 @@ class CacheManager:
             "INSERT INTO ops_log (event, symbol, detail, value) VALUES (?,?,?,?)",
             [event, symbol, detail, value],
         )
-        self.conn.commit()
+        self._commit()
 
     # ------------------------------------------------------------------
     # Schema
@@ -142,7 +157,7 @@ class CacheManager:
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
         """)
-        self.conn.commit()
+        self._commit()
 
     # ------------------------------------------------------------------
     # Read
@@ -243,7 +258,7 @@ class CacheManager:
                 "ohlcv_daily", self.conn, if_exists="append", index=False,
                 method="multi",
             )
-            self.conn.commit()
+            self._commit()
         except Exception:
             self.conn.rollback()
             raise
@@ -269,7 +284,7 @@ class CacheManager:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [scan_date, symbol.upper(), strategy, bar_date, signal, price, atr, indicators],
         )
-        self.conn.commit()
+        self._commit()
 
     def query_signals(self, scan_date: str | None = None, symbol: str | None = None) -> list[dict]:
         self.init_schema()
@@ -296,7 +311,7 @@ class CacheManager:
             "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
             [key, value],
         )
-        self.conn.commit()
+        self._commit()
 
     def load_risk_state(self, key: str) -> Optional[str]:
         self.init_schema()
@@ -311,7 +326,7 @@ class CacheManager:
             "INSERT OR REPLACE INTO entry_prices (symbol, price, entry_date) VALUES (?, ?, ?)",
             [symbol.upper(), price, entry_date],
         )
-        self.conn.commit()
+        self._commit()
 
     def load_entry_price(self, symbol: str) -> Optional[tuple]:
         self.init_schema()
@@ -333,7 +348,7 @@ class CacheManager:
         self.conn.execute(
             "DELETE FROM entry_prices WHERE symbol = ?", [symbol.upper()]
         )
-        self.conn.commit()
+        self._commit()
 
     def save_trade_pnl(self, symbol: str, side: str, qty: int,
                        entry_price: float, exit_price: float,
@@ -347,7 +362,7 @@ class CacheManager:
             [symbol.upper(), side, qty, entry_price, exit_price,
              round(pnl, 2), round(pnl_pct, 2), exit_date, order_id],
         )
-        self.conn.commit()
+        self._commit()
 
     def query_trade_pnl(self, symbol: str = None, limit: int = 50) -> list[dict]:
         """Return recent trade PnL records."""

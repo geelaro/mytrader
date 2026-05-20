@@ -154,6 +154,8 @@ class LiveTrader:
         if target_date is None:
             target_date = date.today().isoformat()
 
+        self.cache.enable_batch()
+
         print(f"\n{'=' * 60}")
         print(f"  LiveTrader — {target_date}")
         print(f"  券商: {self.broker.name}  {'[模拟模式]' if self.dry_run else '[实盘模式]'}")
@@ -251,6 +253,7 @@ class LiveTrader:
             logger.info("无新订单 — 信号与持仓一致")
 
         print(f"\n  {'=' * 60}\n")
+        self.cache.commit_batch()
         return submitted
 
     # ------------------------------------------------------------------
