@@ -876,6 +876,24 @@ with st.expander("运行健康", expanded=False):
         c2.metric("滑点事件", slip_count)
         c3.metric("总事件", len(ops))
 
+        # Weekly distribution chart
+        import matplotlib.pyplot as _plt
+        from collections import Counter
+        weekly_counts = Counter(o[1] for o in ops)
+        fig, ax = _plt.subplots(figsize=(4, 2))
+        labels = list(weekly_counts.keys())
+        counts = list(weekly_counts.values())
+        colors = ["#d62728","#ff7f0e","#1f77b4","#2ca02c","#9467bd"][:len(labels)]
+        bars = ax.bar(range(len(labels)), counts, color=colors)
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=7)
+        ax.set_title("事件分布", fontsize=9)
+        for bar, c in zip(bars, counts):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(), str(c), ha="center", va="bottom", fontsize=8)
+        _, mid, _ = st.columns([1, 2, 1])
+        with mid:
+            st.pyplot(fig)
+
         rows = []
         for o in ops:
             rows.append({"时间": o[0], "事件": o[1], "标的": o[2], "详情": o[3], "值": o[4]})

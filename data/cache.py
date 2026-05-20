@@ -153,6 +153,8 @@ class CacheManager:
                 detail     TEXT,
                 value      REAL
             );
+            CREATE INDEX IF NOT EXISTS idx_ops_event ON ops_log(event);
+            CREATE INDEX IF NOT EXISTS idx_ops_ts    ON ops_log(ts);
 
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
