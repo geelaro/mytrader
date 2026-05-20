@@ -1016,3 +1016,105 @@ class TestSubmitAndWait:
         _time_module.sleep = real_sleep
         assert result.status == OrderStatus.CANCELLED
         assert cancel_called[0] is True
+
+
+# ===================================================================
+# _scan_signals — signal generation pipeline
+# ===================================================================
+
+
+class TestScanSignals:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader._watchlist_symbols = ["AAPL"]
+        return trader
+
+    def test_scans_watchlist_symbols(self, ohlcv):
+        trader = self._make_trader()
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        results = trader._scan_signals("2021-03-01", {})
+        aapl = [r for r in results if r["symbol"] == "AAPL"]
+        assert len(aapl) >= 1  # at least the active strategy
+
+    def test_orphan_positions_scanned(self, ohlcv):
+        trader = self._make_trader()
+        trader._orphan_strategy = "daily_macd_kdj"
+        trader._watchlist_symbols = ["AAPL"]
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        # MSFT is NOT in watchlist.toml, so it's a pure orphan
+        positions = {"MSFT": Position(symbol="MSFT", quantity=100, avg_price=200,
+                                       market_value=20000, unrealized_pnl=0)}
+        results = trader._scan_signals("2021-03-01", positions)
+        msft = [r for r in results if r["symbol"] == "MSFT"]
+        assert len(msft) >= 1
+        assert msft[0].get("orphan") is True
+
+    def test_marks_signal_fields(self, ohlcv):
+        trader = self._make_trader()
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        results = trader._scan_signals("2021-03-01", {})
+        for r in results:
+            assert "symbol" in r
+            assert "signal" in r
+            assert "price" in r
+            assert "strategy" in r
+            assert "bar_date" in r
+
+
+# ===================================================================
+# LiveTrader.run() — end-to-end integration
+# ===================================================================
+
+
+class TestRunIntegration:
+    def _make_trader(self):
+        broker = MockBroker(initial_cash=100000)
+        broker.last_prices = {"AAPL": 195.0, "NVDA": 850.0}
+        trader = LiveTrader(broker=broker, dry_run=True)
+        trader._watchlist_symbols = ["AAPL"]
+        trader.risk._day_start_equity = 100000
+        # Clean risk state to avoid cross-test pollution
+        trader.cache.init_schema()
+        trader.cache.conn.execute("DELETE FROM risk_state")
+        trader.cache.conn.execute("DELETE FROM entry_prices")
+        trader.cache.conn.commit()
+        trader._entry_prices = {}
+        return trader
+
+    def test_run_with_no_signals_completes(self, ohlcv):
+        """run() completes without error even when no signals fire."""
+        trader = self._make_trader()
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        orders = trader.run(target_date="2021-03-01")
+        assert isinstance(orders, list)
+
+    def test_run_generates_buy_order(self, ohlcv):
+        """A buy signal produces a BUY order."""
+        trader = self._make_trader()
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        # Override _scan_signals to return a hard buy signal
+        def _fake_scan(target_date, positions):
+            return [{"symbol": "AAPL", "name": "Apple", "strategy": "w",
+                     "signal": 1, "price": 195.0, "atr": 5.0, "orphan": False}]
+        trader._scan_signals = _fake_scan
+        orders = trader.run(target_date="2021-03-01")
+        buys = [o for o in orders if o.side == OrderSide.BUY]
+        assert len(buys) >= 1
+
+    def test_run_sell_order(self, ohlcv):
+        """A sell signal on an existing position produces a SELL order."""
+        trader = self._make_trader()
+        trader.provider.get_daily = lambda sym, start, end: ohlcv
+        # Add an existing position to the broker
+        pos = Position(symbol="AAPL", quantity=50, avg_price=190.0,
+                       market_value=9750, unrealized_pnl=250)
+        trader.broker._positions["AAPL"] = pos
+        def _fake_scan(target_date, positions):
+            return [{"symbol": "AAPL", "name": "Apple", "strategy": "w",
+                     "signal": -1, "price": 200.0, "atr": 5.0, "orphan": False}]
+        trader._scan_signals = _fake_scan
+        orders = trader.run(target_date="2021-03-01")
+        sells = [o for o in orders if o.side == OrderSide.SELL]
+        assert len(sells) >= 1
