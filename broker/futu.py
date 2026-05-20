@@ -424,6 +424,7 @@ class FutuBroker(Broker):
         """Update last_prices from real-time quotes."""
         if self._quote_ctx is None:
             self.connect()
+        assert self._quote_ctx is not None
 
         futu_symbols = [_to_futu_symbol(s) for s in symbols]
         try:
@@ -439,13 +440,14 @@ class FutuBroker(Broker):
             pass
         return self.last_prices
 
-    def get_historical_kline(self, symbol: str, start: str, end: str) -> "pd.DataFrame":
+    def get_historical_kline(self, symbol: str, start: str, end: str):
         """Fetch daily OHLCV kline from FutuOpenD. Returns empty DataFrame on failure."""
         import pandas as pd
         from futu import KLType, AuType
 
         if self._quote_ctx is None:
             self.connect()
+        assert self._quote_ctx is not None, "FutuOpenD not connected"
         if self._quote_ctx is None:
             return pd.DataFrame()
 

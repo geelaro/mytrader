@@ -1,5 +1,7 @@
 """SQLite-based OHLCV cache — local storage with incremental-update support."""
 
+from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import date, datetime
@@ -22,7 +24,7 @@ class CacheManager:
                 PRIMARY KEY (symbol, date))
     """
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         if db_path is None:
             db_path = os.environ.get("MYTRADER_DB", "trading_data.db")
         self.db_path = Path(db_path)
@@ -220,7 +222,7 @@ class CacheManager:
         )
         self.conn.commit()
 
-    def query_signals(self, scan_date: str = None, symbol: str = None) -> list[dict]:
+    def query_signals(self, scan_date: str | None = None, symbol: str | None = None) -> list[dict]:
         self.init_schema()
         query = "SELECT * FROM signal_history WHERE 1=1"
         params = []
@@ -301,7 +303,7 @@ class CacheManager:
         req_start = str(pd.Timestamp(start).date())
         req_end = str(pd.Timestamp(end).date())
 
-        if cached_start is None and cached_end is None:
+        if cached_start is None or cached_end is None:
             return [(req_start, req_end)]
 
         gaps = []
