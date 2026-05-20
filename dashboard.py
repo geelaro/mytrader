@@ -734,17 +734,17 @@ for sym in watchlist_syms:
 if len(returns) >= 2:
     corr_df = pd.DataFrame(returns).corr()
     import matplotlib.pyplot as _plt
-    fig, ax = _plt.subplots(figsize=(8, 6))
+    fig, ax = _plt.subplots(figsize=(5, 4))
     im = ax.imshow(corr_df.values, vmin=-1, vmax=1, cmap="RdYlGn")
     ax.set_xticks(range(len(corr_df.columns)))
     ax.set_yticks(range(len(corr_df.index)))
-    ax.set_xticklabels(corr_df.columns, rotation=45, ha="right", fontsize=9)
-    ax.set_yticklabels(corr_df.index, fontsize=9)
+    ax.set_xticklabels(corr_df.columns, rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(corr_df.index, fontsize=8)
     for i in range(len(corr_df)):
         for j in range(len(corr_df)):
-            ax.text(j, i, f"{corr_df.values[i,j]:.2f}", ha="center", va="center", fontsize=8)
-    _plt.colorbar(im, ax=ax, shrink=0.8)
-    ax.set_title(f"持仓相关性矩阵 ({corr_lookback}日)")
+            ax.text(j, i, f"{corr_df.values[i,j]:.2f}", ha="center", va="center", fontsize=7)
+    _plt.colorbar(im, ax=ax, shrink=0.7)
+    ax.set_title(f"持仓相关性矩阵 ({corr_lookback}日)", fontsize=10)
     st.pyplot(fig)
 else:
     st.info("需要至少 2 个标的有足够数据")
