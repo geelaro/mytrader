@@ -728,6 +728,12 @@ with st.expander("持仓行业分布", expanded=False):
         sector_counts[get_sector(sym)] += 1
 
     if sector_counts:
+        # Group symbols by sector
+        sector_symbols = {}
+        for sym in watchlist_syms:
+            sec = get_sector(sym)
+            sector_symbols.setdefault(sec, []).append(sym)
+
         import matplotlib.pyplot as _plt
         labels = list(sector_counts.keys())
         sizes = list(sector_counts.values())
@@ -743,5 +749,9 @@ with st.expander("持仓行业分布", expanded=False):
         _, mid, _ = st.columns([1, 2, 1])
         with mid:
             st.pyplot(fig)
+
+        # Symbol list per sector
+        for sec in sorted(sector_symbols.keys()):
+            st.caption(f"{sec}: {', '.join(sector_symbols[sec])}")
     else:
         st.info("无数据")
