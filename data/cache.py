@@ -90,6 +90,18 @@ class CacheManager:
                 entry_date TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS trade_pnl (
+                symbol      TEXT,
+                side        TEXT,
+                qty         INTEGER,
+                entry_price REAL,
+                exit_price  REAL,
+                pnl         REAL,
+                pnl_pct     REAL,
+                exit_date   TEXT,
+                order_id    TEXT PRIMARY KEY
+            );
+
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
         """)
@@ -293,14 +305,6 @@ class CacheManager:
         pnl = (exit_price - entry_price) * qty
         pnl_pct = (exit_price / entry_price - 1) * 100
         self.init_schema()
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS trade_pnl ("
-            "  symbol TEXT, side TEXT, qty INTEGER,"
-            "  entry_price REAL, exit_price REAL,"
-            "  pnl REAL, pnl_pct REAL, exit_date TEXT,"
-            "  order_id TEXT PRIMARY KEY"
-            ")"
-        )
         self.conn.execute(
             "INSERT OR REPLACE INTO trade_pnl VALUES (?,?,?,?,?,?,?,?,?)",
             [symbol.upper(), side, qty, entry_price, exit_price,
