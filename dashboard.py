@@ -863,18 +863,30 @@ with st.expander("实盘交易记录", expanded=False):
 with st.expander("运行健康", expanded=False):
     try:
         ops = cache.conn.execute(
-            "SELECT ts, event, symbol, detail, value FROM ops_log ORDER BY ts DESC LIMIT 50"
+            "SELECT ts, level, event, symbol, detail, value FROM ops_log ORDER BY ts DESC LIMIT 50"
         ).fetchall()
+        reject_24h = cache.conn.execute(
+            "SELECT COUNT(*) FROM ops_log WHERE event IN ('gate_reject','risk_reject') "
+            "AND ts >= datetime('now','localtime','-24 hours')"
+        ).fetchone()[0]
+        total_24h = cache.conn.execute(
+            "SELECT COUNT(*) FROM ops_log WHERE ts >= datetime('now','localtime','-24 hours')"
+        ).fetchone()[0]
     except Exception:
         ops = []
+        reject_24h = 0
+        total_24h = 0
 
     if ops:
-        pause_count = sum(1 for o in ops if o[1] == "trading_paused")
-        slip_count = sum(1 for o in ops if "slippage" in o[1])
-        c1, c2, c3 = st.columns(3)
-        c1.metric("暂停事件", pause_count)
+        pause_count = sum(1 for o in ops if o[2] in ("gate_reject", "risk_reject"))
+        slip_count = sum(1 for o in ops if "slippage" in (o[2] or ""))
+        # 24h rejection rate
+        reject_rate = f"{reject_24h}/{total_24h}" if total_24h > 0 else "—"
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("拦截事件", pause_count)
         c2.metric("滑点事件", slip_count)
-        c3.metric("总事件", len(ops))
+        c3.metric("24h 拒单率", reject_rate)
+        c4.metric("总事件", len(ops))
 
         # Weekly distribution chart
         import matplotlib.pyplot as _plt
@@ -896,7 +908,12 @@ with st.expander("运行健康", expanded=False):
 
         rows = []
         for o in ops:
-            rows.append({"时间": o[0], "事件": o[1], "标的": o[2], "详情": o[3], "值": o[4]})
+            level = o[1] or "INFO"
+            event = o[2]
+            symbol = o[3] or ""
+            detail = o[4] or ""
+            value = o[5] or 0
+            rows.append({"时间": o[0], "级别": level, "事件": event, "标的": symbol, "详情": detail, "值": value})
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.info("暂无运行事件")

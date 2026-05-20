@@ -898,7 +898,7 @@ class TestRegimeFiltering:
         g = self._make_gate(market_state=ms, trading_paused=True, pause_reason="test")
         ok, reason = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
         assert ok is False
-        assert "test" in reason
+        assert "TEST" in reason
 
     def test_orphan_buy_blocked(self):
         g = self._make_gate()

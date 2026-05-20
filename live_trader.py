@@ -429,7 +429,7 @@ class LiveTrader:
                 ok, reason = self._gate.allow_buy(sig, positions, account)
                 if not ok:
                     print(f"  ! {sym} {reason}，跳过")
-                    self.cache.log_ops("gate_reject", symbol=sym, detail=reason)
+                    self.cache.log_ops("gate_reject", symbol=sym, detail=reason, level="WARN")
                     continue
 
                 qty = self._gate.vol_scaled_qty(sig["_qty"])
@@ -442,7 +442,7 @@ class LiveTrader:
                     ))
                 else:
                     print(f"  ! {sym} 风控检查未通过，跳过")
-                    self.cache.log_ops("risk_reject", symbol=sym)
+                    self.cache.log_ops("risk_reject", symbol=sym, level="WARN")
 
             elif sig["signal"] == -1 and has_position:
                 # Sell signal + has position → SELL

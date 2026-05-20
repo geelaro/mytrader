@@ -41,15 +41,18 @@ class SignalGate:
         sym = sig.get("symbol", "?")
 
         if self.trading_paused:
-            return False, f"交易暂停: {self.pause_reason}"
+            return False, f"PAUSE_{self.pause_reason.replace(' ', '_').replace(':', '').replace('%','pct').replace('>','gt').upper()}"
 
         if sig.get("orphan"):
-            return False, "孤儿标的，只卖不买"
+            return False, "ORPHAN_BUY_BLOCKED"
 
         if self._regime_blocks(sig):
             strat = sig.get("strategy", "")
             regime = self.market_state.regime
-            return False, f"{regime.name} 市不追 {strat}"
+            if regime == MarketRegime.RANGING:
+                return False, f"RANGING_BLOCK_{strat.upper()}"
+            else:
+                return False, f"TRENDING_BLOCK_{strat.upper()}"
 
         # Exposure cap
         qty = sig.get("_qty", 0)
@@ -59,7 +62,7 @@ class SignalGate:
             current = sum(p.market_value for p in positions.values() if p.market_value > 0)
             equity = getattr(account, "total_equity", 0)
             if equity > 0 and (current + new_value) / equity > self.max_total_exposure_pct:
-                return False, "总敞口超限"
+                return False, "EXPOSURE_CAP_EXCEEDED"
 
         return True, ""
 
