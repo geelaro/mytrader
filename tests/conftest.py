@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# Isolate test database from production
+os.environ["MYTRADER_DB"] = "trading_data_test.db"
+
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

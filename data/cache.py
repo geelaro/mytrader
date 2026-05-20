@@ -1,5 +1,6 @@
 """SQLite-based OHLCV cache — local storage with incremental-update support."""
 
+import os
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -21,7 +22,9 @@ class CacheManager:
                 PRIMARY KEY (symbol, date))
     """
 
-    def __init__(self, db_path: str = "trading_data.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = os.environ.get("MYTRADER_DB", "trading_data.db")
         self.db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
 
