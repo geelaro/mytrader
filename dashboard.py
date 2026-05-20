@@ -856,3 +856,29 @@ with st.expander("实盘交易记录", expanded=False):
     else:
         st.info("暂无成交记录")
 
+# ---------------------------------------------------------------------------
+# 运行健康面板
+# ---------------------------------------------------------------------------
+
+with st.expander("运行健康", expanded=False):
+    try:
+        ops = cache.conn.execute(
+            "SELECT ts, event, symbol, detail, value FROM ops_log ORDER BY ts DESC LIMIT 50"
+        ).fetchall()
+    except Exception:
+        ops = []
+
+    if ops:
+        pause_count = sum(1 for o in ops if o[1] == "trading_paused")
+        slip_count = sum(1 for o in ops if "slippage" in o[1])
+        c1, c2, c3 = st.columns(3)
+        c1.metric("暂停事件", pause_count)
+        c2.metric("滑点事件", slip_count)
+        c3.metric("总事件", len(ops))
+
+        rows = []
+        for o in ops:
+            rows.append({"时间": o[0], "事件": o[1], "标的": o[2], "详情": o[3], "值": o[4]})
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无运行事件")
