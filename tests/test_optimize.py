@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 import pytest
 
-from engine.optimize import _compute_score, OptResult, PARAM_GRIDS, _PARAMS_CLASS
+from engine.optimize import _compute_score, OptResult, PARAM_GRIDS, _PARAMS_CLASS, _next_trading_day
 
 
 # ===================================================================
@@ -226,3 +226,34 @@ class TestWalkForwardSmoke:
             )
             assert "windows" in result
             assert isinstance(result["windows"], list)
+
+
+# ===================================================================
+# _next_trading_day — weekend / holiday boundary
+# ===================================================================
+
+
+class TestNextTradingDay:
+    def test_friday_to_monday(self):
+        """Friday → next trading day is Monday."""
+        assert _next_trading_day("2026-05-15") == "2026-05-18"  # Fri → Mon
+
+    def test_thursday_to_friday(self):
+        """Thursday → Friday (normal)."""
+        assert _next_trading_day("2026-05-14") == "2026-05-15"  # Thu → Fri
+
+    def test_saturday_to_monday(self):
+        """Saturday → Monday."""
+        assert _next_trading_day("2026-05-16") == "2026-05-18"  # Sat → Mon
+
+    def test_monday_to_tuesday(self):
+        """Monday → Tuesday (normal)."""
+        assert _next_trading_day("2026-05-18") == "2026-05-19"  # Mon → Tue
+
+    def test_friday_july4_not_skipped(self):
+        """July 4 is a US holiday but pandas default bdate_range only skips weekends."""
+        assert _next_trading_day("2025-07-03") == "2025-07-04"  # Thu → Fri (not holiday-aware)
+
+    def test_new_year_not_skipped(self):
+        """New Year's Day — pandas default treats Jan 1 as business day."""
+        assert _next_trading_day("2025-12-31") == "2026-01-01"  # Wed → Thu

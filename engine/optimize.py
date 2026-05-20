@@ -37,6 +37,12 @@ from strategy import (
 from engine.trader import BacktestEngine
 
 # ---------------------------------------------------------------------------
+def _next_trading_day(date_str: str) -> str:
+    """Return the next trading day after *date_str* (skip weekends/holidays)."""
+    next_day = pd.Timestamp(date_str) + pd.Timedelta(days=1)
+    return pd.bdate_range(start=next_day, periods=1)[0].strftime("%Y-%m-%d")
+
+
 # Parameter grids — define search space per strategy
 # ---------------------------------------------------------------------------
 
@@ -257,8 +263,7 @@ def walk_forward(
     while window_start + pd.DateOffset(years=train_years + test_years) <= end_dt:
         train_start = window_start.strftime("%Y-%m-%d")
         train_end = (window_start + pd.DateOffset(years=train_years)).strftime("%Y-%m-%d")
-        next_day = pd.Timestamp(train_end) + pd.Timedelta(days=1)
-        test_start = pd.bdate_range(start=next_day, periods=1)[0].strftime("%Y-%m-%d")
+        test_start = _next_trading_day(train_end)
         test_end = (window_start + pd.DateOffset(years=train_years + test_years)).strftime("%Y-%m-%d")
 
         print(f"\n{'=' * 60}")
