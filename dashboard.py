@@ -140,10 +140,11 @@ with col1:
             parts = []
             has_buy = any(s["signal"] == 1 for s in sigs)
             has_sell = any(s["signal"] == -1 for s in sigs)
+            price = sigs[0]["price"]
             for s in sigs:
                 tag = "★" if s["strategy"] == next((item.get("active", "") for item in config.get("watchlist", []) if item["symbol"] == sym), "") else ""
-                parts.append(f"{s['strategy']}{tag} {SIGNAL_LABEL[s['signal']]} @ ${s['price']:.2f}")
-            line = f"{sym}:  " + "  |  ".join(parts)
+                parts.append(f"{s['strategy']}{tag} {SIGNAL_LABEL[s['signal']]}")
+            line = f"{sym} @ ${price:.2f}:  " + "  |  ".join(parts)
             if has_sell:
                 st.error(line)
             elif has_buy:
