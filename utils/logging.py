@@ -122,7 +122,7 @@ def _setup_named_logger(logger: logging.Logger, name: str):
 
     # Route sub-module logs to the same file, suppress console noise
     if name == "live":
-        for lib in ["futu", "data"]:
+        for lib in ["futu"]:
             lib_logger = logging.getLogger(lib)
             lib_logger.setLevel(logging.INFO)
             lib_logger.addHandler(file_handler)

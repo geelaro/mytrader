@@ -95,6 +95,7 @@ def scan_day(
 
         for strat_name in strategy_names:
             if strat_name not in STRATEGY_MAP:
+                logger.warning("未知策略: %s", strat_name)
                 continue
 
             strat_params = config.get("strategy", {}).get(strat_name, {})

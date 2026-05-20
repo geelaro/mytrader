@@ -163,12 +163,13 @@ class LiveTrader:
         self._watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
         self.broker.warmup(self._watchlist_symbols)
 
-        # 2. Refresh market prices (watchlist + existing positions)
-        self._refresh_market_prices()
-
-        # 3. Get broker state
+        # 2. Get broker state (positions first, so price refresh can include them)
         account = self.broker.get_account()
-        positions = {p.symbol: p for p in self.broker.get_positions()}
+        all_positions = self.broker.get_positions()
+        positions = {p.symbol: p for p in all_positions}
+
+        # 3. Refresh market prices (watchlist + existing positions)
+        self._refresh_market_prices(all_positions)
         self._init_risk(account)
 
         self._check_global_risk(account, positions)
@@ -248,20 +249,13 @@ class LiveTrader:
     # Market data
     # ------------------------------------------------------------------
 
-    def _refresh_market_prices(self):
-        """Fetch latest prices for watchlist + existing positions.
-
-        Merges position symbols to avoid PnL=0 display for holdings
-        not in the current watchlist (e.g. GOOG vs GOOGL mismatch).
-        """
+    def _refresh_market_prices(self, all_positions: list = None):
+        """Fetch latest prices for watchlist + existing positions."""
         symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
-        # Also cover existing position symbols
-        try:
-            for p in self.broker.get_positions():
+        if all_positions:
+            for p in all_positions:
                 if p.symbol not in symbols:
                     symbols.append(p.symbol)
-        except Exception:
-            pass
 
         if not symbols:
             return
@@ -759,12 +753,7 @@ class LiveTrader:
 
     def _log_order(self, order: Order):
         """Persist order to DB for audit trail."""
-        self.cache.conn.execute(
-            "CREATE TABLE IF NOT EXISTS order_log ("
-            "  order_id TEXT, symbol TEXT, side TEXT, qty INTEGER,"
-            "  price REAL, status TEXT, created_at TEXT"
-            ")"
-        )
+        self.cache.init_schema()
         self.cache.conn.execute(
             "INSERT INTO order_log VALUES (?,?,?,?,?,?,?)",
             [order.order_id, order.symbol, order.side.value,
@@ -810,13 +799,7 @@ class LiveTrader:
         if signal_price <= 0 or order.avg_fill_price <= 0:
             return
         slippage = (order.avg_fill_price - signal_price) / signal_price
-        self.cache.conn.execute(
-            "CREATE TABLE IF NOT EXISTS slippage_log ("
-            "  order_id TEXT, symbol TEXT, side TEXT,"
-            "  signal_price REAL, fill_price REAL, slippage_pct REAL,"
-            "  created_at TEXT"
-            ")"
-        )
+        self.cache.init_schema()
         self.cache.conn.execute(
             "INSERT INTO slippage_log VALUES (?,?,?,?,?,?,?)",
             [order.order_id, order.symbol, order.side.value,

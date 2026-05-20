@@ -89,9 +89,6 @@ class Notifier:
     FEISHU_CHAT_ID    : target chat ID for app mode
     """
 
-    _token: Optional[str] = None
-    _token_expires: float = 0
-
     def __init__(
         self,
         url: Optional[str] = None,
@@ -107,6 +104,8 @@ class Notifier:
         self.chat_id = chat_id or os.getenv("FEISHU_CHAT_ID", "")
         self.dry_run = dry_run
         self._async = async_mode
+        self._token: Optional[str] = None
+        self._token_expires: float = 0
         self._queue: queue.Queue = queue.Queue(maxsize=1000)
         self._worker: Optional[threading.Thread] = None
         self._stop_event = threading.Event()

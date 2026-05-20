@@ -9,8 +9,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Isolate test database from production
-os.environ["MYTRADER_DB"] = "trading_data_test.db"
+# Isolate test database from production (per-session temp file)
+import tempfile as _tempfile
+_test_db_dir = _tempfile.mkdtemp(prefix="mytrader_test_")
+os.environ["MYTRADER_DB"] = os.path.join(_test_db_dir, "test.db")
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))

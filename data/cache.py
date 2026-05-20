@@ -90,6 +90,26 @@ class CacheManager:
                 entry_date TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS order_log (
+                order_id   TEXT,
+                symbol     TEXT,
+                side       TEXT,
+                qty        INTEGER,
+                price      REAL,
+                status     TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS slippage_log (
+                order_id      TEXT,
+                symbol        TEXT,
+                side          TEXT,
+                signal_price  REAL,
+                fill_price    REAL,
+                slippage_pct  REAL,
+                created_at    TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS trade_pnl (
                 symbol      TEXT,
                 side        TEXT,
