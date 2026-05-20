@@ -42,6 +42,7 @@ class CacheManager:
 
     def enable_batch(self):
         """Defer all commits — caller must call commit_batch() once."""
+        self._batch_mode = False  # safety reset
         self._batch_mode = True
 
     def commit_batch(self):
@@ -253,7 +254,10 @@ class CacheManager:
         if not dates:
             return 0
         try:
-            self.conn.execute("BEGIN IMMEDIATE")
+            if self._batch_mode:
+                self.conn.execute("SAVEPOINT save_ohlcv")
+            else:
+                self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute(
                 f"DELETE FROM ohlcv_daily WHERE symbol = ? AND date IN ({','.join('?' * len(dates))})",
                 [symbol.upper()] + dates,
@@ -262,9 +266,14 @@ class CacheManager:
                 "ohlcv_daily", self.conn, if_exists="append", index=False,
                 method="multi",
             )
+            if self._batch_mode:
+                self.conn.execute("RELEASE SAVEPOINT save_ohlcv")
             self._commit()
         except Exception:
-            self.conn.rollback()
+            if self._batch_mode:
+                self.conn.execute("ROLLBACK TO SAVEPOINT save_ohlcv")
+            else:
+                self.conn.rollback()
             raise
         return len(db_df)
 

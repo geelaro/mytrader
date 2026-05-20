@@ -38,7 +38,7 @@ from engine.trader import BacktestEngine
 
 # ---------------------------------------------------------------------------
 def _next_trading_day(date_str: str) -> str:
-    """Return the next trading day after *date_str* (skip weekends/holidays)."""
+    """Return the next business day after *date_str* (weekends only; US holidays not skipped)."""
     next_day = pd.Timestamp(date_str) + pd.Timedelta(days=1)
     return pd.bdate_range(start=next_day, periods=1)[0].strftime("%Y-%m-%d")
 

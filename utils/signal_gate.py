@@ -5,6 +5,7 @@ LiveTrader, keeping the main flow lean.
 """
 
 from dataclasses import dataclass, field
+import re
 from typing import Dict, List, Optional, Tuple
 
 from utils.market_state import (
@@ -41,7 +42,8 @@ class SignalGate:
         sym = sig.get("symbol", "?")
 
         if self.trading_paused:
-            return False, f"PAUSE_{self.pause_reason.replace(' ', '_').replace(':', '').replace('%','pct').replace('>','gt').upper()}"
+            code = re.sub(r'[^A-Za-z0-9]', '_', self.pause_reason).strip('_').upper()
+            return False, f"PAUSE_{code}"
 
         if sig.get("orphan"):
             return False, "ORPHAN_BUY_BLOCKED"

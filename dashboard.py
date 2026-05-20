@@ -891,7 +891,7 @@ with st.expander("运行健康", expanded=False):
         # Weekly distribution chart
         import matplotlib.pyplot as _plt
         from collections import Counter
-        weekly_counts = Counter(o[1] for o in ops)
+        weekly_counts = Counter(o[2] for o in ops)
         fig, ax = _plt.subplots(figsize=(4, 2))
         labels = list(weekly_counts.keys())
         counts = list(weekly_counts.values())

@@ -442,7 +442,6 @@ class LiveTrader:
                     ))
                 else:
                     print(f"  ! {sym} 风控检查未通过，跳过")
-                    self.cache.log_ops("risk_reject", symbol=sym, level="WARN")
 
             elif sig["signal"] == -1 and has_position:
                 # Sell signal + has position → SELL
@@ -525,21 +524,29 @@ class LiveTrader:
         # Consecutive loss circuit breaker
         if r._consecutive_losses >= r.max_consecutive_losses:
             print(f"  ! 连续亏损熔断 ({r._consecutive_losses}笔)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="consecutive_losses", level="WARN")
             return False
 
         # Daily trade cap
         if r._daily_trade_count >= r.max_daily_trades:
             print(f"  ! 日内交易次数已达上限 ({r.max_daily_trades}笔)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="daily_trade_cap", level="WARN")
             return False
 
         # Daily loss limit
         if equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
             print(f"  ! 日内亏损超限 ({r.max_daily_loss_pct*100:.0f}%)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="daily_loss", level="WARN")
             return False
 
         # Min order value
         order_value = signal.get("price", 0) * qty
         if order_value < r.min_order_value:
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="min_order_value", level="WARN")
             return False
 
         # Slippage guard — compare signal price vs broker last price
@@ -743,7 +750,7 @@ class LiveTrader:
              order.filled_qty, order.avg_fill_price,
              order.status.value, order.created_at],
         )
-        self.cache.conn.commit()
+        self.cache._commit()
 
     def _submit_and_wait(self, order: Order) -> Order:
         """Submit order and poll until filled, cancelled, or timeout."""
@@ -770,7 +777,7 @@ class LiveTrader:
                 return result
 
         # Timeout — cancel if limit order
-        if is_limit and result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED):
+        if is_limit and result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
             logger.warning("限价单超时，撤单: %s %s", order.symbol, order.order_id)
             self.broker.cancel_order(result.order_id)
             result.status = OrderStatus.CANCELLED
@@ -791,7 +798,7 @@ class LiveTrader:
              signal_price, order.avg_fill_price, round(slippage * 100, 4),
              order.created_at],
         )
-        self.cache.conn.commit()
+        self.cache._commit()
 
 
 # ---------------------------------------------------------------------------
