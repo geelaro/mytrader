@@ -713,3 +713,38 @@ with tab_portfolio:
         st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True)
     else:
         st.info("无交易记录")
+
+# ---------------------------------------------------------------------------
+# 组合相关性矩阵
+# ---------------------------------------------------------------------------
+
+st.divider()
+st.subheader("持仓相关性矩阵")
+
+watchlist_syms = [item["symbol"] for item in config.get("watchlist", [])]
+corr_lookback = st.slider("相关性回溯天数", 20, 252, 60, key="corr_days")
+corr_start = (pd.Timestamp(target_date) - pd.DateOffset(days=corr_lookback * 2)).strftime("%Y-%m-%d")
+
+returns = {}
+for sym in watchlist_syms:
+    df = provider.get_daily(sym, start=corr_start, end=target_date.isoformat())
+    if df is not None and len(df) >= corr_lookback:
+        returns[sym] = df["Close"].pct_change().dropna().iloc[-corr_lookback:]
+
+if len(returns) >= 2:
+    corr_df = pd.DataFrame(returns).corr()
+    import matplotlib.pyplot as _plt
+    fig, ax = _plt.subplots(figsize=(8, 6))
+    im = ax.imshow(corr_df.values, vmin=-1, vmax=1, cmap="RdYlGn")
+    ax.set_xticks(range(len(corr_df.columns)))
+    ax.set_yticks(range(len(corr_df.index)))
+    ax.set_xticklabels(corr_df.columns, rotation=45, ha="right", fontsize=9)
+    ax.set_yticklabels(corr_df.index, fontsize=9)
+    for i in range(len(corr_df)):
+        for j in range(len(corr_df)):
+            ax.text(j, i, f"{corr_df.values[i,j]:.2f}", ha="center", va="center", fontsize=8)
+    _plt.colorbar(im, ax=ax, shrink=0.8)
+    ax.set_title(f"持仓相关性矩阵 ({corr_lookback}日)")
+    st.pyplot(fig)
+else:
+    st.info("需要至少 2 个标的有足够数据")
