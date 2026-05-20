@@ -1,0 +1,89 @@
+"""SignalGate — centralised pre-trade gate.
+
+Decouples market-state, risk-pause, and regime-filter logic from
+LiveTrader, keeping the main flow lean.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+from utils.market_state import (
+    MarketRegime, Volatility, MarketState,
+    is_trend_strategy, is_mean_reversion_strategy,
+)
+
+
+@dataclass
+class SignalGate:
+    """Check whether a BUY or SELL signal should be acted on.
+
+    Encapsulates:
+    - Trading-pause gates (daily loss, consecutive loss, exposure)
+    - Market-regime filtering (trend-in-range, reversion-in-trend)
+    - Orphan-position guard (sell-only)
+    - Exposure cap
+    - Risk-limits pre-check delegation
+    """
+
+    ms_enabled: bool = False
+    market_state: Optional[MarketState] = None
+    trading_paused: bool = False
+    pause_reason: str = ""
+    max_total_exposure_pct: float = 0.80
+    vol_high_scalar: float = 0.7
+
+    # -- Public API -------------------------------------------------------
+
+    def allow_buy(
+        self, sig: dict, positions: Dict[str, any], account
+    ) -> Tuple[bool, str]:
+        """Return (can_buy, reason_if_blocked)."""
+        sym = sig.get("symbol", "?")
+
+        if self.trading_paused:
+            return False, f"交易暂停: {self.pause_reason}"
+
+        if sig.get("orphan"):
+            return False, "孤儿标的，只卖不买"
+
+        if self._regime_blocks(sig):
+            strat = sig.get("strategy", "")
+            regime = self.market_state.regime
+            return False, f"{regime.name} 市不追 {strat}"
+
+        # Exposure cap
+        qty = sig.get("_qty", 0)
+        price = sig.get("price", 0)
+        if qty > 0 and price > 0 and account is not None:
+            new_value = price * qty
+            current = sum(p.market_value for p in positions.values() if p.market_value > 0)
+            equity = getattr(account, "total_equity", 0)
+            if equity > 0 and (current + new_value) / equity > self.max_total_exposure_pct:
+                return False, "总敞口超限"
+
+        return True, ""
+
+    def allow_sell(self, sig: dict) -> Tuple[bool, str]:
+        """Sells are rarely blocked — only by pause (though we still allow)."""
+        return True, ""
+
+    def vol_scaled_qty(self, qty: int) -> int:
+        """Scale position size down in high-volatility regimes."""
+        if (self.ms_enabled and self.market_state is not None
+                and self.market_state.volatility == Volatility.HIGH):
+            return max(1, int(qty * self.vol_high_scalar))
+        return qty
+
+    # -- Internal ---------------------------------------------------------
+
+    def _regime_blocks(self, sig: dict) -> bool:
+        if not self.ms_enabled or self.market_state is None:
+            return False
+        regime = self.market_state.regime
+        strat = sig.get("strategy", "")
+        if regime == MarketRegime.RANGING and is_trend_strategy(strat):
+            return True
+        if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) \
+                and is_mean_reversion_strategy(strat):
+            return True
+        return False

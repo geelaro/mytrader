@@ -257,7 +257,8 @@ def walk_forward(
     while window_start + pd.DateOffset(years=train_years + test_years) <= end_dt:
         train_start = window_start.strftime("%Y-%m-%d")
         train_end = (window_start + pd.DateOffset(years=train_years)).strftime("%Y-%m-%d")
-        test_start = (pd.Timestamp(train_end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        next_day = pd.Timestamp(train_end) + pd.Timedelta(days=1)
+        test_start = pd.bdate_range(start=next_day, periods=1)[0].strftime("%Y-%m-%d")
         test_end = (window_start + pd.DateOffset(years=train_years + test_years)).strftime("%Y-%m-%d")
 
         print(f"\n{'=' * 60}")

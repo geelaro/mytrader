@@ -606,8 +606,8 @@ class TestTradingPause:
 
     def test_paused_blocks_buy(self):
         trader = self._make_trader()
-        trader._trading_paused = True
-        trader._pause_reason = "test"
+        trader._gate.trading_paused = True
+        trader._gate.pause_reason = "test"
         signals = [{
             "symbol": "AAPL", "name": "Apple", "strategy": "w",
             "signal": 1, "price": 195.0, "atr": 5.0,
@@ -619,8 +619,8 @@ class TestTradingPause:
 
     def test_paused_allows_sell(self):
         trader = self._make_trader()
-        trader._trading_paused = True
-        trader._pause_reason = "test"
+        trader._gate.trading_paused = True
+        trader._gate.pause_reason = "test"
         signals = [{
             "symbol": "AAPL", "name": "Apple", "strategy": "w",
             "signal": -1, "price": 195.0, "atr": 5.0,
@@ -846,110 +846,85 @@ class TestRiskPersistence:
 
 
 class TestRegimeFiltering:
-    def _make_trader(self):
-        broker = MockBroker(initial_cash=100000)
-        broker.last_prices = {"AAPL": 195.0}
-        trader = LiveTrader(broker=broker, dry_run=True)
-        trader.risk._day_start_equity = 100000
-        return trader
+    def _make_gate(self, **kw):
+        from utils.signal_gate import SignalGate
+        return SignalGate(ms_enabled=True, **kw)
 
     def test_disabled_does_nothing(self):
-        """When market_state is disabled, no filtering."""
-        trader = self._make_trader()
-        trader._ms_enabled = False
-        # Should return False (not filtered)
-        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+        from utils.signal_gate import SignalGate
+        g = SignalGate(ms_enabled=False)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is True
 
     def test_null_state_does_nothing(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._market_state = None
-        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+        g = self._make_gate(market_state=None)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is True
 
     def test_trend_strategy_blocked_in_ranging(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._market_state = MagicMock()
-        trader._market_state.regime = MarketRegime.RANGING
-        trader._market_state.volatility = Volatility.NORMAL
-        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is True
+        ms = MagicMock(); ms.regime = MarketRegime.RANGING; ms.volatility = Volatility.NORMAL
+        g = self._make_gate(market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is False
 
     def test_trend_strategy_allowed_in_trending_up(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._market_state = MagicMock()
-        trader._market_state.regime = MarketRegime.TRENDING_UP
-        trader._market_state.volatility = Volatility.NORMAL
-        assert trader._filter_by_regime({"symbol": "AAPL", "strategy": "turtle_trading"}) is False
+        ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
+        g = self._make_gate(market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is True
 
     def test_mean_reversion_blocked_in_trending(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._market_state = MagicMock()
-        trader._market_state.regime = MarketRegime.TRENDING_UP
-        trader._market_state.volatility = Volatility.NORMAL
-        assert trader._filter_by_regime(
-            {"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}) is True
+        ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
+        g = self._make_gate(market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
+        assert ok is False
 
     def test_mean_reversion_allowed_in_ranging(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._market_state = MagicMock()
-        trader._market_state.regime = MarketRegime.RANGING
-        trader._market_state.volatility = Volatility.NORMAL
-        assert trader._filter_by_regime(
-            {"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}) is False
+        ms = MagicMock(); ms.regime = MarketRegime.RANGING; ms.volatility = Volatility.NORMAL
+        g = self._make_gate(market_state=ms)
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
+        assert ok is True
 
     def test_mixed_strategy_never_blocked(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
         for regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN,
                        MarketRegime.RANGING, MarketRegime.TRANSITIONAL):
-            trader._market_state = MagicMock()
-            trader._market_state.regime = regime
-            trader._market_state.volatility = Volatility.NORMAL
-            assert trader._filter_by_regime(
-                {"symbol": "AAPL", "strategy": "daily_macd_kdj"}) is False
+            ms = MagicMock(); ms.regime = regime; ms.volatility = Volatility.NORMAL
+            g = self._make_gate(market_state=ms)
+            ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "daily_macd_kdj"}, {}, None)
+            assert ok is True
+
+    def test_trading_paused_blocks_buy(self):
+        ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
+        g = self._make_gate(market_state=ms, trading_paused=True, pause_reason="test")
+        ok, reason = g.allow_buy({"symbol": "AAPL", "strategy": "turtle_trading"}, {}, None)
+        assert ok is False
+        assert "test" in reason
+
+    def test_orphan_buy_blocked(self):
+        g = self._make_gate()
+        ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "w", "orphan": True}, {}, None)
+        assert ok is False
+
+    def test_sell_always_allowed(self):
+        g = self._make_gate(trading_paused=True, pause_reason="x")
+        ok, _ = g.allow_sell({"symbol": "AAPL"})
+        assert ok is True
 
 
 class TestVolatilitySizing:
-    def _make_trader(self):
-        broker = MockBroker(initial_cash=100000)
-        broker.last_prices = {"AAPL": 195.0}
-        trader = LiveTrader(broker=broker, dry_run=True)
-        trader.risk._day_start_equity = 100000
-        return trader
-
     def test_high_vol_reduces_size(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._ms_vol_scalar = 0.7
-        trader._market_state = MagicMock()
-        trader._market_state.volatility = Volatility.HIGH
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
-        assert qty > 0
-        # Full size at 195, 2% risk, 2xATR stop: ~102 shares. ×0.7 → ~71
-        assert qty <= 120  # well below full size
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.volatility = Volatility.HIGH
+        g = SignalGate(ms_enabled=True, market_state=ms, vol_high_scalar=0.7)
+        assert g.vol_scaled_qty(100) == 70
 
     def test_normal_vol_no_scaling(self):
-        trader = self._make_trader()
-        trader._ms_enabled = True
-        trader._ms_vol_scalar = 0.7
-        trader._market_state = MagicMock()
-        trader._market_state.volatility = Volatility.NORMAL
-        qty_normal = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
-
-        # Disabled should produce same qty as NORMAL vol
-        trader._ms_enabled = False
-        qty_disabled = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
-        assert qty_normal == qty_disabled
+        from utils.signal_gate import SignalGate
+        ms = MagicMock(); ms.volatility = Volatility.NORMAL
+        g = SignalGate(ms_enabled=True, market_state=ms, vol_high_scalar=0.7)
+        assert g.vol_scaled_qty(100) == 100
 
     def test_disabled_no_scaling(self):
-        trader = self._make_trader()
-        trader._ms_enabled = False
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 5.0}, equity=100000)
-        assert qty > 0
+        from utils.signal_gate import SignalGate
+        g = SignalGate(ms_enabled=False, vol_high_scalar=0.7)
+        assert g.vol_scaled_qty(100) == 100

@@ -45,6 +45,15 @@ class CacheManager:
             self._conn.close()
             self._conn = None
 
+    def log_ops(self, event: str, symbol: str = "", detail: str = "", value: float = 0):
+        """Record an operational event (pause, rejection, slippage, etc.)."""
+        self.init_schema()
+        self.conn.execute(
+            "INSERT INTO ops_log (event, symbol, detail, value) VALUES (?,?,?,?)",
+            [event, symbol, detail, value],
+        )
+        self.conn.commit()
+
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------
@@ -120,6 +129,14 @@ class CacheManager:
                 pnl_pct     REAL,
                 exit_date   TEXT,
                 order_id    TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS ops_log (
+                ts         TEXT DEFAULT (datetime('now','localtime')),
+                event      TEXT,
+                symbol     TEXT,
+                detail     TEXT,
+                value      REAL
             );
 
             PRAGMA journal_mode = WAL;

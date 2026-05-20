@@ -40,10 +40,8 @@ from broker import (
     Position,
 )
 from utils import get_logger, load_toml
-from utils.market_state import (
-    MarketStateClassifier, is_trend_strategy, is_mean_reversion_strategy,
-    MarketRegime, Volatility,
-)
+from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
+from utils.signal_gate import SignalGate
 from utils.notify import Notifier
 
 logger = get_logger("live")
@@ -135,6 +133,8 @@ class LiveTrader:
         self._ms_vol_scalar = ms.get("vol_high_scalar", 0.7)
         self._ms_enabled = ms.get("enabled", False)
         self._market_state = None  # set during run()
+        self._gate = SignalGate(ms_enabled=self._ms_enabled,
+                                max_total_exposure_pct=self.risk.max_total_exposure_pct)
         self._restore_risk_state()
 
     # ------------------------------------------------------------------
@@ -188,8 +188,16 @@ class LiveTrader:
                       f"均价 ${pos.avg_price:.2f}  市值 ${pos.market_value:,.0f}  "
                       f"浮盈 ${pos.unrealized_pnl:+,.0f}{tag}")
 
-        # 4. Market state classification
+        # 4. Market state classification → build gate
         self._market_state = self._classify_market_state(target_date)
+        self._gate = SignalGate(
+            ms_enabled=self._ms_enabled,
+            market_state=self._market_state,
+            trading_paused=self._trading_paused,
+            pause_reason=self._pause_reason,
+            max_total_exposure_pct=self.risk.max_total_exposure_pct,
+            vol_high_scalar=self._ms_vol_scalar,
+        )
 
         # 5. Generate signals
         signals = self._scan_signals(target_date, positions)
@@ -410,26 +418,17 @@ class LiveTrader:
             has_position = pos is not None and abs(pos.quantity) > 0
 
             if sig["signal"] == 1 and not has_position:
-                if sig.get("orphan"):
-                    continue
-                if self._trading_paused:
-                    print(f"  ! {sym} 买入信号但交易已暂停 ({self._pause_reason})，跳过")
-                    continue
-                if self._filter_by_regime(sig):
-                    continue
-                qty = self._calc_position_size(sig, account.total_equity)
-                if qty <= 0:
+                sig["_qty"] = self._calc_position_size(sig, account.total_equity)
+                if sig["_qty"] <= 0:
                     print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
                     continue
 
-                # Total exposure check
-                new_value = sig.get("price", 0) * qty
-                current_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
-                total_exposure_pct = (current_exposure + new_value) / account.total_equity
-                if total_exposure_pct > self.risk.max_total_exposure_pct:
-                    print(f"  ! {sym} 总敞口超限 ({total_exposure_pct*100:.0f}% > {self.risk.max_total_exposure_pct*100:.0f}%)，跳过")
+                ok, reason = self._gate.allow_buy(sig, positions, account)
+                if not ok:
+                    print(f"  ! {sym} {reason}，跳过")
                     continue
 
+                qty = self._gate.vol_scaled_qty(sig["_qty"])
                 if self._passes_risk(sig, qty, account):
                     orders.append(Order(
                         symbol=sym,
@@ -479,31 +478,7 @@ class LiveTrader:
             qty = int(equity * 0.30 / price)
 
         max_qty = int(equity * r.max_position_pct / price)
-        qty = max(1, min(qty, max_qty))
-
-        # Volatility scaling from market state
-        if self._ms_enabled and self._market_state is not None:
-            if self._market_state.volatility == Volatility.HIGH:
-                qty = max(1, int(qty * self._ms_vol_scalar))
-
-        return qty
-
-    def _filter_by_regime(self, sig: dict) -> bool:
-        """Return True if this BUY signal should be filtered by market regime."""
-        if not self._ms_enabled or self._market_state is None:
-            return False
-
-        regime = self._market_state.regime
-        strat = sig.get("strategy", "")
-
-        if regime == MarketRegime.RANGING and is_trend_strategy(strat):
-            print(f"  ! {sig['symbol']} {strat} 买入信号被过滤（震荡市不追趋势）")
-            return True
-        if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) and is_mean_reversion_strategy(strat):
-            print(f"  ! {sig['symbol']} {strat} 买入信号被过滤（趋势市不做均值回归）")
-            return True
-
-        return False
+        return max(1, min(qty, max_qty))
 
     # ------------------------------------------------------------------
     # Risk checks
@@ -571,6 +546,8 @@ class LiveTrader:
                 slippage = abs(signal_price - last_price) / last_price
                 if slippage > r.max_slippage_pct:
                     print(f"  ! {sym} 滑点超限 ({slippage*100:.2f}%)，拒绝")
+                    self.cache.log_ops("slippage_rejected", symbol=sym,
+                                       detail=f"{slippage*100:.2f}%", value=slippage*100)
                     return False
 
         return True
@@ -607,6 +584,7 @@ class LiveTrader:
             if not self._alert_sent:
                 self.notifier.error("交易暂停", self._pause_reason)
                 self._alert_sent = True
+            self.cache.log_ops("trading_paused", detail=self._pause_reason)
         else:
             self._alert_sent = False
 
@@ -799,6 +777,8 @@ class LiveTrader:
         if signal_price <= 0 or order.avg_fill_price <= 0:
             return
         slippage = (order.avg_fill_price - signal_price) / signal_price
+        self.cache.log_ops("slippage", symbol=order.symbol,
+                           detail=f"{slippage*100:+.2f}%", value=slippage*100)
         self.cache.init_schema()
         self.cache.conn.execute(
             "INSERT INTO slippage_log VALUES (?,?,?,?,?,?,?)",
