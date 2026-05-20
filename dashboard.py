@@ -863,7 +863,7 @@ with st.expander("实盘交易记录", expanded=False):
 with st.expander("运行健康", expanded=False):
     try:
         ops = cache.conn.execute(
-            "SELECT ts, level, event, symbol, detail, value FROM ops_log ORDER BY ts DESC LIMIT 50"
+            "SELECT ts, source, level, event, symbol, detail, value FROM ops_log ORDER BY ts DESC LIMIT 50"
         ).fetchall()
         reject_24h = cache.conn.execute(
             "SELECT COUNT(*) FROM ops_log WHERE event IN ('gate_reject','risk_reject') "
@@ -878,8 +878,8 @@ with st.expander("运行健康", expanded=False):
         total_24h = 0
 
     if ops:
-        pause_count = sum(1 for o in ops if o[2] in ("gate_reject", "risk_reject"))
-        slip_count = sum(1 for o in ops if "slippage" in (o[2] or ""))
+        pause_count = sum(1 for o in ops if o[3] in ("gate_reject", "risk_reject"))
+        slip_count = sum(1 for o in ops if "slippage" in (o[3] or ""))
         # 24h rejection rate
         reject_rate = f"{reject_24h}/{total_24h}" if total_24h > 0 else "—"
         c1, c2, c3, c4 = st.columns(4)
@@ -891,7 +891,7 @@ with st.expander("运行健康", expanded=False):
         # Weekly distribution chart
         import matplotlib.pyplot as _plt
         from collections import Counter
-        weekly_counts = Counter(o[2] for o in ops)
+        weekly_counts = Counter(o[3] for o in ops)
         fig, ax = _plt.subplots(figsize=(4, 2))
         labels = list(weekly_counts.keys())
         counts = list(weekly_counts.values())
@@ -908,12 +908,13 @@ with st.expander("运行健康", expanded=False):
 
         rows = []
         for o in ops:
-            level = o[1] or "INFO"
-            event = o[2]
-            symbol = o[3] or ""
-            detail = o[4] or ""
-            value = o[5] or 0
-            rows.append({"时间": o[0], "级别": level, "事件": event, "标的": symbol, "详情": detail, "值": value})
+            source = o[1] or ""
+            level = o[2] or "INFO"
+            event = o[3]
+            symbol = o[4] or ""
+            detail = o[5] or ""
+            value = o[6] or 0
+            rows.append({"时间": o[0], "来源": source, "级别": level, "事件": event, "标的": symbol, "详情": detail, "值": value})
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.info("暂无运行事件")

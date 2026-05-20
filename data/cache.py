@@ -62,12 +62,12 @@ class CacheManager:
             self._conn = None
 
     def log_ops(self, event: str, symbol: str = "", detail: str = "",
-                value: float = 0, level: str = "INFO"):
+                value: float = 0, level: str = "INFO", source: str = "live_trader"):
         """Record an operational event (pause, rejection, slippage, etc.)."""
         self.init_schema()
         self.conn.execute(
-            "INSERT INTO ops_log (level, event, symbol, detail, value) VALUES (?,?,?,?,?)",
-            [level, event, symbol, detail, value],
+            "INSERT INTO ops_log (source, level, event, symbol, detail, value) VALUES (?,?,?,?,?,?)",
+            [source, level, event, symbol, detail, value],
         )
         self._commit()
 
@@ -150,6 +150,7 @@ class CacheManager:
 
             CREATE TABLE IF NOT EXISTS ops_log (
                 ts         TEXT DEFAULT (datetime('now','localtime')),
+                source     TEXT DEFAULT 'live_trader',
                 level      TEXT DEFAULT 'INFO',
                 event      TEXT,
                 symbol     TEXT,
