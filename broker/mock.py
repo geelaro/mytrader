@@ -57,9 +57,7 @@ class MockBroker(Broker):
         return "mock"
 
     def refresh_prices(self, symbols: List[str]):
-        """Mock: clear stale prices so data pipeline refills fresh each cycle."""
-        for s in symbols:
-            self.last_prices.pop(s, None)
+        """Mock: retain any existing prices; LiveTrader fills from OHLCV data."""
         logger.info("行情刷新 (Tencent/Sina, %d 个标的)", len(symbols))
 
     # ------------------------------------------------------------------

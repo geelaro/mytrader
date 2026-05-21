@@ -147,18 +147,18 @@ class TestLimitOrder:
 
 
 class TestRefreshPrices:
-    def test_clears_specified_symbols(self, mock_broker):
+    def test_preserves_all_prices(self, mock_broker):
         mock_broker.last_prices["AAPL"] = 195.0
         mock_broker.last_prices["TSLA"] = 250.0
         mock_broker.refresh_prices(["AAPL", "TSLA"])
-        assert "AAPL" not in mock_broker.last_prices
-        assert "TSLA" not in mock_broker.last_prices
+        assert mock_broker.last_prices["AAPL"] == 195.0
+        assert mock_broker.last_prices["TSLA"] == 250.0
 
-    def test_preserves_other_symbols(self, mock_broker):
+    def test_keeps_existing_prices(self, mock_broker):
         mock_broker.last_prices["AAPL"] = 195.0
         mock_broker.last_prices["TSLA"] = 250.0
         mock_broker.refresh_prices(["AAPL"])
-        assert "AAPL" not in mock_broker.last_prices
+        assert mock_broker.last_prices["AAPL"] == 195.0
         assert mock_broker.last_prices["TSLA"] == 250.0
 
     def test_noop_on_empty_symbols(self, mock_broker):

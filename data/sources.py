@@ -72,14 +72,16 @@ _TENCENT_CODE_MAP = {
     "MU": "usMU.OQ", "INTC": "usINTC.OQ", "ORCL": "usORCL.N",
 }
 
-# Manual split adjustments — verified against CRSP/EOD
-# (split_date, ratio): prices before date are DIVIDED by ratio
+# Manual split adjustments — Tencent qfq parameter does NOT adjust US stocks.
+# Prices before split_date are DIVIDED by ratio.
+# Source: CRSP / EOD
 _US_SPLITS: dict[str, list[tuple[str, int]]] = {
     "AAPL":  [("2020-08-31", 4)],
     "NVDA":  [("2021-07-20", 4), ("2024-06-10", 10)],
     "TSLA":  [("2020-08-31", 5), ("2022-08-25", 3)],
     "AMZN":  [("2022-06-06", 20)],
     "GOOGL": [("2022-07-18", 20)],
+    "GOOG":  [("2022-07-18", 20)],
 }
 
 
@@ -145,7 +147,8 @@ class TencentSource(DataSource):
 
         df = pd.DataFrame(rows).set_index("date").sort_index()
 
-        # Apply manual split adjustments
+        # Tencent does NOT adjust US stocks for splits (qfq is no-op here).
+        # Apply manual corrections so historical prices are comparable.
         if sym in _US_SPLITS:
             for split_date, ratio in _US_SPLITS[sym]:
                 split_dt = pd.Timestamp(split_date)
