@@ -13,6 +13,11 @@ from pandas import Timestamp
 
 from .protocol import OHLCV_COLUMNS
 
+# --- ops_log source constants -----------------------------------------
+OPS_SRC_LIVE = "live_trader"
+OPS_SRC_DASHBOARD = "dashboard"
+OPS_SRC_BROKER = "broker"
+
 
 class CacheManager:
     """SQLite cache for daily OHLCV bars.
@@ -62,7 +67,7 @@ class CacheManager:
             self._conn = None
 
     def log_ops(self, event: str, symbol: str = "", detail: str = "",
-                value: float = 0, level: str = "INFO", source: str = "live_trader"):
+                value: float = 0, level: str = "INFO", source: str = OPS_SRC_LIVE):
         """Record an operational event (pause, rejection, slippage, etc.)."""
         self.init_schema()
         self.conn.execute(
@@ -157,8 +162,9 @@ class CacheManager:
                 detail     TEXT,
                 value      REAL
             );
-            CREATE INDEX IF NOT EXISTS idx_ops_event ON ops_log(event);
-            CREATE INDEX IF NOT EXISTS idx_ops_ts    ON ops_log(ts);
+            CREATE INDEX IF NOT EXISTS idx_ops_event    ON ops_log(event);
+            CREATE INDEX IF NOT EXISTS idx_ops_ts       ON ops_log(ts);
+            CREATE INDEX IF NOT EXISTS idx_ops_src_ts   ON ops_log(source, ts);
 
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
