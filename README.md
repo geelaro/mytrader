@@ -8,19 +8,22 @@
 
 | 模块 | 说明 |
 |------|------|
-| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare 三源，SQLite 本地缓存 + 增量更新 |
+| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare/YFinance 四源，SQLite 本地缓存 + 增量更新 |
 | 策略库 | 10 个策略（趋势/均值回归/动量突破/波动率），BaseStrategy 统一接口 |
-| 策略选择层 | `active`（实盘执行）+ `monitor`（观察对比），每日扫描全部 |
+| 策略选择层 | SignalGate 门控层：`active`（实盘执行）+ `monitor`（观察对比），市场状态感知 + 风控暂停 + 敞口检查 |
 | 回测引擎 | 含滑点佣金，退出逻辑收归策略，支持单标 + 组合回测 |
 | 仓位管理 | `fixed_capital`（策略自定） / `risk_budget`（ATR 风险预算）双模式 |
 | 参数优化 | 网格搜索 + Walk-forward 样本外验证（资金连续传递）+ 热力图 |
-| 分析工具 | 成本敏感性网格扫描 + 参数鲁棒性邻域扰动 + 策略质量评级 |
-| 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 |
-| 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
-| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查、日内亏损上限 |
+| 分析工具 | 成本敏感性 + 参数鲁棒性 + Monte Carlo 模拟 + 滚动窗口 α 衰减 + 压力测试 |
+| 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 + 每日报告 |
+| 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD），CLI 切换券商 |
+| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查、日内亏损上限、超阈值暂停开仓 + 飞书告警 |
+| 风控持久化 | risk_state + entry_prices 表，守护进程重启后恢复熔断/日内计数/入场价 |
+| 订单管理 | 部分成交轮询（市价60s/限价5min）、限价单超时自动撤单、滑点统计 |
 | 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/行业/日开仓上限） |
-| Dashboard | Streamlit Web UI — 单标/组合双 Tab，风险看板，PnL 归因，交易明细筛选导出 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（406 测试 + 黄金样本回归） |
+| 运维可观测 | ops_log 统一运维表（source/level/event 维度），trade_pnl 买卖自动配对，24h 拒单率指标 |
+| Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 → 实盘记录 → 运行健康面板 |
+| CI | GitHub Actions — push/PR 自动跑 pytest（485 测试 + 黄金样本回归） |
 
 ## 策略
 
@@ -52,15 +55,25 @@ mytrader/
   └─ optimize.py     #   参数优化 (grid_search/walk_forward)
   analysis/          # 分析工具
   ├─ cost_sensitivity.py    #   成本敏感性网格扫描
-  └─ param_robustness.py    #   参数鲁棒性邻域扰动
-  utils/             # 工具 (日志/飞书通知/环境/配置/行业映射)
-  tests/             # 406 个测试 (含黄金样本回归 test_golden.py)
+  ├─ param_robustness.py    #   参数鲁棒性邻域扰动
+  ├─ monte_carlo.py         #   Monte Carlo 模拟（交易序列随机化）
+  ├─ rolling_alpha.py       #   滚动窗口 α 衰减检测
+  └─ stress_test.py         #   极端行情压力测试 (2008/2020/2022)
+  utils/             # 工具
+  ├─ signal_gate.py         #   策略门控层（市场状态+风控+敞口+孤儿守卫）
+  ├─ market_state.py        #   四象限市场状态分类器
+  ├─ sectors.py             #   行业分类映射
+  ├─ notify.py              #   飞书通知 (Webhook/App 双模式)
+  └─ ...
+  logs/              # 运行时日志 (live.log / daily.log / mytrader.log)
+  tests/             # 485 个测试 (含黄金样本回归 test_golden.py)
   reports/           # 自动生成的 CSV + PNG 报告
   daily.py           # 每日回溯扫描 (入口脚本)
   live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
   dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
   config.py          # 统一运行时配置
-  watchlist.toml     # 标的 + 策略 + 风控 + 日志配置
+  watchlist.toml     # 标的 + 策略 + 风控 + 日志 + 孤儿持仓配置
+  Dockerfile         # Docker 一键部署
 ```
 
 ## 快速开始
@@ -69,7 +82,7 @@ mytrader/
 # Python 3.10+
 pip install pipenv
 pipenv install --dev
-pipenv run python -m pytest tests/ -v   # 406 tests, verify env
+pipenv run python -m pytest tests/ -v   # 485 tests, verify env
 ```
 
 ## 核心流程（30 分钟上手）
@@ -261,11 +274,35 @@ pipenv run python analysis/param_robustness.py -s enhanced_macd --sizing-mode ri
 - `△ 参数稳定但策略乏力` — ROBUST + WEAK，换策略优先于调参数
 - `✗ 不建议使用` — OVERFIT + NEGATIVE，策略本身不可用
 
+### Monte Carlo 模拟
+
+随机打乱交易顺序 N 次，评估策略对交易序列的敏感性：
+
+```bash
+pipenv run python analysis/monte_carlo.py -s weekly_macd_kdj --symbol AAPL --runs 1000
+```
+
+### 滚动窗口 α 衰减
+
+检测策略绩效是否随时间退化：
+
+```bash
+pipenv run python analysis/rolling_alpha.py -s weekly_macd_kdj --symbol AAPL
+```
+
+### 压力测试
+
+用历史极端行情验证策略抗压能力：
+
+```bash
+pipenv run python analysis/stress_test.py -s weekly_macd_kdj --symbol AAPL
+```
+
 ## 实盘前检查清单
 
 在启动 `live_trader.py` 实盘前，逐项确认：
 
-- [ ] **406 测试全部通过** `pytest tests/ -q`
+- [ ] **485 测试全部通过** `pytest tests/ -q`
 - [ ] **黄金样本无漂移** — CI 绿标
 - [ ] `param_robustness` 评级 ROBUST 或 STABLE，非 OVERFIT
 - [ ] `cost_sensitivity` 评级 A 或 B（10bp/3bp 佣金下仍盈利）
@@ -275,6 +312,37 @@ pipenv run python analysis/param_robustness.py -s enhanced_macd --sizing-mode ri
 - [ ] 飞书 Webhook 已配置（如用通知）— `echo $FEISHU_WEBHOOK`
 - [ ] MockBroker dry-run 先跑一周，确认无异常
 - [ ] 初始资金 ≤ 可承受全部亏损的金额
+
+## 运维特性
+
+### 日志分家
+
+三类日志隔离输出，方便排查：
+
+| 日志文件 | 写入者 | 内容 |
+|---------|--------|------|
+| `logs/live.log` | live_trader.py | 实盘交易、风控触发、订单状态 |
+| `logs/daily.log` | daily.py | 每日扫描、信号输出 |
+| `logs/mytrader.log` | 全部模块 | 共享通用日志 |
+
+### 孤儿持仓处理
+
+非 watchlist 标的的持仓自动纳入扫描（只卖不买）。在 `watchlist.toml` 配置兜底策略：
+
+```toml
+[defaults]
+orphan_strategy = "daily_macd_kdj"
+```
+
+### Docker 部署
+
+```bash
+docker build -t mytrader .
+docker run -d --name mytrader \
+  -e FEISHU_WEBHOOK=xxx \
+  -v $(pwd)/trading_data.db:/app/trading_data.db \
+  mytrader
+```
 
 ## 飞书通知
 

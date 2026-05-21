@@ -164,11 +164,27 @@ class CacheManager:
             );
             CREATE INDEX IF NOT EXISTS idx_ops_event    ON ops_log(event);
             CREATE INDEX IF NOT EXISTS idx_ops_ts       ON ops_log(ts);
-            CREATE INDEX IF NOT EXISTS idx_ops_src_ts   ON ops_log(source, ts);
 
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
         """)
+        # Schema migrations — add columns that may be missing in older DBs
+        for table, col_def in [
+            ("ohlcv_daily", "source TEXT DEFAULT ''"),
+            ("ops_log", "source TEXT DEFAULT 'live_trader'"),
+            ("ops_log", "level TEXT DEFAULT 'INFO'"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        # Indexes that depend on migrated columns — must run after ALTER TABLE
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ops_src_ts ON ops_log(source, ts)"
+            )
+        except sqlite3.OperationalError:
+            pass
         self._commit()
 
     # ------------------------------------------------------------------
