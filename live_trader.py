@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass, fields
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -41,50 +40,19 @@ from broker import (
 )
 from engine.execution import ExecutionConfig, ExecutionModel, ExecutionStyle, ExecutionTiming
 from utils import get_logger, load_toml
+from utils.risk import RiskLimits  # re-exported for backward compat
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 from utils.signal_gate import SignalGate
 from utils.signal_scanner import SignalScanner
 from utils.notify import Notifier
+from live.risk_controller import RiskController
+from live.order_manager import OrderManager
 
 logger = get_logger("live")
 
 # ---------------------------------------------------------------------------
 # Risk guard
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class RiskLimits:
-    """Safety limits — checked before every order submission."""
-
-    max_position_pct: float = 0.30
-    max_total_exposure_pct: float = 0.80
-    max_daily_loss_pct: float = 0.05
-    min_order_value: float = 500.0
-    max_slippage_pct: float = 0.02
-    max_consecutive_losses: int = 3
-    max_daily_trades: int = 5
-    base_risk_pct: float = 0.02
-    vol_sensitivity: float = 5.0
-    min_vol_scalar: float = 0.3
-    max_total_drawdown_pct: float = 0.30
-
-    # -- runtime state --
-    _day_start_equity: float = 0.0
-    _peak_equity: float = 0.0
-    _date: str = ""
-    _consecutive_losses: int = 0
-    _daily_trade_count: int = 0
-
-    @classmethod
-    def from_config(cls, config: dict) -> "RiskLimits":
-        """Build from watchlist.toml [risk] section.  Missing keys
-        inherit dataclass field defaults — no duplicated fallback values."""
-        rc = config.get("risk", {})
-        param_names = {f.name for f in fields(cls) if not f.name.startswith("_")}
-        kwargs = {k: rc[k] for k in param_names if k in rc}
-        return cls(**kwargs)
-
 
 # ---------------------------------------------------------------------------
 # LiveTrader
@@ -119,21 +87,27 @@ class LiveTrader:
         self.risk = RiskLimits.from_config(self.config)
         self.execution_model = self._load_execution_model(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
-        self._entry_prices: Dict[str, float] = {}  # for circuit breaker tracking
         self._orphan_strategy = self.config.get("defaults", {}).get("orphan_strategy", "")
         self._watchlist_symbols: List[str] = []  # populated in run()
         self._orphan_symbols: set = set()  # symbols in positions but not watchlist
-        self._trading_paused = False
-        self._pause_reason = ""
-        self._alert_sent = False
         ms = self.config.get("market_state", {})
         self._ms_proxy = ms.get("proxy_symbol", "SPY")
         self._ms_vol_scalar = ms.get("vol_high_scalar", 0.7)
         self._ms_enabled = ms.get("enabled", False)
         self._market_state = None  # set during run()
+        self.risk_ctrl = RiskController(risk=self.risk, cache=self.cache,
+                                        broker=self.broker, notifier=self.notifier)
         self._gate = SignalGate(ms_enabled=self._ms_enabled,
                                 max_total_exposure_pct=self.risk.max_total_exposure_pct)
-        self._restore_risk_state()
+        self.order_mgr = OrderManager(
+            broker=self.broker,
+            cache=self.cache,
+            execution_model=self.execution_model,
+            notifier=self.notifier,
+            gate=self._gate,
+            risk_ctrl=self.risk_ctrl,
+            dry_run=self.dry_run,
+        )
 
     # ------------------------------------------------------------------
     # Main entry
@@ -177,9 +151,9 @@ class LiveTrader:
             account = self.broker.get_account()
             all_positions = self.broker.get_positions()
         positions = {p.symbol: p for p in all_positions}
-        self._init_risk(account)
+        self.risk_ctrl.init_risk(account)
 
-        self._check_global_risk(account, positions)
+        self.risk_ctrl.check_global(account, positions)
 
         print(f"\n  账户权益: ${account.total_equity:,.0f}  "
               f"可用: ${account.available_cash:,.0f}  "
@@ -200,11 +174,12 @@ class LiveTrader:
         self._gate = SignalGate(
             ms_enabled=self._ms_enabled,
             market_state=self._market_state,
-            trading_paused=self._trading_paused,
-            pause_reason=self._pause_reason,
+            trading_paused=self.risk_ctrl.trading_paused,
+            pause_reason=self.risk_ctrl.pause_reason,
             max_total_exposure_pct=self.risk.max_total_exposure_pct,
             vol_high_scalar=self._ms_vol_scalar,
         )
+        self.order_mgr.gate = self._gate
 
         # 5. Generate signals
         signals = self._scan_signals(target_date, positions)
@@ -216,7 +191,7 @@ class LiveTrader:
                 s['price'] = live_price
 
         # 6. Compare → Orders
-        orders = self._generate_orders(signals, positions, account)
+        orders = self.order_mgr.generate_orders(signals, positions, account)
 
         # 7. Submit (with polling for partial fills + timeout cancellation)
         submitted = []
@@ -228,12 +203,12 @@ class LiveTrader:
                 if fill_price > 0:
                     order.avg_fill_price = fill_price * (1 + 0.0005) if order.side == OrderSide.BUY else fill_price * (1 - 0.0005)
                 order.filled_qty = order.quantity
-                self._print_order(order)
+                self.order_mgr.print_order(order)
                 submitted.append(order)
                 self.notifier.trade_card(order)
             else:
-                result = self._submit_and_wait(order)
-                self._log_order(result)
+                result = self.order_mgr.submit_and_wait(order)
+                self.order_mgr.log_order(result)
                 submitted.append(result)
                 status = "✓" if result.status == OrderStatus.FILLED else "✗"
                 msg = (f"{status} {result.symbol} {result.side.value} "
@@ -243,7 +218,7 @@ class LiveTrader:
                 logger.info("订单: %s", msg)
                 if result.status == OrderStatus.FILLED:
                     self.notifier.trade_card(result)
-                    self._record_slippage(result, signal_price)
+                    self.order_mgr.record_slippage(result, signal_price)
                 elif result.status == OrderStatus.REJECTED:
                     self.notifier.error(f"订单被拒: {result.symbol} {result.side.value}",
                                         str(result.broker_data))
@@ -251,11 +226,11 @@ class LiveTrader:
 
             # Track risk state
             if order.status == OrderStatus.FILLED:
-                self._update_risk_state(order)
+                self.risk_ctrl.on_trade_filled(order)
                 if order.side == OrderSide.SELL:
                     account = self.broker.get_account()
                     positions_dict = {p.symbol: p for p in self.broker.get_positions()}
-                    self._check_global_risk(account, positions_dict)
+                    self.risk_ctrl.check_global(account, positions_dict)
 
         if not orders:
             print("\n  无新订单 — 信号与持仓一致")
@@ -363,257 +338,6 @@ class LiveTrader:
         return results
 
     # ------------------------------------------------------------------
-    # Order generation
-    # ------------------------------------------------------------------
-
-    def _generate_orders(
-        self, signals: List[dict], positions: Dict[str, Position], account
-    ) -> List[Order]:
-        """Compare signals against current positions, generate orders."""
-        orders = []
-
-        # Group signals by symbol — use strongest signal (first non-zero)
-        symbol_signals: Dict[str, dict] = {}
-        for s in signals:
-            sym = s["symbol"]
-            if sym not in symbol_signals:
-                symbol_signals[sym] = s
-            # Prefer buy/sell over hold
-            if s["signal"] != 0 and symbol_signals[sym]["signal"] == 0:
-                symbol_signals[sym] = s
-
-        for sym, sig in symbol_signals.items():
-            if sig["signal"] == 0:
-                continue
-
-            pos = positions.get(sym)
-            has_position = pos is not None and abs(pos.quantity) > 0
-
-            if sig["signal"] == 1 and not has_position:
-                sig["_qty"] = self._calc_position_size(sig, account.total_equity)
-                if sig["_qty"] <= 0:
-                    print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
-                    continue
-
-                ok, reason = self._gate.allow_buy(sig, positions, account)
-                if not ok:
-                    print(f"  ! {sym} {reason}，跳过")
-                    self.cache.log_ops("gate_reject", symbol=sym, detail=reason, level="WARN")
-                    continue
-
-                qty = self._gate.vol_scaled_qty(sig["_qty"])
-                if self._passes_risk(sig, qty, account):
-                    plan = self.execution_model.make_plan(
-                        symbol=sym,
-                        side=OrderSide.BUY,
-                        quantity=qty,
-                        created_index=0,
-                    )
-                    orders.append(self.execution_model.to_broker_order(plan))
-                else:
-                    print(f"  ! {sym} 风控检查未通过，跳过")
-
-            elif sig["signal"] == -1 and has_position:
-                # Sell signal + has position → SELL
-                plan = self.execution_model.make_plan(
-                    symbol=sym,
-                    side=OrderSide.SELL,
-                    quantity=abs(pos.quantity),
-                    created_index=0,
-                    reason=sig.get("strategy", "signal"),
-                )
-                orders.append(self.execution_model.to_broker_order(plan))
-
-        return orders
-
-    # ------------------------------------------------------------------
-    # Position sizing
-    # ------------------------------------------------------------------
-
-    def _calc_position_size(self, signal: dict, equity: float) -> int:
-        """Volatility-adaptive position sizing.
-
-        Scales position down when ATR/price ratio is high (volatile).
-        """
-        price = signal.get("price", 0)
-        atr = signal.get("atr", 0)
-        if price <= 0:
-            return 0
-
-        r = self.risk
-        risk_dollar = equity * r.base_risk_pct
-
-        if atr > 0:
-            # Volatility scalar: reduce size when stock is volatile
-            vol_ratio = atr / price
-            vol_scalar = 1.0 / (1.0 + vol_ratio * r.vol_sensitivity)
-            vol_scalar = max(vol_scalar, r.min_vol_scalar)
-
-            qty = int(risk_dollar / (atr * 2) * vol_scalar)
-        else:
-            qty = int(equity * 0.30 / price)
-
-        max_qty = int(equity * r.max_position_pct / price)
-        return max(1, min(qty, max_qty))
-
-    # ------------------------------------------------------------------
-    # Risk checks
-    # ------------------------------------------------------------------
-
-    def _init_risk(self, account):
-        today = date.today().isoformat()
-        if self.risk._date != today or self.risk._day_start_equity <= 0:
-            self.risk._day_start_equity = account.total_equity
-            self.risk._date = today
-            self._persist_risk_state()
-        if account.total_equity > self.risk._peak_equity:
-            self.risk._peak_equity = account.total_equity
-            self._persist_risk_state()
-
-    def _restore_risk_state(self):
-        """Restore risk state and entry prices from SQLite after restart."""
-        stored_date = self.cache.load_risk_state("date")
-        today = date.today().isoformat()
-        if stored_date == today:
-            cl = self.cache.load_risk_state("consecutive_losses")
-            dt = self.cache.load_risk_state("daily_trade_count")
-            dse = self.cache.load_risk_state("day_start_equity")
-            self.risk._date = today
-            self.risk._consecutive_losses = int(cl) if cl else 0
-            self.risk._daily_trade_count = int(dt) if dt else 0
-            self.risk._day_start_equity = float(dse) if dse else 0.0
-        pe = self.cache.load_risk_state("peak_equity")
-        self.risk._peak_equity = float(pe) if pe else 0.0
-        # Entry prices survive across days (needed for circuit breaker)
-        self._entry_prices = {
-            sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
-        }
-
-    def _persist_risk_state(self):
-        """Write current risk state to SQLite."""
-        self.cache.save_risk_state("date", self.risk._date)
-        self.cache.save_risk_state("day_start_equity", str(self.risk._day_start_equity))
-        self.cache.save_risk_state("peak_equity", str(self.risk._peak_equity))
-        self.cache.save_risk_state("consecutive_losses", str(self.risk._consecutive_losses))
-        self.cache.save_risk_state("daily_trade_count", str(self.risk._daily_trade_count))
-
-    def _passes_risk(self, signal: dict, qty: int, account) -> bool:
-        """Run all risk checks before order submission."""
-        r = self.risk
-        equity = account.total_equity
-
-        # Consecutive loss circuit breaker
-        if r._consecutive_losses >= r.max_consecutive_losses:
-            print(f"  ! 连续亏损熔断 ({r._consecutive_losses}笔)，暂停交易")
-            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
-                               detail="consecutive_losses", level="WARN")
-            return False
-
-        # Daily trade cap
-        if r._daily_trade_count >= r.max_daily_trades:
-            print(f"  ! 日内交易次数已达上限 ({r.max_daily_trades}笔)，暂停交易")
-            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
-                               detail="daily_trade_cap", level="WARN")
-            return False
-
-        # Daily loss limit
-        if equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
-            print(f"  ! 日内亏损超限 ({r.max_daily_loss_pct*100:.0f}%)，暂停交易")
-            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
-                               detail="daily_loss", level="WARN")
-            return False
-
-        # Min order value
-        order_value = signal.get("price", 0) * qty
-        if order_value < r.min_order_value:
-            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
-                               detail="min_order_value", level="WARN")
-            return False
-
-        # Slippage guard — compare signal price vs broker last price
-        sym = signal.get("symbol", "")
-        signal_price = signal.get("price", 0)
-        if sym in self.broker.last_prices:
-            last_price = self.broker.last_prices[sym]
-            if last_price > 0 and signal_price > 0:
-                slippage = abs(signal_price - last_price) / last_price
-                if slippage > r.max_slippage_pct:
-                    print(f"  ! {sym} 滑点超限 ({slippage*100:.2f}%)，拒绝")
-                    self.cache.log_ops("slippage_rejected", symbol=sym,
-                                       detail=f"{slippage*100:.2f}%", value=slippage*100)
-                    return False
-
-        return True
-
-    def _check_global_risk(self, account, positions: dict):
-        """Check global risk thresholds. Pause trading (new BUYs) if breached."""
-        r = self.risk
-        equity = account.total_equity
-
-        # New day → unpause
-        today = date.today().isoformat()
-        if r._date != today:
-            self._trading_paused = False
-            self._pause_reason = ""
-            self._alert_sent = False
-
-        # Daily loss limit
-        if r._day_start_equity > 0 and equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
-            loss_pct = (r._day_start_equity - equity) / r._day_start_equity * 100
-            self._trading_paused = True
-            self._pause_reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
-        elif r._peak_equity > 0 and equity < r._peak_equity * (1 - r.max_total_drawdown_pct):
-            dd_pct = (r._peak_equity - equity) / r._peak_equity * 100
-            self._trading_paused = True
-            self._pause_reason = f"历史峰值回撤超限 ({dd_pct:.1f}% > {r.max_total_drawdown_pct*100:.0f}%)"
-        elif r._consecutive_losses >= r.max_consecutive_losses:
-            self._trading_paused = True
-            self._pause_reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"
-        elif positions:
-            total_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
-            exposure_pct = total_exposure / equity if equity > 0 else 0
-            if exposure_pct > r.max_total_exposure_pct:
-                self._trading_paused = True
-                self._pause_reason = f"总敞口超限 ({exposure_pct*100:.1f}% > {r.max_total_exposure_pct*100:.0f}%)"
-
-        if self._trading_paused:
-            print(f"\n  !! 交易暂停: {self._pause_reason}")
-            if not self._alert_sent:
-                self.notifier.error("交易暂停", self._pause_reason)
-                self._alert_sent = True
-            self.cache.log_ops("trading_paused", detail=self._pause_reason)
-        else:
-            self._alert_sent = False
-
-    def _update_risk_state(self, order: Order):
-        """Update circuit breaker and daily trade count after a fill."""
-        r = self.risk
-        sym = order.symbol
-        fill_price = order.avg_fill_price
-        r._daily_trade_count += 1
-
-        if order.side == OrderSide.BUY:
-            self._entry_prices[sym] = fill_price
-            self.cache.save_entry_price(sym, fill_price, date.today().isoformat())
-        elif order.side == OrderSide.SELL:
-            entry = self._entry_prices.pop(sym, None)
-            if entry is not None:
-                self.cache.delete_entry_price(sym)
-                self.cache.save_trade_pnl(
-                    sym, "SELL", order.filled_qty, entry, fill_price,
-                    date.today().isoformat(), order.order_id,
-                )
-                if fill_price < entry:
-                    r._consecutive_losses += 1
-                    logger.warning("连续亏损 %d/%d: %s  PnL=$%.2f",
-                                   r._consecutive_losses, r.max_consecutive_losses,
-                                   sym, (fill_price - entry) * order.filled_qty)
-                else:
-                    r._consecutive_losses = 0
-                    logger.info("交易PnL: %s  $%.2f", sym, (fill_price - entry) * order.filled_qty)
-        self._persist_risk_state()
-
-    # ------------------------------------------------------------------
     # Daemon
     # ------------------------------------------------------------------
 
@@ -666,10 +390,10 @@ class LiveTrader:
                 if self.risk._date != today:
                     self.risk._date = today
                     self.risk._daily_trade_count = 0
-                    self._trading_paused = False
-                    self._pause_reason = ""
-                    self._alert_sent = False
-                    self._persist_risk_state()
+                    self.risk_ctrl.trading_paused = False
+                    self.risk_ctrl.pause_reason = ""
+                    self.risk_ctrl.alert_sent = False
+                    self.risk_ctrl.persist_state()
                     logger.info("新交易日: %s，日交易计数重置", today)
 
                 print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] 第 {cycle} 轮")
@@ -733,73 +457,6 @@ class LiveTrader:
             limit_timeout_seconds=ec.get("limit_timeout_seconds", 300),
             market_timeout_seconds=ec.get("market_timeout_seconds", 60),
         ))
-
-    @staticmethod
-    def _print_order(order: Order):
-        print(f"  [DRY-RUN] {order.side.value} {order.symbol} "
-              f"{order.quantity}股 "
-              f"{'MARKET' if order.order_type == OrderType.MARKET else f'@ ${order.price:.2f}'}")
-
-    def _log_order(self, order: Order):
-        """Persist order to DB for audit trail."""
-        self.cache.init_schema()
-        self.cache.conn.execute(
-            "INSERT INTO order_log VALUES (?,?,?,?,?,?,?)",
-            [order.order_id, order.symbol, order.side.value,
-             order.filled_qty, order.avg_fill_price,
-             order.status.value, order.created_at],
-        )
-        self.cache._commit()
-
-    def _submit_and_wait(self, order: Order) -> Order:
-        """Submit order and poll until filled, cancelled, or timeout."""
-        import time as _time
-
-        result = self.broker.submit_order(order)
-        if result.status in (OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.CANCELLED):
-            return result
-
-        # Poll for completion
-        timeout_s = self.execution_model.timeout_seconds(order)
-        poll_interval = 3
-        elapsed = 0
-
-        while elapsed < timeout_s:
-            _time.sleep(poll_interval)
-            elapsed += poll_interval
-            updated = self.broker.get_order(result.order_id)
-            if updated is None:
-                continue
-            result = updated
-            if result.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-                return result
-
-        # Timeout — cancel any non-terminal order so the next
-        # daemon cycle starts clean (prevents duplicate orders).
-        if result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-            logger.warning("订单超时未成交，撤单: %s %s (%s)",
-                           order.symbol, order.order_id, result.status.value)
-            self.broker.cancel_order(result.order_id)
-            result.status = OrderStatus.CANCELLED
-
-        return result
-
-    def _record_slippage(self, order: Order, signal_price: float):
-        """Record slippage stats to DB."""
-        if signal_price <= 0 or order.avg_fill_price <= 0:
-            return
-        slippage = (order.avg_fill_price - signal_price) / signal_price
-        self.cache.log_ops("slippage", symbol=order.symbol,
-                           detail=f"{slippage*100:+.2f}%", value=slippage*100)
-        self.cache.init_schema()
-        self.cache.conn.execute(
-            "INSERT INTO slippage_log VALUES (?,?,?,?,?,?,?)",
-            [order.order_id, order.symbol, order.side.value,
-             signal_price, order.avg_fill_price, round(slippage * 100, 4),
-             order.created_at],
-        )
-        self.cache._commit()
-
 
 # ---------------------------------------------------------------------------
 # CLI

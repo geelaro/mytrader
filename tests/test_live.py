@@ -60,9 +60,8 @@ class TestPositionSizing:
 
     def test_normal_sizing(self):
         trader = self._make_trader()
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 5.0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=195.0, atr=5.0, last_price=195.0,
         )
         assert qty > 0
         # risk 2% of 100k = 2000, stop at 2*ATR=10, so ~200 shares
@@ -71,17 +70,15 @@ class TestPositionSizing:
 
     def test_zero_price_returns_zero(self):
         trader = self._make_trader()
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 0, "atr": 5.0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=0, atr=5.0, last_price=0,
         )
         assert qty == 0
 
     def test_no_atr_uses_fallback(self):
         trader = self._make_trader()
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 195.0, "atr": 0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=195.0, atr=0, last_price=195.0,
         )
         # fallback: equity * 0.30 / price
         assert qty > 0
@@ -102,7 +99,7 @@ class TestRiskChecks:
         trader.risk._day_start_equity = 100000
         account = type("Account", (), {"total_equity": 101000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is True
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is True
 
     def test_daily_loss_limit(self, capsys):
         trader = self._make_trader()
@@ -111,7 +108,7 @@ class TestRiskChecks:
         # equity dropped 8% — exceeds 5% limit
         account = type("Account", (), {"total_equity": 92000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is False
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is False
 
     def test_small_order_rejected(self):
         trader = self._make_trader()
@@ -120,7 +117,7 @@ class TestRiskChecks:
         account = type("Account", (), {"total_equity": 100000})()
         signal = {"symbol": "AAPL", "price": 195.0}
         # 1 share @ $195 = $195 < $500 min
-        assert trader._passes_risk(signal, 1, account) is False
+        assert trader.risk_ctrl.passes_risk(signal, 1, account) is False
 
 
 # ===================================================================
@@ -144,7 +141,7 @@ class TestOrderGeneration:
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 1
         assert orders[0].symbol == "AAPL"
         assert orders[0].side == OrderSide.BUY
@@ -160,7 +157,7 @@ class TestOrderGeneration:
                              market_value=10000, unrealized_pnl=500),
         }
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 1
         assert orders[0].side == OrderSide.SELL
         assert orders[0].quantity == 50
@@ -173,7 +170,7 @@ class TestOrderGeneration:
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0
 
     def test_buy_with_existing_position_generates_no_order(self):
@@ -188,7 +185,7 @@ class TestOrderGeneration:
                              market_value=9750, unrealized_pnl=250),
         }
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0
 
     def test_prefers_nonzero_signal_when_multiple(self):
@@ -201,7 +198,7 @@ class TestOrderGeneration:
         ]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         # Should pick the buy signal (signal=1) over hold (signal=0)
         assert len(orders) >= 1
         assert any(o.side == OrderSide.BUY for o in orders)
@@ -289,7 +286,7 @@ class TestExposureCheck:
             "signal": 1, "price": 195.0, "atr": 5.0,
         }]
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         # New position ~$3k → total 73% ≤ 80% → order should pass
         assert len(orders) >= 0
 
@@ -308,7 +305,7 @@ class TestSlippageCheck:
         # Signal price $195 vs last price $200 = 2.5% slippage > 2%
         signal = {"symbol": "AAPL", "price": 195.0}
         account = type("Account", (), {"total_equity": 100000})()
-        assert trader._passes_risk(signal, 10, account) is False
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is False
 
     def test_small_slippage_passes(self):
         trader = self._make_trader()
@@ -316,21 +313,21 @@ class TestSlippageCheck:
         # Signal price $199 vs last price $200 = 0.5% slippage < 2%
         signal = {"symbol": "AAPL", "price": 199.0}
         account = type("Account", (), {"total_equity": 100000})()
-        assert trader._passes_risk(signal, 10, account) is True
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is True
 
 
 class TestLiveTraderInternals:
     def test_print_order(self, capsys):
         trader = LiveTrader(broker=MockBroker(), dry_run=True)
         order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100)
-        trader._print_order(order)
+        trader.order_mgr.print_order(order)
         out = capsys.readouterr().out
         assert "DRY-RUN" in out
         assert "AAPL" in out
 
     def test_log_order(self):
         trader = LiveTrader(broker=MockBroker(), dry_run=True)
-        # Ensure table exists, then clean slate (table created lazily in _log_order)
+        # Ensure table exists, then clean slate (table created lazily in log_order)
         trader.cache.conn.execute(
             "CREATE TABLE IF NOT EXISTS order_log ("
             "  order_id TEXT, symbol TEXT, side TEXT, qty INTEGER,"
@@ -345,7 +342,7 @@ class TestLiveTraderInternals:
             quantity=10, order_id="test-123", status=OrderStatus.FILLED,
             avg_fill_price=195.0,
         )
-        trader._log_order(order)
+        trader.order_mgr.log_order(order)
         rows = trader.cache.conn.execute(
             "SELECT * FROM order_log WHERE order_id=?", ["test-123"]
         ).fetchall()
@@ -382,27 +379,27 @@ class TestCircuitBreaker:
         assert trader.risk._daily_trade_count == 0
         order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
                       quantity=10, status=OrderStatus.FILLED, avg_fill_price=195.0)
-        trader._update_risk_state(order)
+        trader.risk_ctrl.on_trade_filled(order)
         assert trader.risk._daily_trade_count == 1
-        assert trader._entry_prices["AAPL"] == 195.0
+        assert trader.risk_ctrl.entry_prices["AAPL"] == 195.0
 
     def test_profitable_sell_resets_losses(self):
         trader = self._make_trader()
         trader.risk._consecutive_losses = 2
-        trader._entry_prices["AAPL"] = 190.0
+        trader.risk_ctrl.entry_prices["AAPL"] = 190.0
         order = Order(symbol="AAPL", side=OrderSide.SELL, order_type=OrderType.MARKET,
                       quantity=10, status=OrderStatus.FILLED, avg_fill_price=200.0)
-        trader._update_risk_state(order)
+        trader.risk_ctrl.on_trade_filled(order)
         assert trader.risk._consecutive_losses == 0
-        assert "AAPL" not in trader._entry_prices
+        assert "AAPL" not in trader.risk_ctrl.entry_prices
 
     def test_losing_sell_increments_losses(self):
         trader = self._make_trader()
         trader.risk._consecutive_losses = 1
-        trader._entry_prices["AAPL"] = 210.0
+        trader.risk_ctrl.entry_prices["AAPL"] = 210.0
         order = Order(symbol="AAPL", side=OrderSide.SELL, order_type=OrderType.MARKET,
                       quantity=10, status=OrderStatus.FILLED, avg_fill_price=200.0)
-        trader._update_risk_state(order)
+        trader.risk_ctrl.on_trade_filled(order)
         assert trader.risk._consecutive_losses == 2
 
     def test_sell_without_entry_price(self):
@@ -411,7 +408,7 @@ class TestCircuitBreaker:
         trader.risk._consecutive_losses = 1
         order = Order(symbol="AAPL", side=OrderSide.SELL, order_type=OrderType.MARKET,
                       quantity=10, status=OrderStatus.FILLED, avg_fill_price=200.0)
-        trader._update_risk_state(order)
+        trader.risk_ctrl.on_trade_filled(order)
         assert trader.risk._consecutive_losses == 1  # unchanged
 
 
@@ -433,7 +430,7 @@ class TestCircuitBreakerPassesRisk:
         trader.risk.max_consecutive_losses = 3
         account = type("Account", (), {"total_equity": 100000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is False
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is False
 
     def test_below_threshold_passes(self):
         trader = self._make_trader()
@@ -441,7 +438,7 @@ class TestCircuitBreakerPassesRisk:
         trader.risk.max_consecutive_losses = 3
         account = type("Account", (), {"total_equity": 100000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is True
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is True
 
 
 # ===================================================================
@@ -462,7 +459,7 @@ class TestDailyTradeLimit:
         trader.risk.max_daily_trades = 5
         account = type("Account", (), {"total_equity": 100000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is False
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is False
 
     def test_under_cap_passes(self):
         trader = self._make_trader()
@@ -470,7 +467,7 @@ class TestDailyTradeLimit:
         trader.risk.max_daily_trades = 5
         account = type("Account", (), {"total_equity": 100000})()
         signal = {"symbol": "AAPL", "price": 195.0}
-        assert trader._passes_risk(signal, 10, account) is True
+        assert trader.risk_ctrl.passes_risk(signal, 10, account) is True
 
 
 # ===================================================================
@@ -486,23 +483,20 @@ class TestAdaptiveSizing:
     def test_low_volatility_full_size(self):
         trader = self._make_trader()
         # ATR=2, price=200 → vol_ratio=1% → scalar=1/(1+0.01*5)=0.95 → near full
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 200.0, "atr": 2.0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=200.0, atr=2.0, last_price=200.0,
         )
         assert qty > 0
 
     def test_high_volatility_reduced_size(self):
         trader = self._make_trader()
         # ATR=40, price=200 → vol_ratio=20% → scalar=1/(1+0.2*5)=0.5 → half
-        qty_high = trader._calc_position_size(
-            {"symbol": "TSLA", "price": 200.0, "atr": 40.0},
-            equity=100000,
+        qty_high = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=200.0, atr=40.0, last_price=200.0,
         )
         # Low volatility on same price → larger position
-        qty_low = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 200.0, "atr": 4.0},
-            equity=100000,
+        qty_low = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=200.0, atr=4.0, last_price=200.0,
         )
         assert qty_low > qty_high
 
@@ -510,17 +504,15 @@ class TestAdaptiveSizing:
         trader = self._make_trader()
         trader.risk.min_vol_scalar = 0.3
         # Extreme volatility
-        qty = trader._calc_position_size(
-            {"symbol": "WILD", "price": 100.0, "atr": 80.0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=100.0, atr=80.0, last_price=100.0,
         )
         assert qty > 0  # not zero
 
     def test_zero_atr_fallback(self):
         trader = self._make_trader()
-        qty = trader._calc_position_size(
-            {"symbol": "AAPL", "price": 200.0, "atr": 0},
-            equity=100000,
+        qty = trader.risk_ctrl.calc_position_size(
+            capital=100000, price=200.0, atr=0, last_price=200.0,
         )
         assert qty > 0
 
@@ -548,7 +540,7 @@ class TestOrphanPositions:
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0  # orphan buy blocked
 
     def test_orphan_sell_allowed(self):
@@ -562,7 +554,7 @@ class TestOrphanPositions:
                              market_value=8400, unrealized_pnl=200),
         }
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 1
         assert orders[0].side == OrderSide.SELL
 
@@ -574,7 +566,7 @@ class TestOrphanPositions:
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0
 
     def test_watchlist_buy_still_works(self):
@@ -586,7 +578,7 @@ class TestOrphanPositions:
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 1
         assert orders[0].side == OrderSide.BUY
 
@@ -608,19 +600,21 @@ class TestTradingPause:
         trader = self._make_trader()
         trader._gate.trading_paused = True
         trader._gate.pause_reason = "test"
+        trader.order_mgr.gate = trader._gate
         signals = [{
             "symbol": "AAPL", "name": "Apple", "strategy": "w",
             "signal": 1, "price": 195.0, "atr": 5.0,
         }]
         positions = {}
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0
 
     def test_paused_allows_sell(self):
         trader = self._make_trader()
         trader._gate.trading_paused = True
         trader._gate.pause_reason = "test"
+        trader.order_mgr.gate = trader._gate
         signals = [{
             "symbol": "AAPL", "name": "Apple", "strategy": "w",
             "signal": -1, "price": 195.0, "atr": 5.0,
@@ -630,7 +624,7 @@ class TestTradingPause:
                              market_value=9750, unrealized_pnl=250),
         }
         account = type("Account", (), {"total_equity": 100000})()
-        orders = trader._generate_orders(signals, positions, account)
+        orders = trader.order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 1
         assert orders[0].side == OrderSide.SELL
 
@@ -649,18 +643,18 @@ class TestGlobalRiskCheck:
         trader.risk.max_daily_loss_pct = 0.05
         trader.risk._day_start_equity = 100000
         account = type("Account", (), {"total_equity": 94000})()
-        trader._check_global_risk(account, {})
-        assert trader._trading_paused is True
-        assert "日内亏损超限" in trader._pause_reason
+        trader.risk_ctrl.check_global(account, {})
+        assert trader.risk_ctrl.trading_paused is True
+        assert "日内亏损超限" in trader.risk_ctrl.pause_reason
 
     def test_consecutive_losses_pause(self):
         trader = self._make_trader()
         trader.risk._consecutive_losses = 3
         trader.risk.max_consecutive_losses = 3
         account = type("Account", (), {"total_equity": 100000})()
-        trader._check_global_risk(account, {})
-        assert trader._trading_paused is True
-        assert "连续亏损熔断" in trader._pause_reason
+        trader.risk_ctrl.check_global(account, {})
+        assert trader.risk_ctrl.trading_paused is True
+        assert "连续亏损熔断" in trader.risk_ctrl.pause_reason
 
     def test_exposure_pause(self):
         trader = self._make_trader()
@@ -670,9 +664,9 @@ class TestGlobalRiskCheck:
                              market_value=82000, unrealized_pnl=0),
         }
         account = type("Account", (), {"total_equity": 100000})()
-        trader._check_global_risk(account, positions)
-        assert trader._trading_paused is True
-        assert "总敞口超限" in trader._pause_reason
+        trader.risk_ctrl.check_global(account, positions)
+        assert trader.risk_ctrl.trading_paused is True
+        assert "总敞口超限" in trader.risk_ctrl.pause_reason
 
     def test_normal_passes(self):
         trader = self._make_trader()
@@ -681,17 +675,17 @@ class TestGlobalRiskCheck:
             "AAPL": Position(symbol="AAPL", quantity=50, avg_price=190.0,
                              market_value=9750, unrealized_pnl=250),
         }
-        trader._check_global_risk(account, positions)
-        assert trader._trading_paused is False
+        trader.risk_ctrl.check_global(account, positions)
+        assert trader.risk_ctrl.trading_paused is False
 
     def test_new_day_unpauses(self):
         trader = self._make_trader()
-        trader._trading_paused = True
-        trader._pause_reason = "old"
+        trader.risk_ctrl.trading_paused = True
+        trader.risk_ctrl.pause_reason = "old"
         trader.risk._date = "2025-06-14"  # different from today
         account = type("Account", (), {"total_equity": 100000})()
-        trader._check_global_risk(account, {})
-        assert trader._trading_paused is False
+        trader.risk_ctrl.check_global(account, {})
+        assert trader.risk_ctrl.trading_paused is False
 
 
 # ===================================================================
@@ -720,7 +714,7 @@ class TestSlippageRecording:
             quantity=10, order_id="slip-1", status=OrderStatus.FILLED,
             avg_fill_price=196.0,
         )
-        trader._record_slippage(order, signal_price=195.0)
+        trader.order_mgr.record_slippage(order, signal_price=195.0)
         rows = trader.cache.conn.execute(
             "SELECT * FROM slippage_log WHERE order_id=?", ["slip-1"]
         ).fetchall()
@@ -731,7 +725,7 @@ class TestSlippageRecording:
 
     def test_zero_signal_price_skips(self):
         trader = self._make_trader()
-        trader._record_slippage(Order(
+        trader.order_mgr.record_slippage(Order(
             symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
             quantity=10, order_id="dummy", status=OrderStatus.FILLED,
             avg_fill_price=195.0), signal_price=195.0)  # ensure table exists
@@ -742,7 +736,7 @@ class TestSlippageRecording:
             quantity=10, order_id="slip-2", status=OrderStatus.FILLED,
             avg_fill_price=196.0,
         )
-        trader._record_slippage(order, signal_price=0)
+        trader.order_mgr.record_slippage(order, signal_price=0)
         rows = trader.cache.conn.execute(
             "SELECT * FROM slippage_log WHERE order_id=?", ["slip-2"]
         ).fetchall()
@@ -750,7 +744,7 @@ class TestSlippageRecording:
 
     def test_negative_slippage(self):
         trader = self._make_trader()
-        trader._record_slippage(Order(
+        trader.order_mgr.record_slippage(Order(
             symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET,
             quantity=10, order_id="dummy2", status=OrderStatus.FILLED,
             avg_fill_price=195.0), signal_price=195.0)  # ensure table exists
@@ -761,7 +755,7 @@ class TestSlippageRecording:
             quantity=10, order_id="slip-3", status=OrderStatus.FILLED,
             avg_fill_price=194.0,
         )
-        trader._record_slippage(order, signal_price=195.0)
+        trader.order_mgr.record_slippage(order, signal_price=195.0)
         rows = trader.cache.conn.execute(
             "SELECT * FROM slippage_log WHERE order_id=?", ["slip-3"]
         ).fetchall()
@@ -798,18 +792,18 @@ class TestRiskPersistence:
             trader.risk._day_start_equity = 100000
             trader.risk._consecutive_losses = 2
             trader.risk._daily_trade_count = 3
-            trader._entry_prices = {"AAPL": 195.0, "NVDA": 850.0}
-            trader._persist_risk_state()
+            trader.risk_ctrl.entry_prices = {"AAPL": 195.0, "NVDA": 850.0}
+            trader.risk_ctrl.persist_state()
             trader.cache.save_entry_price("AAPL", 195.0, today)
             trader.cache.save_entry_price("NVDA", 850.0, today)
 
             trader2 = self._make_trader()
             trader2.cache = trader.cache
-            trader2._restore_risk_state()
+            trader2.risk_ctrl.restore_state()
             assert trader2.risk._consecutive_losses == 2
             assert trader2.risk._daily_trade_count == 3
             assert trader2.risk._day_start_equity == 100000
-            assert trader2._entry_prices == {"AAPL": 195.0, "NVDA": 850.0}
+            assert trader2.risk_ctrl.entry_prices == {"AAPL": 195.0, "NVDA": 850.0}
         finally:
             self._clean_risk_db()
 
@@ -820,7 +814,7 @@ class TestRiskPersistence:
             trader.cache.save_risk_state("date", "2020-01-01")
             trader.cache.save_risk_state("consecutive_losses", "5")
             trader.cache.save_risk_state("daily_trade_count", "10")
-            trader._restore_risk_state()
+            trader.risk_ctrl.restore_state()
             assert trader.risk._consecutive_losses == 0
             assert trader.risk._daily_trade_count == 0
         finally:
@@ -835,7 +829,7 @@ class TestRiskPersistence:
             trader.cache.save_risk_state("day_start_equity", "123456")
             trader.cache.save_risk_state("consecutive_losses", "3")
             trader.cache.save_risk_state("daily_trade_count", "4")
-            trader._restore_risk_state()
+            trader.risk_ctrl.restore_state()
             assert trader.risk._consecutive_losses == 3
             assert trader.risk._daily_trade_count == 4
             assert trader.risk._day_start_equity == 123456
@@ -950,13 +944,13 @@ class TestSubmitAndWait:
         trader = self._make_trader()
         trader.broker.last_prices["AAPL"] = 195.0
         order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
-        result = trader._submit_and_wait(order)
+        result = trader.order_mgr.submit_and_wait(order)
         assert result.status == OrderStatus.FILLED
 
     def test_rejected_returns_immediately(self):
         trader = self._make_trader()
         order = Order(symbol="NONEXIST", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
-        result = trader._submit_and_wait(order)
+        result = trader.order_mgr.submit_and_wait(order)
         assert result.status == OrderStatus.REJECTED
 
     def test_poll_until_filled(self):
@@ -980,7 +974,7 @@ class TestSubmitAndWait:
         trader.broker.get_order = _get_order
 
         order = Order(symbol="AAPL", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=10)
-        result = trader._submit_and_wait(order)
+        result = trader.order_mgr.submit_and_wait(order)
         assert result.status == OrderStatus.FILLED
         assert call_count[0] >= 1
 
@@ -1016,7 +1010,7 @@ class TestSubmitAndWait:
         import time as _time_module
         real_sleep = _time_module.sleep
         _time_module.sleep = lambda x: None  # disable sleep
-        result = trader._submit_and_wait(order)
+        result = trader.order_mgr.submit_and_wait(order)
         _time_module.sleep = real_sleep
         assert result.status == OrderStatus.CANCELLED
         assert cancel_called[0] is True

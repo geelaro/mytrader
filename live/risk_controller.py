@@ -1,0 +1,199 @@
+"""RiskController — risk checks, position sizing, circuit breaker, state persistence."""
+
+from datetime import date
+from typing import Dict
+
+from broker import Order, OrderSide
+from utils import get_logger
+
+logger = get_logger("live")
+
+
+class RiskController:
+    """Encapsulates all risk-related logic previously embedded in LiveTrader.
+
+    Parameters
+    ----------
+    risk : RiskLimits
+        Risk parameter dataclass instance.
+    cache : CacheManager
+        SQLite cache manager for persistence.
+    broker : Broker
+        Broker adapter (for last_prices in slippage checks).
+    notifier : Notifier
+        Alert/notification sender.
+    """
+
+    def __init__(self, risk, cache, broker, notifier):
+        self.risk = risk
+        self.cache = cache
+        self.broker = broker
+        self.notifier = notifier
+        self.trading_paused = False
+        self.pause_reason = ""
+        self.alert_sent = False
+        self.entry_prices: Dict[str, float] = {}
+        self.restore_state()
+
+    def init_risk(self, account):
+        today = date.today().isoformat()
+        if self.risk._date != today or self.risk._day_start_equity <= 0:
+            self.risk._day_start_equity = account.total_equity
+            self.risk._date = today
+            self.persist_state()
+        if account.total_equity > self.risk._peak_equity:
+            self.risk._peak_equity = account.total_equity
+            self.persist_state()
+
+    def restore_state(self):
+        stored_date = self.cache.load_risk_state("date")
+        today = date.today().isoformat()
+        if stored_date == today:
+            cl = self.cache.load_risk_state("consecutive_losses")
+            dt = self.cache.load_risk_state("daily_trade_count")
+            dse = self.cache.load_risk_state("day_start_equity")
+            self.risk._date = today
+            self.risk._consecutive_losses = int(cl) if cl else 0
+            self.risk._daily_trade_count = int(dt) if dt else 0
+            self.risk._day_start_equity = float(dse) if dse else 0.0
+        pe = self.cache.load_risk_state("peak_equity")
+        self.risk._peak_equity = float(pe) if pe else 0.0
+        self.entry_prices = {
+            sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
+        }
+
+    def persist_state(self):
+        self.cache.save_risk_state("date", self.risk._date)
+        self.cache.save_risk_state("day_start_equity", str(self.risk._day_start_equity))
+        self.cache.save_risk_state("peak_equity", str(self.risk._peak_equity))
+        self.cache.save_risk_state("consecutive_losses", str(self.risk._consecutive_losses))
+        self.cache.save_risk_state("daily_trade_count", str(self.risk._daily_trade_count))
+
+    def check_global(self, account, positions: dict) -> bool:
+        r = self.risk
+        equity = account.total_equity
+
+        today = date.today().isoformat()
+        if r._date != today:
+            self.trading_paused = False
+            self.pause_reason = ""
+            self.alert_sent = False
+
+        if r._day_start_equity > 0 and equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
+            loss_pct = (r._day_start_equity - equity) / r._day_start_equity * 100
+            self.trading_paused = True
+            self.pause_reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
+        elif r._peak_equity > 0 and equity < r._peak_equity * (1 - r.max_total_drawdown_pct):
+            dd_pct = (r._peak_equity - equity) / r._peak_equity * 100
+            self.trading_paused = True
+            self.pause_reason = f"历史峰值回撤超限 ({dd_pct:.1f}% > {r.max_total_drawdown_pct*100:.0f}%)"
+        elif r._consecutive_losses >= r.max_consecutive_losses:
+            self.trading_paused = True
+            self.pause_reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"
+        elif positions:
+            total_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
+            exposure_pct = total_exposure / equity if equity > 0 else 0
+            if exposure_pct > r.max_total_exposure_pct:
+                self.trading_paused = True
+                self.pause_reason = f"总敞口超限 ({exposure_pct*100:.1f}% > {r.max_total_exposure_pct*100:.0f}%)"
+
+        if self.trading_paused:
+            print(f"\n  !! 交易暂停: {self.pause_reason}")
+            if not self.alert_sent:
+                self.notifier.error("交易暂停", self.pause_reason)
+                self.alert_sent = True
+            self.cache.log_ops("trading_paused", detail=self.pause_reason)
+        else:
+            self.alert_sent = False
+
+        return not self.trading_paused
+
+    def passes_risk(self, signal: dict, qty: int, account) -> bool:
+        r = self.risk
+        equity = account.total_equity
+
+        if r._consecutive_losses >= r.max_consecutive_losses:
+            print(f"  ! 连续亏损熔断 ({r._consecutive_losses}笔)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="consecutive_losses", level="WARN")
+            return False
+
+        if r._daily_trade_count >= r.max_daily_trades:
+            print(f"  ! 日内交易次数已达上限 ({r.max_daily_trades}笔)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="daily_trade_cap", level="WARN")
+            return False
+
+        if equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
+            print(f"  ! 日内亏损超限 ({r.max_daily_loss_pct*100:.0f}%)，暂停交易")
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="daily_loss", level="WARN")
+            return False
+
+        order_value = signal.get("price", 0) * qty
+        if order_value < r.min_order_value:
+            self.cache.log_ops("risk_reject", symbol=signal.get("symbol", ""),
+                               detail="min_order_value", level="WARN")
+            return False
+
+        sym = signal.get("symbol", "")
+        signal_price = signal.get("price", 0)
+        if sym in self.broker.last_prices:
+            last_price = self.broker.last_prices[sym]
+            if last_price > 0 and signal_price > 0:
+                slippage = abs(signal_price - last_price) / last_price
+                if slippage > r.max_slippage_pct:
+                    print(f"  ! {sym} 滑点超限 ({slippage*100:.2f}%)，拒绝")
+                    self.cache.log_ops("slippage_rejected", symbol=sym,
+                                       detail=f"{slippage*100:.2f}%", value=slippage*100)
+                    return False
+
+        return True
+
+    def calc_position_size(self, capital: float, price: float, atr: float, last_price: float) -> int:
+        if price <= 0:
+            return 0
+
+        r = self.risk
+        risk_dollar = capital * r.base_risk_pct
+
+        if atr > 0:
+            vol_ratio = atr / price
+            vol_scalar = 1.0 / (1.0 + vol_ratio * r.vol_sensitivity)
+            vol_scalar = max(vol_scalar, r.min_vol_scalar)
+            qty = int(risk_dollar / (atr * 2) * vol_scalar)
+        else:
+            qty = int(capital * 0.30 / price)
+
+        max_qty = int(capital * r.max_position_pct / price)
+        return max(1, min(qty, max_qty))
+
+    def on_trade_filled(self, order: Order):
+        r = self.risk
+        sym = order.symbol
+        fill_price = order.avg_fill_price
+        r._daily_trade_count += 1
+
+        if order.side == OrderSide.BUY:
+            self.entry_prices[sym] = fill_price
+            self.cache.save_entry_price(sym, fill_price, date.today().isoformat())
+        elif order.side == OrderSide.SELL:
+            entry = self.entry_prices.pop(sym, None)
+            if entry is not None:
+                self.cache.delete_entry_price(sym)
+                self.cache.save_trade_pnl(
+                    sym, "SELL", order.filled_qty, entry, fill_price,
+                    date.today().isoformat(), order.order_id,
+                )
+                if fill_price < entry:
+                    r._consecutive_losses += 1
+                    logger.warning("连续亏损 %d/%d: %s  PnL=$%.2f",
+                                   r._consecutive_losses, r.max_consecutive_losses,
+                                   sym, (fill_price - entry) * order.filled_qty)
+                else:
+                    r._consecutive_losses = 0
+                    logger.info("交易PnL: %s  $%.2f", sym, (fill_price - entry) * order.filled_qty)
+        self.persist_state()
+
+    def update_after_trade(self):
+        self.persist_state()
