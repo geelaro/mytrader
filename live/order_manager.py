@@ -56,11 +56,17 @@ class OrderManager:
             has_position = pos is not None and abs(pos.quantity) > 0
 
             if sig["signal"] == 1 and not has_position:
+                # Orphan positions: never generate buy orders, only sells
+                if sig.get("orphan"):
+                    continue
+
+                avail = getattr(account, "available_cash", account.total_equity)
                 sig["_qty"] = self.risk_ctrl.calc_position_size(
-                    capital=account.total_equity,
+                    capital=avail,
                     price=sig.get("price", 0),
                     atr=sig.get("atr", 0),
                     last_price=sig.get("price", 0),
+                    total_equity=account.total_equity,
                 )
                 if sig["_qty"] <= 0:
                     print(f"  ! {sym} 买入信号但仓位计算为0，跳过")

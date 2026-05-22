@@ -160,7 +160,14 @@ class RiskController:
 
         return True
 
-    def calc_position_size(self, capital: float, price: float, atr: float, last_price: float) -> int:
+    def calc_position_size(self, capital: float, price: float, atr: float,
+                            last_price: float, total_equity: float = 0) -> int:
+        """Risk-budget position sizing.
+
+        *capital* should be ``available_cash`` (can actually be spent).
+        *total_equity* (optional) caps the position as a fraction of
+        total portfolio value — prevents over-concentration.
+        """
         if price <= 0:
             return 0
 
@@ -175,7 +182,8 @@ class RiskController:
         else:
             qty = int(capital * 0.30 / price)
 
-        max_qty = int(capital * r.max_position_pct / price)
+        ref = total_equity if total_equity > 0 else capital
+        max_qty = int(ref * r.max_position_pct / price)
         return max(1, min(qty, max_qty))
 
     def on_trade_filled(self, order: Order):
