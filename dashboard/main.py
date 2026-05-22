@@ -50,7 +50,8 @@ def main():
     def get_provider():
         return DataProvider()
 
-    @st.cache_resource
+    @st.cache_resource  # WARNING: creates a singleton connection shared across all Streamlit sessions.
+    # Multi-user deployments should use per-session connections or a connection pool.
     def get_cache():
         return CacheManager()
 

@@ -60,7 +60,7 @@ class TestLoadConfig:
     def test_loads_valid_toml(self):
         cfg = load_config("watchlist.toml")
         assert "watchlist" in cfg
-        assert "default" in cfg
+        assert "scanner" in cfg
         assert len(cfg["watchlist"]) >= 1
 
     def test_watchlist_has_active_field(self):

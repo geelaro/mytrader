@@ -14,6 +14,7 @@ config.yaml can override runtime params like log level, trading hours etc.
 
 import copy
 import os
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -130,6 +131,7 @@ class RuntimeConfig:
         self._load_yaml()
         self._load_env_secrets()
         self._watchlist: Optional[dict] = None
+        self._watchlist_lock = threading.Lock()
 
         # Build section accessors
         self.trading = _Section(self._data["trading"])
@@ -184,9 +186,11 @@ class RuntimeConfig:
     @property
     def watchlist_data(self) -> dict:
         if self._watchlist is None:
-            from utils.env import load_toml
+            with self._watchlist_lock:
+                if self._watchlist is None:
+                    from utils.env import load_toml
 
-            self._watchlist = load_toml(str(PROJECT_ROOT / "watchlist.toml"))
+                    self._watchlist = load_toml(str(PROJECT_ROOT / "watchlist.toml"))
         return self._watchlist
 
     # ----

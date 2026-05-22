@@ -83,7 +83,7 @@ class LiveTrader:
         self.risk = RiskLimits.from_config(self.config)
         self.execution_model = self._load_execution_model(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
-        self._orphan_strategy = self.config.get("defaults", {}).get("orphan_strategy", "")
+        self._orphan_strategy = self.config.get("orphan", {}).get("strategy", "")
         self._watchlist_symbols: List[str] = []  # populated in run()
         self._orphan_symbols: set = set()  # symbols in positions but not watchlist
         ms = self.config.get("market_state", {})
@@ -272,7 +272,7 @@ class LiveTrader:
             return None
 
         try:
-            lookback = self.config.get("default", {}).get("lookback_years", 3)
+            lookback = self.config.get("scanner", {}).get("lookback_years", 3)
             start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
             df = self.provider.get_daily(self._ms_proxy, start=start, end=target_date)
             if df is None or df.empty:

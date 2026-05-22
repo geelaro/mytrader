@@ -20,7 +20,7 @@ def render_market_state(config, target_date, provider):
     st.subheader("市场状态")
 
     proxy_sym = ms_cfg.get("proxy_symbol", "SPY")
-    lookback = config.get("default", {}).get("lookback_years", 3)
+    lookback = config.get("scanner", {}).get("lookback_years", 3)
     ms_start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
     ms_df = provider.get_daily(proxy_sym, start=ms_start, end=target_date.isoformat())
 

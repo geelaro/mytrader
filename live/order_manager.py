@@ -85,6 +85,12 @@ class OrderManager:
                     print(f"  ! {sym} 风控检查未通过，跳过")
 
             elif sig["signal"] == -1 and has_position:
+                ok, reason = self.gate.allow_sell(sig)
+                if not ok:
+                    print(f"  ! {sym} {reason}，跳过")
+                    self.cache.log_ops("gate_reject", symbol=sym, detail=reason, level="WARN")
+                    continue
+
                 plan = self.execution_model.make_plan(
                     symbol=sym,
                     side=OrderSide.SELL,

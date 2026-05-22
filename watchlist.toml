@@ -2,13 +2,13 @@
 # active = 实盘/信号执行的策略（每个标的一个）
 # monitor = 观察对比的策略（回测用，不执行）
 
-[default]
+[scanner]
 lookback_years = 3
 
-[defaults]
+[orphan]
 # 孤儿持仓（不在 watchlist 中的已有持仓）使用的策略
 # 只响应卖出信号，不产生买入信号，让持仓自然退出
-orphan_strategy = "daily_macd_kdj"
+strategy = "daily_macd_kdj"
 
 # ---------------------------------------------------------------------------
 # 监控标的列表

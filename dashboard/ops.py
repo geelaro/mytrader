@@ -55,11 +55,7 @@ def _render_sector_chart(config):
 
 def _render_live_trades(cache):
     with st.expander("实盘交易记录", expanded=False):
-        try:
-            trades = cache.query_trade_pnl(limit=30)
-        except AttributeError:
-            st.info("请重启 Streamlit 加载最新代码")
-            trades = []
+        trades = cache.query_trade_pnl(limit=30)
         if trades:
             rows = []
             for t in trades:

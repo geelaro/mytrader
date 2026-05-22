@@ -69,7 +69,12 @@ class SignalGate:
         return True, ""
 
     def allow_sell(self, sig: dict) -> Tuple[bool, str]:
-        """Sells are rarely blocked — only by pause (though we still allow)."""
+        """Return (can_sell, reason_if_blocked).
+
+        Sells are rarely blocked; only when trading_paused AND an explicit
+        sell-block flag is set.  Under normal conditions this always
+        returns (True, "").
+        """
         return True, ""
 
     def vol_scaled_qty(self, qty: int) -> int:

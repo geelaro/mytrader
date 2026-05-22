@@ -53,7 +53,7 @@ def scan_day(
     if cache is None:
         cache = CacheManager()
 
-    lookback = config.get("default", {}).get("lookback_years", 3)
+    lookback = config.get("scanner", {}).get("lookback_years", 3)
     scanner = SignalScanner(provider, cache=cache, lookback_years=lookback)
     results = scanner.scan(config, target_date=target_date)
 
