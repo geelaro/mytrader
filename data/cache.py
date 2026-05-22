@@ -424,25 +424,48 @@ class CacheManager:
         """Return list of (start_date, end_date) tuples that need fetching.
 
         Compares the requested interval against what's already cached.
-        If the entire range is cached, returns an empty list.
+        If the entire range is cached, returns an empty list.  In addition to
+        head/tail gaps, detect internal holes larger than a normal weekend.
         """
-        cached_start, cached_end = self.date_range(symbol)
+        req_start_ts = pd.Timestamp(start).normalize()
+        req_end_ts = pd.Timestamp(end).normalize()
+        req_start = str(req_start_ts.date())
+        req_end = str(req_end_ts.date())
 
-        req_start = str(pd.Timestamp(start).date())
-        req_end = str(pd.Timestamp(end).date())
+        self.init_schema()
+        rows = self.conn.execute(
+            """
+            SELECT date FROM ohlcv_daily
+            WHERE symbol = ? AND date >= ? AND date <= ?
+            ORDER BY date ASC
+            """,
+            [symbol.upper(), req_start, req_end],
+        ).fetchall()
+        cached_dates = [pd.Timestamp(row[0]).normalize() for row in rows]
 
-        if cached_start is None or cached_end is None:
+        if not cached_dates:
             return [(req_start, req_end)]
 
-        gaps = []
-        if req_start < cached_start:
-            gap_end = min(req_end, str(pd.Timestamp(cached_start).date()))
-            if req_start <= gap_end:
-                gaps.append((req_start, gap_end))
+        gaps: List[Tuple[str, str]] = []
+        first = cached_dates[0]
+        if req_start_ts < first:
+            gap_end = first - pd.Timedelta(days=1)
+            if req_start_ts <= gap_end:
+                gaps.append((str(req_start_ts.date()), str(gap_end.date())))
 
-        if req_end > cached_end:
-            gap_start = max(req_start, str(pd.Timestamp(cached_end).date()))
-            if gap_start <= req_end:
-                gaps.append((gap_start, req_end))
+        prev = first
+        for current in cached_dates[1:]:
+            if (current - prev).days > 3:
+                gap_start = prev + pd.Timedelta(days=1)
+                gap_end = current - pd.Timedelta(days=1)
+                if gap_start <= gap_end:
+                    gaps.append((str(gap_start.date()), str(gap_end.date())))
+            prev = current
+
+        last = cached_dates[-1]
+        if req_end_ts > last:
+            gap_start = last + pd.Timedelta(days=1)
+            if gap_start <= req_end_ts:
+                gaps.append((str(gap_start.date()), str(req_end_ts.date())))
 
         return gaps

@@ -12,13 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+import utils  # noqa: F401 - triggers env setup before matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
-
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from engine.trader import run_backtest
 from strategy import STRATEGY_MAP

@@ -80,6 +80,12 @@ class TestMissingRanges:
         # Should have a gap before and after cached range
         assert len(gaps) >= 1
 
+    def test_internal_gap_detected(self, temp_cache, ohlcv):
+        df = ohlcv.iloc[:20].drop(ohlcv.index[5:10])
+        temp_cache.save("TEST", df)
+        gaps = temp_cache.missing_ranges("TEST", str(ohlcv.index[0].date()), str(ohlcv.index[19].date()))
+        assert any(start <= str(ohlcv.index[5].date()) <= end for start, end in gaps)
+
 
 class TestSignalHistory:
     def test_save_signal(self, temp_cache):

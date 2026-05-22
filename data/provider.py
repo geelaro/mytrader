@@ -26,6 +26,7 @@ from .sources import (
     TencentSource,
     SinaSource,
     AKShareSource,
+    YFinanceSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class DataProvider:
             TencentSource(),
             SinaSource(),
             AKShareSource(),
+            YFinanceSource(),
         ]
         self._fetch_failures: set = set()  # symbols that failed this session
 
@@ -186,15 +188,20 @@ class DataProvider:
     def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
         """Heuristic: does *df* cover up to the requested end date?
 
-        Only checks the tail — if we already have data through *end*,
-        don't re-fetch.  The beginning may never be fully backfillable
-        for some symbols (e.g. orphan positions with limited sources),
-        and we accept that rather than re-fetching every cycle.
+        Checks the tail and obvious internal holes.  This is intentionally a
+        conservative calendar heuristic, not a full exchange calendar.
         """
         if df is None or df.empty:
             return False
         last = df.index[-1]
         expected_last = pd.Timestamp(end)
-        # Allow weekend gap (Fri→Mon = 3 days), but trigger fetch if older
-        slack = pd.Timedelta(days=1)
-        return last >= expected_last - slack
+        # Allow a normal weekend gap (Fri→Mon = 3 days), but trigger fetch if older.
+        if last < expected_last - pd.Timedelta(days=3):
+            return False
+
+        dates = pd.DatetimeIndex(df.index).sort_values().normalize()
+        if len(dates) > 1:
+            max_gap_days = dates.to_series().diff().dt.days.max()
+            if pd.notna(max_gap_days) and max_gap_days > 3:
+                return False
+        return True

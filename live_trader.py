@@ -165,13 +165,20 @@ class LiveTrader:
         self._watchlist_symbols = [item["symbol"] for item in self.config.get("watchlist", [])]
         self.broker.warmup(self._watchlist_symbols)
 
-        # 2. Get broker state (positions first, so price refresh can include them)
+        # 2. Prime market prices before broker snapshots.  Some broker
+        # adapters compute position market value from last_prices.
+        self._refresh_market_prices()
+
+        # 3. Get broker state. If there are orphan positions outside the
+        # watchlist, refresh those prices too and re-read broker state so risk
+        # checks use the freshest available values.
         account = self.broker.get_account()
         all_positions = self.broker.get_positions()
+        if any(p.symbol not in self._watchlist_symbols for p in all_positions):
+            self._refresh_market_prices(all_positions)
+            account = self.broker.get_account()
+            all_positions = self.broker.get_positions()
         positions = {p.symbol: p for p in all_positions}
-
-        # 3. Refresh market prices (watchlist + existing positions)
-        self._refresh_market_prices(all_positions)
         self._init_risk(account)
 
         self._check_global_risk(account, positions)
@@ -490,7 +497,7 @@ class LiveTrader:
 
     def _init_risk(self, account):
         today = date.today().isoformat()
-        if self.risk._date != today:
+        if self.risk._date != today or self.risk._day_start_equity <= 0:
             self.risk._day_start_equity = account.total_equity
             self.risk._date = today
             self._persist_risk_state()
@@ -502,9 +509,11 @@ class LiveTrader:
         if stored_date == today:
             cl = self.cache.load_risk_state("consecutive_losses")
             dt = self.cache.load_risk_state("daily_trade_count")
+            dse = self.cache.load_risk_state("day_start_equity")
             self.risk._date = today
             self.risk._consecutive_losses = int(cl) if cl else 0
             self.risk._daily_trade_count = int(dt) if dt else 0
+            self.risk._day_start_equity = float(dse) if dse else 0.0
         # Entry prices survive across days (needed for circuit breaker)
         self._entry_prices = {
             sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
@@ -513,6 +522,7 @@ class LiveTrader:
     def _persist_risk_state(self):
         """Write current risk state to SQLite."""
         self.cache.save_risk_state("date", self.risk._date)
+        self.cache.save_risk_state("day_start_equity", str(self.risk._day_start_equity))
         self.cache.save_risk_state("consecutive_losses", str(self.risk._consecutive_losses))
         self.cache.save_risk_state("daily_trade_count", str(self.risk._daily_trade_count))
 
@@ -605,11 +615,11 @@ class LiveTrader:
         r = self.risk
         sym = order.symbol
         fill_price = order.avg_fill_price
+        r._daily_trade_count += 1
 
         if order.side == OrderSide.BUY:
             self._entry_prices[sym] = fill_price
             self.cache.save_entry_price(sym, fill_price, date.today().isoformat())
-            r._daily_trade_count += 1
         elif order.side == OrderSide.SELL:
             entry = self._entry_prices.pop(sym, None)
             if entry is not None:

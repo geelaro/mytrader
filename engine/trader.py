@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+import utils  # noqa: F401 - triggers env setup before matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -215,21 +216,39 @@ class BacktestEngine:
     def run(self, strategy, df, close_out: bool = True) -> pd.Series:
         """Execute backtest loop over *df* using *strategy* signals.
 
+        Signals are evaluated on bar close and executed at the next bar's open.
+        This avoids look-ahead bias from acting on a close that was only known
+        after the signal bar finished.
+
         Returns
         -------
         benchmark_returns : pd.Series
             Buy-and-hold returns of the close price over the backtest period.
         """
         highest = 0.0
+        pending_order: Optional[dict] = None
 
         for i in range(strategy.min_bars, len(df)):
             date_idx = df.index[i]
-            price = float(df["Close"].iloc[i])
+            close_price = float(df["Close"].iloc[i])
+            open_price = float(df["Open"].iloc[i]) if "Open" in df.columns else close_price
             atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
 
+            if pending_order is not None:
+                if pending_order["side"] == "buy" and self.position == 0:
+                    if self.buy(date_idx, open_price, pending_order["quantity"]):
+                        highest = open_price
+                elif pending_order["side"] == "sell" and self.position > 0:
+                    self.sell(date_idx, open_price, reason=pending_order["reason"])
+                    # Prevent re-entry on the execution bar after an exit.
+                    self.update(date_idx, close_price)
+                    pending_order = None
+                    continue
+                pending_order = None
+
             if self.position > 0 and self.current_entry:
-                if price > highest:
-                    highest = price
+                if close_price > highest:
+                    highest = close_price
                 exit_now, reason = strategy.check_exit(
                     df, i,
                     entry_price=self.current_entry["price"],
@@ -237,12 +256,9 @@ class BacktestEngine:
                     position=self.current_entry,
                 )
                 if exit_now:
-                    self.sell(date_idx, price, reason=reason)
-                    # Prevent re-entry on the same bar after stop-loss exit
-                    self.update(date_idx, price)
-                    continue
+                    pending_order = {"side": "sell", "reason": reason}
 
-            elif strategy.entry_signal(df, i) and self.position == 0:
+            elif strategy.entry_signal(df, i) and self.position == 0 and i < len(df) - 1:
                 entry_allowed = True
                 # --- risk: cooldown after stop ---
                 if self.cooldown_after_stop_days > 0 and self._last_stop_date is not None:
@@ -256,14 +272,13 @@ class BacktestEngine:
                 # --- end risk ---
                 if entry_allowed:
                     if self.sizing_mode == "risk_budget":
-                        qty = self._calc_risk_budget_qty(self.cash, price, atr)
+                        qty = self._calc_risk_budget_qty(self.cash, close_price, atr)
                     else:
-                        qty = strategy.position_size(self.cash, price, atr)
+                        qty = strategy.position_size(self.cash, close_price, atr)
                     if qty > 0:
-                        self.buy(date_idx, price, qty)
-                        highest = price
+                        pending_order = {"side": "buy", "quantity": qty}
 
-            self.update(date_idx, price)
+            self.update(date_idx, close_price)
 
         if close_out and self.position > 0:
             last_price = float(df["Close"].iloc[-1])

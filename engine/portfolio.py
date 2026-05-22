@@ -168,6 +168,7 @@ class PortfolioBacktest:
                 "entry_price": 0.0,
                 "highest": 0.0,
                 "capital_allocated": 0.0,
+                "pending_order": None,
             }
 
         cash = self.initial_capital
@@ -198,8 +199,39 @@ class PortfolioBacktest:
 
                 row = df_sig.iloc[idx_pos]
                 price = float(row["Close"])
+                open_price = float(row["Open"]) if "Open" in row.index else price
                 atr = float(row["ATR"]) if "ATR" in row.index else 0
                 st["last_price"] = price
+
+                pending = st.get("pending_order")
+                if pending is not None:
+                    if pending["side"] == "sell" and st["position"] > 0:
+                        cash = self._close_trade(
+                            st, date_idx, open_price, pending["reason"],
+                            open_trade_idx, trades, i, cash,
+                        )
+                        st["pending_order"] = None
+                        continue
+                    if pending["side"] == "buy" and st["position"] == 0:
+                        qty = pending["qty"]
+                        actual_price = open_price * (1 + self.slippage_pct)
+                        cost = actual_price * qty * (1 + self.commission_rate)
+                        if cost <= cash and qty > 0:
+                            cash -= cost
+                            st["position"] = qty
+                            st["entry_price"] = actual_price
+                            st["highest"] = open_price
+                            st["capital_allocated"] = cost
+
+                            trade = PortfolioTrade(
+                                symbol=st["leg"].symbol,
+                                entry_time=date_idx,
+                                qty=qty,
+                                entry_price=actual_price,
+                            )
+                            trades.append(trade)
+                            open_trade_idx[i] = len(trades) - 1
+                    st["pending_order"] = None
 
                 # Exit check
                 if st["position"] > 0:
@@ -212,13 +244,13 @@ class PortfolioBacktest:
                         highest_since_entry=st["highest"],
                     )
                     if exit_now:
-                        cash = self._close_trade(
-                            st, date_idx, price, reason,
-                            open_trade_idx, trades, i, cash,
-                        )
+                        st["pending_order"] = {"side": "sell", "reason": reason}
 
                 # Entry check
-                elif st["position"] == 0 and st["strategy"].entry_signal(df_sig, idx_pos):
+                elif (st["position"] == 0
+                      and st.get("pending_order") is None
+                      and idx_pos < len(df_sig) - 1
+                      and st["strategy"].entry_signal(df_sig, idx_pos)):
                     active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
                     if active_positions >= self.max_positions:
                         self._rejections.append({
@@ -311,24 +343,14 @@ class PortfolioBacktest:
                                 continue
 
                         if cost <= cash and qty > 0:
-                            cash -= cost
-                            st["position"] = qty
-                            st["entry_price"] = actual_price
-                            st["highest"] = price
-                            st["capital_allocated"] = cost
+                            st["pending_order"] = {"side": "buy", "qty": qty}
                             daily_new_count += 1
-
-                            trade = PortfolioTrade(
-                                symbol=st["leg"].symbol,
-                                entry_time=date_idx,
-                                qty=qty,
-                                entry_price=actual_price,
-                            )
-                            trades.append(trade)
-                            open_trade_idx[i] = len(trades) - 1
 
                 total_equity += st["position"] * price
 
+            total_equity = cash + sum(
+                s["position"] * s.get("last_price", 0) for s in leg_state.values()
+            )
             equity_history.append((date_idx, total_equity))
 
         # Close all open positions at end of period (same path as signal exit)
@@ -340,6 +362,10 @@ class PortfolioBacktest:
                     open_trade_idx, trades, i, cash,
                 )
         final_equity = cash
+        if equity_history:
+            # Keep result.final_equity and the last equity-curve point on the
+            # same liquidation basis used by performance metrics.
+            equity_history[-1] = (last_date, final_equity)
 
         return PortfolioResult(
             equity_history=equity_history,

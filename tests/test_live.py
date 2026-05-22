@@ -795,6 +795,7 @@ class TestRiskPersistence:
             trader = self._make_trader()
             today = __import__("datetime").date.today().isoformat()
             trader.risk._date = today
+            trader.risk._day_start_equity = 100000
             trader.risk._consecutive_losses = 2
             trader.risk._daily_trade_count = 3
             trader._entry_prices = {"AAPL": 195.0, "NVDA": 850.0}
@@ -807,6 +808,7 @@ class TestRiskPersistence:
             trader2._restore_risk_state()
             assert trader2.risk._consecutive_losses == 2
             assert trader2.risk._daily_trade_count == 3
+            assert trader2.risk._day_start_equity == 100000
             assert trader2._entry_prices == {"AAPL": 195.0, "NVDA": 850.0}
         finally:
             self._clean_risk_db()
@@ -830,11 +832,13 @@ class TestRiskPersistence:
             trader = self._make_trader()
             today = __import__("datetime").date.today().isoformat()
             trader.cache.save_risk_state("date", today)
+            trader.cache.save_risk_state("day_start_equity", "123456")
             trader.cache.save_risk_state("consecutive_losses", "3")
             trader.cache.save_risk_state("daily_trade_count", "4")
             trader._restore_risk_state()
             assert trader.risk._consecutive_losses == 3
             assert trader.risk._daily_trade_count == 4
+            assert trader.risk._day_start_equity == 123456
             assert trader.risk._date == today
         finally:
             self._clean_risk_db()

@@ -151,6 +151,37 @@ def test_full_backtest_run(ohlcv):
     assert np.isfinite(result.sharpe_ratio)
 
 
+def test_engine_executes_entry_on_next_open():
+    """A close-bar signal should not fill at the same close."""
+    class BuyOnceStrategy:
+        min_bars = 1
+
+        def entry_signal(self, df, i):
+            return int(df["Signal"].iloc[i]) == 1
+
+        def check_exit(self, df, i, entry_price, highest_since_entry, position=None):
+            return False, ""
+
+        def position_size(self, capital, price, atr):
+            return 1
+
+    dates = pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"])
+    df = pd.DataFrame({
+        "Open": [100.0, 50.0, 60.0],
+        "High": [101.0, 101.0, 101.0],
+        "Low": [99.0, 49.0, 59.0],
+        "Close": [100.0, 100.0, 100.0],
+        "Volume": [1_000] * 3,
+        "ATR": [1.0] * 3,
+        "Signal": [0, 1, 0],
+    }, index=dates)
+
+    engine = BacktestEngine(initial_capital=1000, commission_rate=0, slippage_pct=0)
+    engine.run(BuyOnceStrategy(), df)
+    assert engine.trades[0].entry_date == dates[2]
+    assert engine.trades[0].entry_price == 60.0
+
+
 def test_all_four_strategies_run_without_error(ohlcv):
     """Every strategy should complete calculate_indicators + check_exit without exception."""
     from strategy import (
