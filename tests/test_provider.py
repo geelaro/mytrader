@@ -51,14 +51,10 @@ class TestClassifySymbol:
 class TestSourcePriority:
     def test_us_priority(self):
         assert SOURCE_PRIORITY["us"][0] == "tencent"
-        assert "yfinance" in SOURCE_PRIORITY["us"]
 
     def test_cn_priority(self):
         assert SOURCE_PRIORITY["cn"][0] == "sina"
         assert "tencent" in SOURCE_PRIORITY["cn"]
-
-    def test_global_priority_uses_yfinance(self):
-        assert SOURCE_PRIORITY["global"][0] == "yfinance"
 
 
 # ===================================================================

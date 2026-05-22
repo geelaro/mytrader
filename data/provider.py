@@ -26,7 +26,6 @@ from .sources import (
     TencentSource,
     SinaSource,
     AKShareSource,
-    YFinanceSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,6 @@ class DataProvider:
             TencentSource(),
             SinaSource(),
             AKShareSource(),
-            YFinanceSource(),
         ]
         self._fetch_failures: set = set()  # symbols that failed this session
 

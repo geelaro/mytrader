@@ -8,7 +8,7 @@
 
 | 模块 | 说明 |
 |------|------|
-| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare/YFinance 四源，SQLite 本地缓存 + 增量更新 |
+| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare 三源，SQLite 本地缓存 + 增量更新 |
 | 策略库 | 10 个策略（趋势/均值回归/动量突破/波动率），BaseStrategy 统一接口 |
 | 策略选择层 | SignalGate 门控层：`active`（实盘执行）+ `monitor`（观察对比），市场状态感知 + 风控暂停 + 敞口检查 |
 | 回测引擎 | 含滑点佣金，退出逻辑收归策略，支持单标 + 组合回测 |
