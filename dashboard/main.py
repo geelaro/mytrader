@@ -1,0 +1,105 @@
+"""mytrader Dashboard — main orchestrator.
+
+Sidebar + tab routing + calls into sub-modules.
+"""
+
+from datetime import date
+
+import streamlit as st
+
+import utils
+from utils import get_logger, load_toml
+from data import DataProvider
+from data.cache import CacheManager
+from strategy import STRATEGY_MAP
+
+from dashboard.signals import render_market_state, render_todays_signals
+from dashboard.single_backtest import render_single_backtest
+from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
+from dashboard.ops import render_ops
+
+logger = get_logger("dashboard.main")
+
+
+def main():
+    st.set_page_config(page_title="Mytrader", layout="wide")
+    st.title("Mytrader Dashboard")
+
+    # -------------------------------------------------------------------
+    # Sidebar — controls
+    # -------------------------------------------------------------------
+
+    st.sidebar.header("控制面板")
+
+    target_date = st.sidebar.date_input("日期", date.today())
+
+    config = load_toml("watchlist.toml")
+    symbols = [item["symbol"] for item in config.get("watchlist", [])]
+
+    selected_symbol = st.sidebar.selectbox("标的", symbols)
+
+    strategy_options = list(STRATEGY_MAP.keys())
+    selected_strategy = st.sidebar.selectbox("策略", strategy_options, index=3)
+
+    backtest_years = st.sidebar.slider("回测年数", 1, 10, 4)
+    allocation_mode = st.sidebar.selectbox("组合分配模式", ["equal", "dynamic_equal"], index=0)
+    pf_strategy = st.sidebar.selectbox("组合策略", strategy_options, index=3,
+                                       help="所有标的使用统一策略")
+
+    @st.cache_resource
+    def get_provider():
+        return DataProvider()
+
+    @st.cache_resource
+    def get_cache():
+        return CacheManager()
+
+    provider = get_provider()
+    cache = get_cache()
+
+    # -------------------------------------------------------------------
+    # Market state
+    # -------------------------------------------------------------------
+
+    render_market_state(config, target_date, provider)
+
+    # -------------------------------------------------------------------
+    # Today's signals
+    # -------------------------------------------------------------------
+
+    render_todays_signals(config, target_date, provider, cache)
+
+    # -------------------------------------------------------------------
+    # Tabs: single backtest | portfolio backtest
+    # -------------------------------------------------------------------
+
+    tab_single, tab_portfolio = st.tabs(["单标的回测", "组合回测"])
+
+    with tab_single:
+        render_single_backtest(
+            selected_symbol, selected_strategy, backtest_years,
+            target_date, provider, cache,
+        )
+
+    with tab_portfolio:
+        render_portfolio_backtest(
+            config, target_date, backtest_years,
+            allocation_mode, pf_strategy,
+            strategy_options, symbols,
+        )
+
+    # -------------------------------------------------------------------
+    # Monte Carlo expander
+    # -------------------------------------------------------------------
+
+    render_monte_carlo(strategy_options, symbols, target_date)
+
+    # -------------------------------------------------------------------
+    # Ops / sector / trade history
+    # -------------------------------------------------------------------
+
+    render_ops(config, cache)
+
+
+if __name__ == "__main__":
+    main()
