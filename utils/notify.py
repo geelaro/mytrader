@@ -189,6 +189,12 @@ class Notifier:
         "trend_follower": "趋势跟踪",
         "weekly_macd": "周线MACD",
         "weekly_macd_kdj": "周线KDJ+MACD",
+        "daily_macd_kdj": "日线KDJ+MACD",
+        "turtle_trading": "海龟交易",
+        "donchian_breakout": "唐奇安突破",
+        "atr_breakout": "ATR突破",
+        "bollinger_mean_reversion": "布林回归",
+        "bollinger_squeeze": "布林挤压",
     }
 
     def _strat_label(self, key: str) -> str:

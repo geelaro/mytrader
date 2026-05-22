@@ -229,6 +229,8 @@ class PortfolioBacktest:
             for i, st in leg_state.items():
                 df_sig = st["df"]
                 if date_idx not in df_sig.index:
+                    # Symbol has no bar for this date (cross-market holiday gap).
+                    # Use last close — position value unchanged on non-trading days.
                     total_equity += st["position"] * st.get("last_price", 0)
                     continue
 
@@ -555,7 +557,8 @@ class PortfolioBacktest:
                   current_equity: float = 0) -> float:
         """Determine how much cash to allocate to a new position."""
         if self.allocation == "equal":
-            return min(available_cash, self.initial_capital / max(num_legs, 1))
+            ref = current_equity if current_equity > 0 else self.initial_capital
+            return min(available_cash, ref / max(num_legs, 1))
         elif self.allocation == "dynamic_equal":
             ref = current_equity if current_equity > 0 else self.initial_capital
             return min(available_cash, ref / max(num_legs, 1))

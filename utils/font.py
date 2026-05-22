@@ -11,5 +11,5 @@ def setup_chinese_font():
             matplotlib.rcParams["font.sans-serif"] = [font]
             matplotlib.rcParams["axes.unicode_minus"] = False
             break
-        except Exception:
+        except (ValueError, RuntimeError):
             continue

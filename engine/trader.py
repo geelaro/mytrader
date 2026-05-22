@@ -386,11 +386,6 @@ class BacktestEngine:
         return df["Close"].pct_change().dropna()
 
 
-from strategy import (
-    EnhancedMACDStrategy,
-)
-
-
 # ---------------------------------------------------------------------------
 # Backtest runner & visualization
 # ---------------------------------------------------------------------------
@@ -416,6 +411,7 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
         cooldown_after_stop_days: Block re-entry for N days after a stop-loss exit.
     """
     if strategy_cls is None:
+        from strategy.enhanced_macd import EnhancedMACDStrategy
         strategy_cls = EnhancedMACDStrategy
     if end is None:
         end = datetime.now().strftime("%Y-%m-%d")

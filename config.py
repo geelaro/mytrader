@@ -41,6 +41,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "base_risk_pct": 0.02,
         "vol_sensitivity": 5.0,
         "min_vol_scalar": 0.3,
+        "max_total_drawdown_pct": 0.30,
     },
     "log": {
         "level": "INFO",

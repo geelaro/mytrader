@@ -229,7 +229,7 @@ def main():
         notifier = Notifier()
         signals_with_signal = [r for r in results if r["signal"] != 0]
         if signals_with_signal:
-            notifier.send_signal_card(signals_with_signal)
+            notifier.signal_card(signals_with_signal)
 
 
 if __name__ == "__main__":
