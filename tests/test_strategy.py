@@ -497,3 +497,68 @@ class TestDailyMACDKDJ:
         assert s.position_size(10000, 100, float("nan")) == 0
         qty = s.position_size(10000, 100, 10)
         assert qty > 0
+
+
+# ===================================================================
+# BaseStrategy._risk_budget_size
+# ===================================================================
+
+
+class TestRiskBudgetSize:
+    def test_normal_calculation(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=100.0, atr=2.0,
+            risk_pct=0.02, stop_atr_mult=2.0, max_pct=0.95,
+        )
+        expected = int(100_000 * 0.02 / (2.0 * 2.0))
+        assert qty == expected
+        assert qty > 0
+
+    def test_zero_atr_returns_zero(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=100.0, atr=0,
+            risk_pct=0.02, stop_atr_mult=2.0, max_pct=0.95,
+        )
+        assert qty == 0
+
+    def test_nan_atr_returns_zero(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=100.0, atr=float("nan"),
+            risk_pct=0.02, stop_atr_mult=2.0, max_pct=0.95,
+        )
+        assert qty == 0
+
+    def test_zero_price_returns_zero(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=0, atr=2.0,
+            risk_pct=0.02, stop_atr_mult=2.0, max_pct=0.95,
+        )
+        assert qty == 0
+
+    def test_zero_stop_distance_returns_zero(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=100.0, atr=0.01,
+            risk_pct=0.02, stop_atr_mult=0, max_pct=0.95,
+        )
+        assert qty == 0
+
+    def test_max_pct_cap_works(self):
+        qty = BaseStrategy._risk_budget_size(
+            capital=100_000, price=100.0, atr=0.05,
+            risk_pct=0.30, stop_atr_mult=1.0, max_pct=0.10,
+        )
+        max_allowed = int(100_000 * 0.10 / 100.0)
+        assert qty == max_allowed
+        assert qty < int(100_000 * 0.30 / (0.05 * 1.0))
+
+    def test_via_enhanced_macd_position_size(self):
+        s = EnhancedMACDStrategy(risk_per_trade=0.02, trail_atr_mult=2.0, max_position_pct=0.95)
+        qty = s.position_size(100_000, 100.0, 2.0)
+        expected = int(100_000 * 0.02 / (2.0 * 2.0))
+        assert qty == expected
+        assert qty > 0
+
+    def test_via_enhanced_macd_zero_atr(self):
+        s = EnhancedMACDStrategy(risk_per_trade=0.02, trail_atr_mult=2.0)
+        assert s.position_size(100_000, 100.0, 0) == 0
+        assert s.position_size(100_000, 100.0, float("nan")) == 0
