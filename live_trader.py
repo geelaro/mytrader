@@ -324,6 +324,7 @@ class LiveTrader:
             self.config,
             target_date=target_date,
             orphan_positions=orphan_positions,
+            monitors=False,  # live trading only uses active strategy
         )
 
         # --- seed broker last_prices ---

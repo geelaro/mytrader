@@ -53,6 +53,7 @@ class SignalScanner:
         config: dict,
         target_date: Optional[str] = None,
         orphan_positions: Optional[List[dict]] = None,
+        monitors: bool = True,
     ) -> List[dict]:
         """Run strategies on every watchlist (and optional orphan) symbol.
 
@@ -75,7 +76,7 @@ class SignalScanner:
         # --- watchlist symbols -------------------------------------------------
         for item in config.get("watchlist", []):
             results.extend(
-                self._scan_symbol(item, start, target_date, active_first=True)
+                self._scan_symbol(item, start, target_date, active_first=monitors)
             )
 
         # --- orphan positions --------------------------------------------------
