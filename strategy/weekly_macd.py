@@ -14,6 +14,12 @@ class WeeklyMACDParams(StrategyParams):
     macd_signal: int = 9
     max_position_pct: float = 0.95
 
+    grid = {
+        "macd_fast": [8, 12, 16],
+        "macd_slow": [21, 26, 31],
+        "macd_signal": [7, 9, 11],
+    }
+
 
 class WeeklyMACD(BaseStrategy):
     """MACD golden/death cross on weekly bars. Low trade frequency.

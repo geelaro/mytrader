@@ -21,19 +21,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from data import DataProvider
-from strategy import (
-    STRATEGY_MAP as _STRATEGY_MAP,
-    EnhancedMACDParams,
-    TrendFollowerParams,
-    WeeklyMACDParams,
-    WeeklyMACDKDJParams,
-    BollingerMeanReversionParams,
-    DonchianBreakoutParams,
-    ATRBreakoutParams,
-    BollingerSqueezeParams,
-    TurtleTradingParams,
-    DailyMACDKDJParams,
-)
+from strategy import STRATEGY_MAP as _STRATEGY_MAP
 from engine.trader import BacktestEngine
 
 # ---------------------------------------------------------------------------
@@ -43,81 +31,26 @@ def _next_trading_day(date_str: str) -> str:
     return pd.bdate_range(start=next_day, periods=1)[0].strftime("%Y-%m-%d")
 
 
-# Parameter grids — define search space per strategy
+# ---------------------------------------------------------------------------
+# Grid / params access
 # ---------------------------------------------------------------------------
 
-PARAM_GRIDS = {
-    "enhanced_macd": {
-        "short_ma": [10, 20, 30],
-        "long_ma": [40, 50, 60],
-        "trail_atr_mult": [1.5, 2.0, 3.0],
-        "take_profit_mult": [3.0, 4.0, 5.0],
-    },
-    "trend_follower": {
-        "short_ma": [10, 20, 30],
-        "long_ma": [40, 50, 60],
-        "adx_threshold": [15, 20, 25],
-        "trail_atr_mult": [2.0, 3.0, 4.0],
-    },
-    "weekly_macd": {
-        "macd_fast": [8, 12, 16],
-        "macd_slow": [21, 26, 31],
-        "macd_signal": [7, 9, 11],
-    },
-    "weekly_macd_kdj": {
-        "kdj_n": [7, 9, 14],
-        "kdj_k": [2, 3, 5],
-        "kdj_d": [2, 3, 5],
-    },
-    "bollinger_mean_reversion": {
-        "bb_period": [15, 20, 25],
-        "bb_std": [1.5, 2.0, 2.5],
-        "rsi_oversold": [25, 30, 35],
-        "atr_stop_mult": [1.5, 2.0, 3.0],
-    },
-    "donchian_breakout": {
-        "channel_period": [15, 20, 30, 40],
-        "trail_atr_mult": [2.0, 3.0, 4.0],
-    },
-    "atr_breakout": {
-        "ma_period": [15, 20, 30],
-        "breakout_atr_mult": [1.5, 2.0, 2.5, 3.0],
-        "trail_atr_mult": [2.5, 3.0, 4.0, 5.0],
-    },
-    "bollinger_squeeze": {
-        "bb_period": [15, 20, 25],
-        "bb_std": [1.5, 2.0, 2.5],
-        "squeeze_percentile": [5, 10, 15],
-        "trail_atr_mult": [2.0, 3.0, 4.0],
-    },
-    "turtle_trading": {
-        "short_period": [10, 20, 30],
-        "long_period": [40, 50, 60],
-        "channel_period": [15, 20, 30, 40],
-        "trail_atr_mult": [2.0, 3.0, 4.0],
-    },
-    "daily_macd_kdj": {
-        "macd_fast": [8, 12, 16],
-        "macd_slow": [21, 26, 31],
-        "macd_signal": [7, 9, 11],
-        "kdj_n": [7, 9, 14],
-        "kdj_k": [2, 3, 5],
-        "kdj_d": [2, 3, 5],
-        "trail_atr_mult": [2.0, 3.0, 4.0],
-    },
-}
+def _get_params_grid(strategy_name: str) -> dict:
+    """Return the param-grid dict declared on the strategy's params class."""
+    strategy = _STRATEGY_MAP[strategy_name]()
+    params_cls = type(strategy.params)
+    return getattr(params_cls, "grid", {})
 
+def _get_params_cls(strategy_name: str):
+    strategy = _STRATEGY_MAP[strategy_name]()
+    return type(strategy.params)
+
+# Backward-compatible module-level lookups (computed from strategy classes)
+PARAM_GRIDS = {
+    name: _get_params_grid(name) for name in _STRATEGY_MAP
+}
 _PARAMS_CLASS = {
-    "enhanced_macd": EnhancedMACDParams,
-    "trend_follower": TrendFollowerParams,
-    "weekly_macd": WeeklyMACDParams,
-    "weekly_macd_kdj": WeeklyMACDKDJParams,
-    "bollinger_mean_reversion": BollingerMeanReversionParams,
-    "donchian_breakout": DonchianBreakoutParams,
-    "atr_breakout": ATRBreakoutParams,
-    "bollinger_squeeze": BollingerSqueezeParams,
-    "turtle_trading": TurtleTradingParams,
-    "daily_macd_kdj": DailyMACDKDJParams,
+    name: _get_params_cls(name) for name in _STRATEGY_MAP
 }
 
 
@@ -151,13 +84,14 @@ def grid_search(
     metric: str = "sharpe",
     top_n: int = 10,
 ) -> list[OptResult]:
-    """Exhaustive grid search over PARAM_GRIDS[strategy_name]."""
+    """Exhaustive grid search over the strategy's declared param grid."""
 
     if strategy_name not in _STRATEGY_MAP:
         raise ValueError(f"Unknown strategy: {strategy_name}")
 
-    strategy_cls, params_cls = _STRATEGY_MAP[strategy_name], _PARAMS_CLASS[strategy_name]
-    grid = PARAM_GRIDS.get(strategy_name, {})
+    strategy_cls = _STRATEGY_MAP[strategy_name]
+    params_cls = _get_params_cls(strategy_name)
+    grid = _get_params_grid(strategy_name)
     if not grid:
         raise ValueError(f"No param grid defined for {strategy_name}")
 
@@ -287,7 +221,7 @@ def walk_forward(
         print(f"  训练集Sharpe: {best[0].sharpe:.2f}  收益: {best[0].total_return:+.1f}%")
 
         # Run on test window (carry-forward capital from previous window)
-        strategy_cls, _ = _STRATEGY_MAP[strategy_name], _PARAMS_CLASS[strategy_name]
+        strategy_cls = _STRATEGY_MAP[strategy_name]
         try:
             strategy = strategy_cls(**best_params)
             provider = DataProvider()
@@ -447,7 +381,7 @@ def main():
     print_grid_results(results, args.strategy)
 
     if args.heatmap and results:
-        grid = PARAM_GRIDS.get(args.strategy, {})
+        grid = _get_params_grid(args.strategy)
         keys = list(grid.keys())
         if len(keys) >= 2:
             plot_heatmap(results, args.strategy, keys[0], keys[1])

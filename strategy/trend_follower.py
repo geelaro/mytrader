@@ -20,6 +20,13 @@ class TrendFollowerParams(StrategyParams):
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
+    grid = {
+        "short_ma": [10, 20, 30],
+        "long_ma": [40, 50, 60],
+        "adx_threshold": [15, 20, 25],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    }
+
     def validate(self):
         if not (self.short_ma < self.long_ma): raise ValueError("validation failed")
         if not (self.trail_atr_mult > 0): raise ValueError("validation failed")

@@ -23,6 +23,13 @@ class TurtleTradingParams(StrategyParams):
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
+    grid = {
+        "short_period": [10, 20, 30],
+        "long_period": [40, 50, 60],
+        "channel_period": [15, 20, 30, 40],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    }
+
     def validate(self):
         if not (self.short_period < self.long_period): raise ValueError("short_period must be < long_period")
         if not (self.channel_period >= 10): raise ValueError("channel_period must be >= 10")

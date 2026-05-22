@@ -25,6 +25,12 @@ class WeeklyMACDKDJParams(StrategyParams):
     kdj_d: int = 3
     max_position_pct: float = 0.95
 
+    grid = {
+        "kdj_n": [7, 9, 14],
+        "kdj_k": [2, 3, 5],
+        "kdj_d": [2, 3, 5],
+    }
+
 
 class WeeklyMACD_KDJ(BaseStrategy):
     """Weekly KDJ golden cross for buy, MACD death cross for sell.

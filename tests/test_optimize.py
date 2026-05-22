@@ -168,13 +168,12 @@ class TestGridSearchMocked:
             grid_search("no_such", "AAPL")
 
     def test_no_grid_defined_raises(self, ohlcv):
-        from engine.optimize import grid_search, PARAM_GRIDS
+        from engine.optimize import grid_search
         from data import DataProvider
+        from strategy.weekly_macd import WeeklyMACDParams
 
-        # strategy in STRATEGY_MAP but missing from PARAM_GRIDS would raise
-        # Use a strategy that has no grid defined in our test
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
-            with patch.dict(PARAM_GRIDS, {"weekly_macd": {}}, clear=False):
+            with patch.object(WeeklyMACDParams, 'grid', {}, create=True):
                 with pytest.raises(ValueError):
                     grid_search("weekly_macd", "AAPL")
 

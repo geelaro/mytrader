@@ -21,6 +21,11 @@ class DonchianBreakoutParams(StrategyParams):
     max_position_pct: float = 0.95
     volume_confirm: bool = True
 
+    grid = {
+        "channel_period": [15, 20, 30, 40],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    }
+
     def validate(self):
         if not (self.channel_period >= 10): raise ValueError("channel_period must be >= 10")
         if not (self.trail_atr_mult > 0): raise ValueError("trail_atr_mult must be positive")

@@ -29,6 +29,13 @@ class EnhancedMACDParams(StrategyParams):
     take_profit_mult: float = 4.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
+
+    grid = {
+        "short_ma": [10, 20, 30],
+        "long_ma": [40, 50, 60],
+        "trail_atr_mult": [1.5, 2.0, 3.0],
+        "take_profit_mult": [3.0, 4.0, 5.0],
+    }
     volume_ma_period: int = 20
 
     def validate(self):

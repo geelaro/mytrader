@@ -27,6 +27,16 @@ class DailyMACDKDJParams(StrategyParams):
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
+    grid = {
+        "macd_fast": [8, 12, 16],
+        "macd_slow": [21, 26, 31],
+        "macd_signal": [7, 9, 11],
+        "kdj_n": [7, 9, 14],
+        "kdj_k": [2, 3, 5],
+        "kdj_d": [2, 3, 5],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    }
+
     def validate(self):
         if not (self.trail_atr_mult > 0): raise ValueError("validation failed")
 

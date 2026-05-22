@@ -23,6 +23,12 @@ class ATRBreakoutParams(StrategyParams):
     max_position_pct: float = 0.95
     ma_type: str = "ema"
 
+    grid = {
+        "ma_period": [15, 20, 30],
+        "breakout_atr_mult": [1.5, 2.0, 2.5, 3.0],
+        "trail_atr_mult": [2.5, 3.0, 4.0, 5.0],
+    }
+
     def validate(self):
         if not (self.ma_period > 0):
             raise ValueError("ma_period must be > 0")

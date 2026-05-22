@@ -24,6 +24,13 @@ class BollingerSqueezeParams(StrategyParams):
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
+    grid = {
+        "bb_period": [15, 20, 25],
+        "bb_std": [1.5, 2.0, 2.5],
+        "squeeze_percentile": [5, 10, 15],
+        "trail_atr_mult": [2.0, 3.0, 4.0],
+    }
+
     def validate(self):
         if not (self.squeeze_lookback > self.bb_period):
             raise ValueError("squeeze_lookback must be > bb_period")

@@ -25,6 +25,13 @@ class BollingerMeanReversionParams(StrategyParams):
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
+    grid = {
+        "bb_period": [15, 20, 25],
+        "bb_std": [1.5, 2.0, 2.5],
+        "rsi_oversold": [25, 30, 35],
+        "atr_stop_mult": [1.5, 2.0, 3.0],
+    }
+
     def validate(self):
         if not (self.bb_std > 0): raise ValueError("bb_std must be positive")
         if not (0 < self.rsi_oversold < 50): raise ValueError("rsi_oversold must be in (0, 50)")
