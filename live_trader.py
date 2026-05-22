@@ -189,9 +189,11 @@ class LiveTrader:
         # 6. Compare → Orders
         orders = self.order_mgr.generate_orders(signals, positions, account)
 
-        # 7. Submit (with polling for partial fills + timeout cancellation)
+        # 7. Submit — process sells first so exposure drops for subsequent buys
         submitted = []
-        for order in orders:
+        sell_orders = [o for o in orders if o.side == OrderSide.SELL]
+        buy_orders = [o for o in orders if o.side == OrderSide.BUY]
+        for order in sell_orders + buy_orders:
             signal_price = self.broker.last_prices.get(order.symbol, 0)
             if self.dry_run:
                 order.status = OrderStatus.FILLED
