@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -75,19 +75,12 @@ class RiskLimits:
 
     @classmethod
     def from_config(cls, config: dict) -> "RiskLimits":
+        """Build from watchlist.toml [risk] section.  Missing keys
+        inherit dataclass field defaults — no duplicated fallback values."""
         rc = config.get("risk", {})
-        return cls(
-            max_position_pct=rc.get("max_position_pct", 0.30),
-            max_total_exposure_pct=rc.get("max_total_exposure_pct", 0.80),
-            max_daily_loss_pct=rc.get("max_daily_loss_pct", 0.05),
-            min_order_value=rc.get("min_order_value", 500.0),
-            max_slippage_pct=rc.get("max_slippage_pct", 0.02),
-            max_consecutive_losses=rc.get("max_consecutive_losses", 3),
-            max_daily_trades=rc.get("max_daily_trades", 5),
-            base_risk_pct=rc.get("base_risk_pct", 0.02),
-            vol_sensitivity=rc.get("vol_sensitivity", 5.0),
-            min_vol_scalar=rc.get("min_vol_scalar", 0.3),
-        )
+        param_names = {f.name for f in fields(cls) if not f.name.startswith("_")}
+        kwargs = {k: rc[k] for k in param_names if k in rc}
+        return cls(**kwargs)
 
 
 # ---------------------------------------------------------------------------

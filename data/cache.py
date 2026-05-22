@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -35,6 +36,7 @@ class CacheManager:
         self.db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
         self._batch_mode = False
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Connection management
@@ -47,13 +49,15 @@ class CacheManager:
 
     def enable_batch(self):
         """Defer all commits — caller must call commit_batch() once."""
-        self._batch_mode = False  # safety reset
-        self._batch_mode = True
+        with self._lock:
+            self._batch_mode = False  # safety reset
+            self._batch_mode = True
 
     def commit_batch(self):
         """Flush all deferred writes in one commit."""
-        self.conn.commit()
-        self._batch_mode = False
+        with self._lock:
+            self.conn.commit()
+            self._batch_mode = False
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -62,26 +66,29 @@ class CacheManager:
         return self._conn
 
     def close(self):
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def log_ops(self, event: str, symbol: str = "", detail: str = "",
                 value: float = 0, level: str = "INFO", source: str = OPS_SRC_LIVE):
         """Record an operational event (pause, rejection, slippage, etc.)."""
-        self.init_schema()
-        self.conn.execute(
-            "INSERT INTO ops_log (source, level, event, symbol, detail, value) VALUES (?,?,?,?,?,?)",
-            [source, level, event, symbol, detail, value],
-        )
-        self._commit()
+        with self._lock:
+            self.init_schema()
+            self.conn.execute(
+                "INSERT INTO ops_log (source, level, event, symbol, detail, value) VALUES (?,?,?,?,?,?)",
+                [source, level, event, symbol, detail, value],
+            )
+            self._commit()
 
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------
 
     def init_schema(self):
-        self.conn.executescript("""
+        with self._lock:
+            self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS ohlcv_daily (
                 symbol   TEXT    NOT NULL,
                 date     TEXT    NOT NULL,
@@ -244,9 +251,12 @@ class CacheManager:
         self, symbol: str, df: pd.DataFrame, source: str = ""
     ) -> int:
         """Insert or replace bars.  Returns number of rows written."""
-        if df is None or df.empty:
-            return 0
+        with self._lock:
+            if df is None or df.empty:
+                return 0
+            return self._save(symbol, df, source)
 
+    def _save(self, symbol: str, df: pd.DataFrame, source: str = "") -> int:
         self.init_schema()
         df = df.copy()
 
@@ -309,6 +319,10 @@ class CacheManager:
         bar_date: str, signal: int, price: float, atr: float,
         indicators: str = "",
     ):
+        with self._lock:
+            self._save_signal(scan_date, symbol, strategy, bar_date, signal, price, atr, indicators)
+
+    def _save_signal(self, scan_date, symbol, strategy, bar_date, signal, price, atr, indicators=""):
         self.init_schema()
         # Upsert — remove previous scan for this date+symbol+strategy
         self.conn.execute(
@@ -342,6 +356,10 @@ class CacheManager:
     # ------------------------------------------------------------------
 
     def save_risk_state(self, key: str, value: str):
+        with self._lock:
+            self._save_risk_state(key, value)
+
+    def _save_risk_state(self, key: str, value: str):
         self.init_schema()
         self.conn.execute(
             "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
@@ -357,6 +375,10 @@ class CacheManager:
         return row[0] if row else None
 
     def save_entry_price(self, symbol: str, price: float, entry_date: str):
+        with self._lock:
+            self._save_entry_price(symbol, price, entry_date)
+
+    def _save_entry_price(self, symbol: str, price: float, entry_date: str):
         self.init_schema()
         self.conn.execute(
             "INSERT OR REPLACE INTO entry_prices (symbol, price, entry_date) VALUES (?, ?, ?)",
@@ -380,6 +402,10 @@ class CacheManager:
         return {row[0]: (row[1], row[2]) for row in rows}
 
     def delete_entry_price(self, symbol: str):
+        with self._lock:
+            self._delete_entry_price(symbol)
+
+    def _delete_entry_price(self, symbol: str):
         self.init_schema()
         self.conn.execute(
             "DELETE FROM entry_prices WHERE symbol = ?", [symbol.upper()]
@@ -390,6 +416,12 @@ class CacheManager:
                        entry_price: float, exit_price: float,
                        exit_date: str, order_id: str):
         """Record a completed round-trip trade PnL."""
+        with self._lock:
+            self._save_trade_pnl(symbol, side, qty, entry_price, exit_price, exit_date, order_id)
+
+    def _save_trade_pnl(self, symbol: str, side: str, qty: int,
+                        entry_price: float, exit_price: float,
+                        exit_date: str, order_id: str):
         pnl = (exit_price - entry_price) * qty
         pnl_pct = (exit_price / entry_price - 1) * 100
         self.init_schema()
