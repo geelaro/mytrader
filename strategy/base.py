@@ -97,6 +97,30 @@ class BaseStrategy(ABC):
             return 0
         return int(capital * 0.95 / price)
 
+    @staticmethod
+    def _risk_budget_size(
+        capital: float,
+        price: float,
+        atr: float,
+        risk_pct: float,
+        stop_atr_mult: float,
+        max_pct: float,
+    ) -> int:
+        """Risk-budget position sizing used by most strategies.
+
+        Shares = (capital × risk_pct) / (atr × stop_atr_mult), capped at
+        (capital × max_pct / price).
+        """
+        if pd.isna(atr) or atr <= 0 or price <= 0:
+            return 0
+        risk_dollar = capital * risk_pct
+        stop_distance = atr * stop_atr_mult
+        if stop_distance <= 0:
+            return 0
+        shares = int(risk_dollar / stop_distance)
+        max_shares = int(capital * max_pct / price)
+        return max(0, min(shares, max_shares))
+
     def entry_signal(self, df: pd.DataFrame, i: int) -> bool:
         """Return True if bar *i* triggers a long entry."""
         return int(df["Signal"].iloc[i]) == 1

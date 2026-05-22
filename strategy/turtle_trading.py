@@ -77,15 +77,9 @@ class TurtleTrading(BaseStrategy):
     # ------------------------------------------------------------------
 
     def position_size(self, capital: float, price: float, atr: float) -> int:
-        if pd.isna(atr) or atr <= 0 or price <= 0:
-            return 0
-        risk_dollar = capital * self.params.risk_per_trade
-        stop_distance = atr * self.params.trail_atr_mult
-        if stop_distance <= 0:
-            return 0
-        shares = int(risk_dollar / stop_distance)
-        max_shares = int(capital * self.params.max_position_pct / price)
-        return max(0, min(shares, max_shares))
+        return self._risk_budget_size(capital, price, atr,
+            self.params.risk_per_trade, self.params.trail_atr_mult,
+            self.params.max_position_pct)
 
     # ------------------------------------------------------------------
 

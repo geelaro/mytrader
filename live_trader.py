@@ -43,6 +43,7 @@ from engine.execution import ExecutionConfig, ExecutionModel, ExecutionStyle, Ex
 from utils import get_logger, load_toml
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 from utils.signal_gate import SignalGate
+from utils.signal_scanner import SignalScanner
 from utils.notify import Notifier
 
 logger = get_logger("live")
@@ -318,80 +319,40 @@ class LiveTrader:
 
     def _scan_signals(self, target_date: str, positions: Dict[str, Position]) -> List[dict]:
         """Run strategies across watchlist + orphan positions, return signal dicts."""
-        default_lookback = self.config.get("default", {}).get("lookback_years", 3)
-        start = (pd.Timestamp(target_date) - pd.DateOffset(years=default_lookback)).strftime("%Y-%m-%d")
-        results = []
+        lookback = self.config.get("default", {}).get("lookback_years", 3)
 
-        # Collect all symbols to scan: watchlist + orphan positions
-        scan_items = list(self.config.get("watchlist", []))
+        # --- orphan detection (live-only concern) ---
         self._orphan_symbols = set()
+        orphan_positions = []
         if self._orphan_strategy:
             for sym, pos in positions.items():
                 if sym not in self._watchlist_symbols and abs(pos.quantity) > 0:
                     self._orphan_symbols.add(sym)
-                    scan_items.append({
-                        "symbol": sym, "name": sym,
-                        "active": self._orphan_strategy,
-                        "_orphan": True,
+                    orphan_positions.append({
+                        "symbol": sym,
+                        "name": sym,
+                        "strategy": self._orphan_strategy,
                     })
+                    # Thin-data fallback: try FutuBroker kline
+                    start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
+                    df = self.provider.get_daily(sym, start=start, end=target_date)
+                    if (df is None or len(df) < 50) and hasattr(self.broker, "get_historical_kline"):
+                        futu_df = self.broker.get_historical_kline(sym, start, target_date)
+                        if not futu_df.empty:
+                            self.cache.save(sym, futu_df, source="futu")
 
-        for item in scan_items:
-            symbol = item["symbol"]
-            name = item.get("name", symbol)
-            is_orphan = item.get("_orphan", False)
-            active_strat = item.get("active", "")
-            strategy_names = [active_strat] if active_strat else []
+        # --- delegate to shared scanner ---
+        scanner = SignalScanner(self.provider, lookback_years=lookback)
+        results = scanner.scan(
+            self.config,
+            target_date=target_date,
+            orphan_positions=orphan_positions,
+        )
 
-            df = self.provider.get_daily(symbol, start=start, end=target_date)
-
-            # Orphan with thin data: try FutuBroker for historical kline
-            if is_orphan and (df is None or len(df) < 50) and hasattr(self.broker, "get_historical_kline"):
-                futu_df = self.broker.get_historical_kline(symbol, start, target_date)
-                if not futu_df.empty:
-                    self.cache.save(symbol, futu_df, source="futu")
-                    df = self.provider.get_daily(symbol, start=start, end=target_date)
-
-            if df is None or df.empty:
-                continue
-
-            if target_date not in df.index.strftime("%Y-%m-%d"):
-                bar_date = df.index[-1].strftime("%Y-%m-%d")
-            else:
-                bar_date = target_date
-
-            for strat_name in strategy_names:
-                cls = STRATEGY_MAP.get(strat_name)
-                if cls is None:
-                    continue
-                params = self.config.get("strategy", {}).get(strat_name, {})
-                strategy = cls(**params)
-                try:
-                    df_sig = strategy.calculate_indicators(df)
-                except Exception:
-                    logger.exception("策略计算失败: %s %s", symbol, strat_name)
-                    continue
-
-                last_idx = -1
-                signal = int(df_sig["Signal"].iloc[last_idx])
-                price = float(df_sig["Close"].iloc[last_idx])
-                atr = float(df_sig["ATR"].iloc[last_idx]) if "ATR" in df_sig.columns else 0
-
-                indicators = {}
-                for col in df_sig.columns:
-                    if col not in ("Open", "High", "Low", "Close", "Volume", "Signal"):
-                        val = df_sig[col].iloc[last_idx]
-                        if isinstance(val, (float, int)) and not pd.isna(val):
-                            indicators[col] = round(float(val), 4)
-
-                results.append({
-                    "symbol": symbol, "name": name, "strategy": strat_name,
-                    "signal": signal, "price": price, "atr": atr,
-                    "bar_date": bar_date, "indicators": indicators,
-                    "orphan": is_orphan,
-                })
-
-                if symbol not in self.broker.last_prices:
-                    self.broker.last_prices[symbol] = price
+        # --- seed broker last_prices ---
+        for r in results:
+            if r["symbol"] not in self.broker.last_prices:
+                self.broker.last_prices[r["symbol"]] = r["price"]
 
         return results
 

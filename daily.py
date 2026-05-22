@@ -6,7 +6,6 @@ Usage:  pipenv run python daily.py          # scan today
 """
 
 import argparse
-import json
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -16,9 +15,10 @@ import pandas as pd
 
 from data import DataProvider
 from data.cache import CacheManager
-from strategy import STRATEGY_MAP, SIGNAL_LABEL
+from strategy import SIGNAL_LABEL
 from utils import get_logger, load_toml
 from utils.notify import Notifier
+from utils.signal_scanner import SignalScanner
 
 logger = get_logger("daily")
 
@@ -53,106 +53,65 @@ def scan_day(
     if cache is None:
         cache = CacheManager()
 
-    default_lookback = config.get("default", {}).get("lookback_years", 3)
-    start = (pd.Timestamp(target_date) - pd.DateOffset(years=default_lookback)).strftime("%Y-%m-%d")
-    results = []
+    lookback = config.get("default", {}).get("lookback_years", 3)
+    scanner = SignalScanner(provider, cache=cache, lookback_years=lookback)
+    results = scanner.scan(config, target_date=target_date)
 
-    for item in config.get("watchlist", []):
-        symbol = item["symbol"]
-        name = item.get("name", symbol)
-        active_strat = item.get("active", "")
-        monitor_list = item.get("monitor", [])
-        strategy_names = [active_strat] + monitor_list if active_strat else monitor_list
+    # --- data quality checks + display (presentation layer) ------------------
+    scanned_symbols = set()
+    for r in results:
+        sym = r["symbol"]
+        if sym in scanned_symbols:
+            continue
+        scanned_symbols.add(sym)
 
-        # Fetch data once per symbol
-        df = provider.get_daily(symbol, start=start, end=target_date)
+        df = provider.get_daily(sym, start=(
+            pd.Timestamp(target_date) - pd.DateOffset(years=lookback)
+        ).strftime("%Y-%m-%d"), end=target_date)
         if df is None or df.empty:
-            logger.warning("数据缺失: %s 无数据", symbol)
-            print(f"  ! {symbol} 无数据，跳过")
             continue
 
-        # Data quality checks
         latest = df.index[-1]
         age_days = (pd.Timestamp(target_date) - latest).days
         if age_days > 5:
-            logger.warning("数据陈旧: %s 最新K线 %s (%d天前)", symbol, latest.date(), age_days)
-            print(f"  ! {symbol} 数据陈旧: 最新 {latest.date()} ({age_days}天前)")
+            logger.warning("数据陈旧: %s 最新K线 %s (%d天前)", sym, latest.date(), age_days)
+            print(f"  ! {sym} 数据陈旧: 最新 {latest.date()} ({age_days}天前)")
         if len(df) < 50:
-            logger.warning("数据不足: %s 仅 %d 根K线", symbol, len(df))
-            print(f"  ! {symbol} K线不足: 仅 {len(df)} 根")
+            logger.warning("数据不足: %s 仅 %d 根K线", sym, len(df))
+            print(f"  ! {sym} K线不足: 仅 {len(df)} 根")
         if (df["Close"] <= 0).any():
-            logger.warning("异常价格: %s 存在零/负收盘价", symbol)
-            print(f"  ! {symbol} 异常价格: 存在零/负值")
+            logger.warning("异常价格: %s 存在零/负收盘价", sym)
+            print(f"  ! {sym} 异常价格: 存在零/负值")
 
-        # Ensure target_date is in the data (use latest available if not)
-        if target_date not in df.index.strftime("%Y-%m-%d"):
-            latest = df.index[-1].strftime("%Y-%m-%d")
-            target_bar_date = latest
-        else:
-            target_bar_date = target_date
+    # --- display signals grouped by symbol ---
+    symbol_groups: dict[str, list[dict]] = {}
+    for r in results:
+        symbol_groups.setdefault(r["symbol"], []).append(r)
 
-        symbol_signals = []  # collect signal lines for this symbol
+    active_by_symbol = {}
+    for item in config.get("watchlist", []):
+        active_by_symbol[item["symbol"]] = item.get("active", "")
 
-        for strat_name in strategy_names:
-            if strat_name not in STRATEGY_MAP:
-                logger.warning("未知策略: %s", strat_name)
-                continue
+    for sym, group in symbol_groups.items():
+        active_strat = active_by_symbol.get(sym, "")
+        bar_date = group[0]["bar_date"] if group else ""
+        name = group[0]["name"] if group else sym
 
-            strat_params = config.get("strategy", {}).get(strat_name, {})
-            strategy = STRATEGY_MAP[strat_name](**strat_params)
+        signal_lines = []
+        for r in group:
+            label = SIGNAL_LABEL.get(r["signal"], str(r["signal"]))
+            if r["signal"] != 0:
+                tag = " ★" if r["strategy"] == active_strat else "  "
+                signal_lines.append(
+                    f"  {r['strategy']:<20s}  {label:<5s}  "
+                    f"价格: {r['price']:.2f}  ATR: {r['atr']:.2f}{tag}"
+                )
 
-            try:
-                df_sig = strategy.calculate_indicators(df)
-            except Exception as e:
-                print(f"  ✗ {strat_name}: 计算失败 — {e}")
-                continue
-
-            # Get last row with valid signal
-            last_idx = -1
-            price = float(df_sig["Close"].iloc[last_idx])
-            atr = float(df_sig["ATR"].iloc[last_idx]) if "ATR" in df_sig.columns else 0
-            signal = int(df_sig["Signal"].iloc[last_idx])
-
-            # Collect indicator snapshot
-            indicators = {}
-            for col in df_sig.columns:
-                if col not in ("Open", "High", "Low", "Close", "Volume", "Signal"):
-                    val = df_sig[col].iloc[last_idx]
-                    if isinstance(val, (float, int)) and not pd.isna(val):
-                        indicators[col] = round(float(val), 4)
-
-            label = SIGNAL_LABEL.get(signal, str(signal))
-            if signal != 0:
-                tag = " ★" if strat_name == active_strat else "  "
-                symbol_signals.append(f"  {strat_name:<20s}  {label:<5s}  价格: {price:.2f}  ATR: {atr:.2f}{tag}")
-
-            # Save to DB
-            cache.save_signal(
-                scan_date=target_date,
-                symbol=symbol,
-                strategy=strat_name,
-                bar_date=target_bar_date,
-                signal=signal,
-                price=price,
-                atr=atr,
-                indicators=json.dumps(indicators, ensure_ascii=False),
-            )
-            results.append({
-                "symbol": symbol,
-                "name": name,
-                "strategy": strat_name,
-                "signal": signal,
-                "price": price,
-                "atr": atr,
-                "bar_date": target_bar_date,
-                "indicators": indicators,
-            })
-
-        if symbol_signals:
+        if signal_lines:
             print(f"\n{'─' * 60}")
-            print(f"  {symbol}  {name}  ({target_bar_date})")
+            print(f"  {sym}  {name}  ({bar_date})")
             print(f"{'─' * 60}")
-            for line in symbol_signals:
+            for line in signal_lines:
                 print(line)
 
     return results
@@ -165,7 +124,6 @@ def scan_day(
 def print_summary(results: list[dict]):
     """Print a compact summary — one row per symbol, buy/sell columns with wrapping."""
 
-    # Group by symbol
     grouped: dict[str, dict] = {}
     for r in results:
         sym = r["symbol"]
@@ -178,7 +136,6 @@ def print_summary(results: list[dict]):
             grouped[sym]["sell"].append(r["strategy"])
             grouped[sym]["price"] = grouped[sym]["price"] or r["price"]
 
-    # Filter to symbols with signals
     active = {k: v for k, v in grouped.items() if v["buy"] or v["sell"]}
     if not active:
         print("\n  今日无买入/卖出信号\n")
@@ -219,6 +176,7 @@ def print_summary(results: list[dict]):
 # ---------------------------------------------------------------------------
 
 def show_history(cache: CacheManager = None, days: int = 7):
+    """Display recent signal history from the cache."""
     if cache is None:
         cache = CacheManager()
     since = (date.today() - timedelta(days=days)).isoformat()
@@ -239,41 +197,39 @@ def show_history(cache: CacheManager = None, days: int = 7):
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# CLI entry point
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="每日量化回溯扫描")
-    parser.add_argument("--date", help="扫描日期 (YYYY-MM-DD)，默认今天")
-    parser.add_argument("--config", default="watchlist.toml", help="配置文件路径")
-    parser.add_argument("--history", action="store_true", help="显示近期信号历史")
-    parser.add_argument("--days", type=int, default=7, help="历史查询天数 (默认7)")
-    parser.add_argument("--notify", action="store_true", help="推送结果到飞书")
+    parser = argparse.ArgumentParser(description="mytrader daily signal scanner")
+    parser.add_argument("--date", type=str, help="Target date (YYYY-MM-DD), default today")
+    parser.add_argument("--history", action="store_true", help="Show recent signal history")
+    parser.add_argument("--config", type=str, default="watchlist.toml", help="Config file path")
+    parser.add_argument("--notify", action="store_true", help="Send signal card via Feishu")
     args = parser.parse_args()
 
+    # Ensure we run from the project root
     os.chdir(Path(__file__).parent)
 
-    cache = CacheManager()
+    config = load_config(args.config)
+    target_date = args.date or date.today().isoformat()
 
     if args.history:
-        show_history(cache, args.days)
+        cache = CacheManager()
+        show_history(cache, target_date)
         return
 
-    config = load_config(args.config)
-    target_date = args.date if args.date else date.today().isoformat()
-    logger.info("每日回溯开始 — %s", target_date)
-    print(f"每日回溯 — {target_date}")
-    results = scan_day(config, target_date=target_date, cache=cache)
+    provider = DataProvider()
+    cache = CacheManager()
+    results = scan_day(config, target_date=target_date, provider=provider, cache=cache)
+
     print_summary(results)
 
     if args.notify and results:
         notifier = Notifier()
-        active = [r for r in results if r["signal"] != 0]
-        notifier.signal_card(active, scan_date=target_date)
-        buy_n = sum(1 for r in results if r["signal"] == 1)
-        sell_n = sum(1 for r in results if r["signal"] == -1)
-        notifier.daily_summary(buy_n, sell_n, len(results))
-        logger.info("飞书通知已发送")
+        signals_with_signal = [r for r in results if r["signal"] != 0]
+        if signals_with_signal:
+            notifier.send_signal_card(signals_with_signal)
 
 
 if __name__ == "__main__":
