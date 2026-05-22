@@ -209,15 +209,8 @@ with tab_single:
 
                 # Plot equity curve
                 import matplotlib.pyplot as plt
-
-                # Configure Chinese font rendering
-                for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-                    try:
-                        plt.rcParams["font.sans-serif"] = [font]
-                        break
-                    except Exception:
-                        continue
-                plt.rcParams["axes.unicode_minus"] = False
+                from utils.font import setup_chinese_font
+                setup_chinese_font()
 
                 fig, ax = plt.subplots(figsize=(10, 4))
                 eq = result.equity_curve
@@ -449,13 +442,8 @@ with tab_portfolio:
     # --- Equity curve + Drawdown ---
     import matplotlib.pyplot as plt
 
-    for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-        try:
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except Exception:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
+    from utils.font import setup_chinese_font
+    setup_chinese_font()
 
     fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1]})

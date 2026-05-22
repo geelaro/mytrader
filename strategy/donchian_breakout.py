@@ -36,6 +36,8 @@ class DonchianBreakout(BaseStrategy):
     """Entry: close > highest high of last N bars. Exit: trailing stop or
     close < channel midpoint."""
 
+    regime = "trend"
+
     params: DonchianBreakoutParams
 
     def __init__(self, **kwargs):

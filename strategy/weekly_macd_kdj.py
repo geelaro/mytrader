@@ -39,6 +39,8 @@ class WeeklyMACD_KDJ(BaseStrategy):
     Exit:  MACD line crosses below signal line (MACD death cross).
     """
 
+    regime = "trend"
+
     params: WeeklyMACDKDJParams
 
     def __init__(self, **kwargs):

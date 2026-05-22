@@ -45,6 +45,8 @@ class TurtleTrading(BaseStrategy):
     Exit uses a Chandelier trailing stop from the highest price since entry.
     """
 
+    regime = "trend"
+
     params: TurtleTradingParams
 
     def __init__(self, **kwargs):

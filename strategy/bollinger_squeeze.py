@@ -45,6 +45,8 @@ class BollingerSqueezeParams(StrategyParams):
 class BollingerSqueeze(BaseStrategy):
     """Wait for volatility contraction (squeeze), then enter on upward breakout."""
 
+    regime = "trend"
+
     params: BollingerSqueezeParams
 
     def __init__(self, **kwargs):

@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import List, Optional, Tuple
 
 import utils  # noqa: F401 — triggers env setup
+from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -694,13 +695,7 @@ class PortfolioResult:
 
     def plot(self, save_path: str = "charts/portfolio_result.png"):
         try:
-            for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-                try:
-                    plt.rcParams["font.sans-serif"] = [font]
-                    break
-                except Exception:
-                    continue
-            plt.rcParams["axes.unicode_minus"] = False
+            setup_chinese_font()
         except Exception:
             pass
 

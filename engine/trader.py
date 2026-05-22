@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import utils  # noqa: F401 - triggers env setup before matplotlib
+from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -486,13 +487,7 @@ def print_result(result):
 def plot_result(result, df, symbol="AAPL", save_path=None):
     """Plot backtest results: price + trades, equity curve, drawdown."""
     try:
-        for font in ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']:
-            try:
-                plt.rcParams['font.sans-serif'] = [font]
-                break
-            except Exception:
-                continue
-        plt.rcParams['axes.unicode_minus'] = False
+        setup_chinese_font()
     except Exception:
         pass
 

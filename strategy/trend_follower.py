@@ -40,6 +40,8 @@ class TrendFollower(BaseStrategy):
            (highest_since_entry − trail_atr_mult × ATR).
     """
 
+    regime = "trend"
+
     params: TrendFollowerParams
 
     def __init__(self, **kwargs):

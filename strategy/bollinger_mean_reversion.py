@@ -43,6 +43,8 @@ class BollingerMeanReversionParams(StrategyParams):
 class BollingerMeanReversion(BaseStrategy):
     """Buy at lower BB when RSI is oversold and turning up; sell at mid-BB."""
 
+    regime = "mean_reversion"
+
     params: BollingerMeanReversionParams
 
     def __init__(self, **kwargs):

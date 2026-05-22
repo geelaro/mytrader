@@ -52,6 +52,8 @@ class EnhancedMACDStrategy(BaseStrategy):
            MA death cross.
     """
 
+    regime = "trend"
+
     params: EnhancedMACDParams
 
     def __init__(self, **kwargs):

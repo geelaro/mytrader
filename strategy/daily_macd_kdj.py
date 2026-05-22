@@ -48,6 +48,8 @@ class DailyMACD_KDJ(BaseStrategy):
     provides downside protection between exit signals.
     """
 
+    regime = None
+
     params: DailyMACDKDJParams
 
     def __init__(self, **kwargs):

@@ -56,9 +56,13 @@ class BaseStrategy(ABC):
     3. `check_exit(...)` — exit conditions (default: Signal == -1)
     4. `position_size(...)` — position sizing (default: 95 % of capital)
     5. `entry_signal(...)` — entry trigger (default: Signal == 1)
+
+    Optional class attributes:
+    6. `regime` — "trend" | "mean_reversion" | None (mixed/unrestricted)
     """
 
     params: StrategyParams  # set by __init_subclass__ or constructor
+    regime: Optional[str] = None  # "trend", "mean_reversion", or None for mixed
 
     def __init__(self, params: Optional[StrategyParams] = None):
         if params is not None:

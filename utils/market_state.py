@@ -40,21 +40,17 @@ class MarketState:
     bb_width_pct: float
 
 
-# When adding a new strategy to STRATEGY_MAP, also classify it here.
-_TREND_STRATEGIES = {
-    "enhanced_macd", "trend_follower", "weekly_macd", "weekly_macd_kdj",
-    "donchian_breakout", "atr_breakout", "bollinger_squeeze", "turtle_trading",
-}
-_MEAN_REVERSION_STRATEGIES = {"bollinger_mean_reversion"}
-# daily_macd_kdj is mixed — not restricted by regime
+from strategy import STRATEGY_MAP
 
 
 def is_trend_strategy(name: str) -> bool:
-    return name in _TREND_STRATEGIES
+    cls = STRATEGY_MAP.get(name)
+    return getattr(cls, "regime", None) == "trend" if cls else False
 
 
 def is_mean_reversion_strategy(name: str) -> bool:
-    return name in _MEAN_REVERSION_STRATEGIES
+    cls = STRATEGY_MAP.get(name)
+    return getattr(cls, "regime", None) == "mean_reversion" if cls else False
 
 
 class MarketStateClassifier:

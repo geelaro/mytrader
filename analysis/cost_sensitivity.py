@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import utils  # noqa: F401 - triggers env setup before matplotlib
+from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -38,17 +39,6 @@ SLIPPAGE_GRID = [0.0001, 0.0005, 0.001, 0.002, 0.005]  # 1bp ~ 50bp
 def _pivot(df: pd.DataFrame, column: str) -> pd.DataFrame:
     """Pivot long-format grid result into a matrix (rows=commission, cols=slippage)."""
     return df.pivot(index="commission", columns="slippage", values=column)
-
-
-def _setup_chinese_font():
-    """Configure matplotlib for Chinese font rendering."""
-    for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-        try:
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except Exception:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +109,7 @@ def rate_feasibility(df: pd.DataFrame) -> dict:
 def plot_heatmap(df: pd.DataFrame, strategy: str, symbol: str,
                  save_path: Optional[str] = None):
     """Plot dual heatmap: return_pct + sharpe over commission × slippage grid."""
-    _setup_chinese_font()
+    setup_chinese_font()
 
     metrics = [
         ("return_pct", "总收益率 (%)", "RdYlGn"),

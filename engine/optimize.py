@@ -15,6 +15,7 @@ from datetime import date, datetime
 from typing import Optional
 
 import utils  # noqa: F401 — triggers env setup (encoding, matplotlib backend)
+from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -309,13 +310,7 @@ def print_grid_results(results: list[OptResult], strategy_name: str):
 def plot_heatmap(results: list[OptResult], strategy_name: str, x_key: str, y_key: str):
     """2D heatmap for two-parameter interaction."""
     try:
-        for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-            try:
-                plt.rcParams["font.sans-serif"] = [font]
-                break
-            except Exception:
-                continue
-        plt.rcParams["axes.unicode_minus"] = False
+        setup_chinese_font()
     except Exception:
         pass
 

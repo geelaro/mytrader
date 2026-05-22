@@ -374,19 +374,12 @@ def _make_conclusion(stats: dict, base_oos: dict, base_params: dict, df: pd.Data
 # Visualization
 # ---------------------------------------------------------------------------
 
-def _setup_chinese_font():
-    for font in ["Microsoft YaHei", "SimHei", "DejaVu Sans"]:
-        try:
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except Exception:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
+from utils.font import setup_chinese_font
 
 
 def plot(results: dict, save_path: Optional[str] = None):
     """Box-plot of OOS return distribution by perturbed parameter."""
-    _setup_chinese_font()
+    setup_chinese_font()
 
     df = results["oos_results"]
     param_cols = [c for c in df.columns if c.startswith("p_")]

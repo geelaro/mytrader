@@ -29,6 +29,8 @@ class WeeklyMACD(BaseStrategy):
     No stop-loss, no take-profit.
     """
 
+    regime = "trend"
+
     params: WeeklyMACDParams
 
     def __init__(self, **kwargs):

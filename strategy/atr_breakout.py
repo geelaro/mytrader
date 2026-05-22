@@ -45,6 +45,8 @@ class ATRBreakoutParams(StrategyParams):
 class ATRBreakout(BaseStrategy):
     """Entry: close crosses above MA + N*ATR. Exit: Chandelier trailing stop."""
 
+    regime = "trend"
+
     params: ATRBreakoutParams
 
     def __init__(self, **kwargs):
