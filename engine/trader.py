@@ -394,33 +394,6 @@ from strategy import (
 # Backtest runner & visualization
 # ---------------------------------------------------------------------------
 
-def _synthetic_ohlcv(symbol, start, end, seed=42):
-    """Generate realistic synthetic OHLCV data when all data sources are unavailable."""
-    np.random.seed(seed)
-    start_date = pd.Timestamp(start)
-    end_date = pd.Timestamp(end)
-    dates = pd.bdate_range(start=start_date, end=end_date)
-
-    base_price = 130.0 if symbol == "AAPL" else 100.0
-    n = len(dates)
-    daily_ret = np.random.normal(0.0003, 0.018, n)
-    prices = base_price * np.cumprod(1 + daily_ret)
-
-    data = []
-    for d, close in zip(dates, prices):
-        daily_range = close * np.random.uniform(0.01, 0.04)
-        high = close + daily_range * np.random.uniform(0.3, 1.0)
-        low = close - daily_range * np.random.uniform(0.3, 1.0)
-        open_p = low + np.random.uniform(0, high - low)
-        volume = int(np.random.uniform(30_000_000, 120_000_000))
-        data.append({
-            'Date': d, 'Open': round(open_p, 2), 'High': round(high, 2),
-            'Low': round(low, 2), 'Close': round(close, 2), 'Volume': volume
-        })
-
-    df = pd.DataFrame(data).set_index('Date')
-    print(f"  注意: 使用模拟数据 ({symbol}, {n} 根K线)，所有数据源均不可用")
-    return df
 
 
 def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
@@ -450,10 +423,8 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
     provider = DataProvider()
     df = provider.get_daily(symbol, start=start, end=end)
     if df is None or df.empty:
-        print(f"  !! 未能获取 {symbol} 数据, 使用模拟数据")
-        df = _synthetic_ohlcv(symbol, start, end)
-    else:
-        print(f"  OK: {len(df)} 根K线")
+        raise RuntimeError(f"无法获取 {symbol} 数据 ({start} ~ {end})，数据管线全部失败")
+    print(f"  OK: {len(df)} 根K线")
 
     df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
 
