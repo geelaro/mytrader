@@ -186,10 +186,10 @@ class DataProvider:
     def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
         """Heuristic: does *df* cover up to the requested end date?
 
-        Only checks tail recency — gap detection is delegated to
-        ``missing_ranges`` which fetches missing segments incrementally.
-        Internal gaps from exchange holidays (Fri→Tue = 4 days) are
-        expected and must not trigger a full refetch.
+        Tail recency: last cached bar within 3 days of *end* (covers weekends).
+        Internal holes: gaps > 7 calendar days trigger re-fetch.  A 7-day
+        threshold lets normal exchange holidays pass (Fri→Tue = 4 days) while
+        catching genuine missing months of data.
         """
         if df is None or df.empty:
             return False
@@ -197,4 +197,10 @@ class DataProvider:
         expected_last = pd.Timestamp(end)
         if last < expected_last - pd.Timedelta(days=3):
             return False
+
+        dates = pd.DatetimeIndex(df.index).sort_values().normalize()
+        if len(dates) > 1:
+            max_gap_days = dates.to_series().diff().dt.days.max()
+            if pd.notna(max_gap_days) and max_gap_days > 7:
+                return False
         return True
