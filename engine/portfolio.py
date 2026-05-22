@@ -114,6 +114,7 @@ class PortfolioBacktest:
         self.execution_model = execution_model
         self.max_symbol_weight = max_symbol_weight
         self.max_daily_new_positions = max_daily_new_positions
+        self._rejections: list[dict] = []
         self.max_gross_exposure = max_gross_exposure
         self.lot_size = lot_size
         self.max_participation_rate = max_participation_rate
@@ -123,8 +124,14 @@ class PortfolioBacktest:
         self.max_sector_weight = max_sector_weight
         self.sector_map = sector_map or {}
         self.cooldown_after_stop_days = cooldown_after_stop_days
-        self._rejections: list = []
         self._stop_dates: dict[str, Optional[pd.Timestamp]] = {}
+
+    def _reject(self, date_idx, symbol: str, reason: str, detail: str = "") -> None:
+        """Record a rejection and return — used in risk gate chains."""
+        self._rejections.append({
+            "date": date_idx, "symbol": symbol,
+            "reason": reason, "detail": detail,
+        })
 
     def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
         """Return position size such that stop_distance loss = risk_per_trade % of capital."""
@@ -277,10 +284,8 @@ class PortfolioBacktest:
                       and st["strategy"].entry_signal(df_sig, idx_pos)):
                     active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
                     if active_positions >= self.max_positions:
-                        self._rejections.append({
-                            "date": date_idx, "symbol": st["leg"].symbol,
-                            "reason": "仓位上限", "detail": f"活跃仓位{active_positions}≥{self.max_positions}",
-                        })
+                        self._reject(date_idx, st["leg"].symbol, "仓位上限",
+                                     f"活跃仓位{active_positions}≥{self.max_positions}")
                         continue
 
                     # Compute current equity for dynamic allocation & risk checks
@@ -295,10 +300,8 @@ class PortfolioBacktest:
                         if last_stop is not None:
                             days_since = (date_idx - last_stop).days
                             if days_since < self.cooldown_after_stop_days:
-                                self._rejections.append({
-                                    "date": date_idx, "symbol": sym,
-                                    "reason": "冷却期", "detail": f"距止损{days_since}天 (<{self.cooldown_after_stop_days})",
-                                })
+                                self._reject(date_idx, sym, "冷却期",
+                                             f"距止损{days_since}天 (<{self.cooldown_after_stop_days})")
                                 continue
 
                     # --- risk: sector weight ---
@@ -313,19 +316,14 @@ class PortfolioBacktest:
                         entry_cost = price * (1 + self.slippage_pct) * (1 + self.commission_rate)
                         new_exposure = (sector_exposure + (alloc if alloc > 0 else 0)) / max(current_equity, 1)
                         if new_exposure > self.max_sector_weight:
-                            self._rejections.append({
-                                "date": date_idx, "symbol": sym,
-                                "reason": "行业权重",
-                                "detail": f"{sector}敞口{new_exposure*100:.0f}% > {self.max_sector_weight*100:.0f}%",
-                            })
+                            self._reject(date_idx, sym, "行业权重",
+                                         f"{sector}敞口{new_exposure*100:.0f}% > {self.max_sector_weight*100:.0f}%")
                             continue
 
                     # Portfolio risk: max_daily_new_positions
                     if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
-                        self._rejections.append({
-                            "date": date_idx, "symbol": sym,
-                            "reason": "日开仓上限", "detail": f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})",
-                        })
+                        self._reject(date_idx, sym, "日开仓上限",
+                                     f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})")
                         continue
 
                     alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
@@ -346,11 +344,8 @@ class PortfolioBacktest:
                         # Portfolio risk: max_symbol_weight
                         if self.max_symbol_weight > 0 and current_equity > 0:
                             if cost / current_equity > self.max_symbol_weight:
-                                self._rejections.append({
-                                    "date": date_idx, "symbol": sym,
-                                    "reason": "标的上限",
-                                    "detail": f"{sym}占比{cost/current_equity*100:.0f}% > {self.max_symbol_weight*100:.0f}%",
-                                })
+                                self._reject(date_idx, sym, "标的上限",
+                                             f"{sym}占比{cost/current_equity*100:.0f}% > {self.max_symbol_weight*100:.0f}%")
                                 continue
 
                         # Portfolio risk: max_gross_exposure
@@ -359,11 +354,8 @@ class PortfolioBacktest:
                                 s["position"] * s.get("last_price", 0) for s in leg_state.values()
                             )
                             if (existing_exposure + cost) / current_equity > self.max_gross_exposure:
-                                self._rejections.append({
-                                    "date": date_idx, "symbol": sym,
-                                    "reason": "总敞口上限",
-                                    "detail": f"总敞口{(existing_exposure+cost)/current_equity*100:.0f}% > {self.max_gross_exposure*100:.0f}%",
-                                })
+                                self._reject(date_idx, sym, "总敞口上限",
+                                             f"总敞口{(existing_exposure+cost)/current_equity*100:.0f}% > {self.max_gross_exposure*100:.0f}%")
                                 continue
 
                         if cost <= cash and qty > 0:
