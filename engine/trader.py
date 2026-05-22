@@ -12,6 +12,8 @@ import pandas as pd
 warnings.filterwarnings('ignore')
 
 from data import DataProvider
+from broker import OrderSide, OrderStatus
+from engine.execution import ExecutionConfig, ExecutionModel, ExecutionTiming
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -68,10 +70,18 @@ class BacktestEngine:
 
     def __init__(self, initial_capital=10000, commission_rate=0.0003, slippage_pct=0.0001,
                  sizing_mode="fixed_capital", risk_per_trade=0.005, risk_atr_mult=2.0,
-                 cooldown_after_stop_days: int = 0):
+                 cooldown_after_stop_days: int = 0, execution_model: ExecutionModel | None = None,
+                 execution_timing: str = "next_open"):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.slippage_pct = slippage_pct
+        if execution_model is None:
+            execution_model = ExecutionModel(ExecutionConfig(
+                timing=ExecutionTiming(execution_timing),
+                slippage_pct=slippage_pct,
+                commission_rate=commission_rate,
+            ))
+        self.execution_model = execution_model
         self.sizing_mode = sizing_mode
         self.risk_per_trade = risk_per_trade
         self.risk_atr_mult = risk_atr_mult
@@ -122,6 +132,39 @@ class BacktestEngine:
         self.current_entry = {'date': date, 'price': actual_price, 'quantity': quantity}
         return True
 
+    def _apply_buy_fill(self, fill) -> bool:
+        if fill.filled_qty <= 0 or fill.fill_price <= 0:
+            return False
+        total_cost = fill.gross_value + fill.commission
+        if total_cost > self.cash:
+            affordable = int(self.cash / (fill.fill_price * (1 + self.commission_rate)))
+            if affordable <= 0:
+                return False
+            fill.filled_qty = min(fill.filled_qty, affordable)
+            fill.gross_value = fill.fill_price * fill.filled_qty
+            fill.commission = fill.gross_value * self.commission_rate
+            total_cost = fill.gross_value + fill.commission
+        self.cash -= total_cost
+        old_qty = self.position
+        old_entry = self.current_entry
+        self.position += fill.filled_qty
+        if old_entry and old_qty > 0:
+            avg_price = (
+                old_entry['price'] * old_qty + fill.fill_price * fill.filled_qty
+            ) / self.position
+            self.current_entry = {
+                'date': old_entry['date'],
+                'price': avg_price,
+                'quantity': self.position,
+            }
+        else:
+            self.current_entry = {
+                'date': fill.date,
+                'price': fill.fill_price,
+                'quantity': fill.filled_qty,
+            }
+        return True
+
     def sell(self, date, price, quantity=None, reason='signal'):
         if quantity is None:
             quantity = self.position
@@ -163,6 +206,33 @@ class BacktestEngine:
                 self.current_entry = None
             if trade and trade.exit_reason.startswith("止损"):
                 self._last_stop_date = date
+        return trade
+
+    def _apply_sell_fill(self, fill, reason='signal'):
+        if fill.filled_qty <= 0 or self.position <= 0:
+            return None
+        quantity = min(fill.filled_qty, self.position)
+        proceeds = fill.fill_price * quantity - fill.fill_price * quantity * self.commission_rate
+        self.cash += proceeds
+        self.position -= quantity
+
+        trade = None
+        if self.current_entry and self.current_entry['quantity'] > 0:
+            e = self.current_entry
+            trade = Trade(
+                entry_date=e['date'], exit_date=fill.date,
+                entry_price=e['price'], exit_price=fill.fill_price,
+                quantity=quantity,
+                pnl=(fill.fill_price - e['price']) * quantity,
+                pnl_pct=(fill.fill_price / e['price'] - 1) * 100,
+                exit_reason=reason)
+            self.trades.append(trade)
+            if self.position == 0:
+                self.current_entry = None
+            else:
+                self.current_entry = {**e, 'quantity': e['quantity'] - quantity}
+            if trade and trade.exit_reason.startswith("止损"):
+                self._last_stop_date = fill.date
         return trade
 
     def update(self, date, price):
@@ -226,7 +296,7 @@ class BacktestEngine:
             Buy-and-hold returns of the close price over the backtest period.
         """
         highest = 0.0
-        pending_order: Optional[dict] = None
+        pending_order = None
 
         for i in range(strategy.min_bars, len(df)):
             date_idx = df.index[i]
@@ -235,16 +305,30 @@ class BacktestEngine:
             atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
 
             if pending_order is not None:
-                if pending_order["side"] == "buy" and self.position == 0:
-                    if self.buy(date_idx, open_price, pending_order["quantity"]):
-                        highest = open_price
-                elif pending_order["side"] == "sell" and self.position > 0:
-                    self.sell(date_idx, open_price, reason=pending_order["reason"])
-                    # Prevent re-entry on the execution bar after an exit.
-                    self.update(date_idx, close_price)
-                    pending_order = None
-                    continue
-                pending_order = None
+                # --- execution bar: apply pending order, then skip to next ---
+                fill = self.execution_model.execute_bar(
+                    pending_order,
+                    df.iloc[i],
+                    date_idx,
+                    i,
+                    available_qty=self.position if pending_order.side == OrderSide.SELL else None,
+                )
+                if pending_order.side == OrderSide.BUY:
+                    if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                        if self._apply_buy_fill(fill):
+                            highest = fill.fill_price
+                            pending_order.quantity -= fill.filled_qty
+                    if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending_order.quantity <= 0:
+                        pending_order = None
+                elif pending_order.side == OrderSide.SELL:
+                    if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                        self._apply_sell_fill(fill, reason=pending_order.reason)
+                    if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or self.position == 0:
+                        pending_order = None
+                # Execution bar is a pure fill bar — no signal evaluation,
+                # no partial-fill remainder override risk.
+                self.update(date_idx, close_price)
+                continue
 
             if self.position > 0 and self.current_entry:
                 if close_price > highest:
@@ -256,7 +340,13 @@ class BacktestEngine:
                     position=self.current_entry,
                 )
                 if exit_now:
-                    pending_order = {"side": "sell", "reason": reason}
+                    pending_order = self.execution_model.make_plan(
+                        symbol="",
+                        side=OrderSide.SELL,
+                        quantity=self.position,
+                        created_index=i,
+                        reason=reason,
+                    )
 
             elif strategy.entry_signal(df, i) and self.position == 0 and i < len(df) - 1:
                 entry_allowed = True
@@ -276,7 +366,12 @@ class BacktestEngine:
                     else:
                         qty = strategy.position_size(self.cash, close_price, atr)
                     if qty > 0:
-                        pending_order = {"side": "buy", "quantity": qty}
+                        pending_order = self.execution_model.make_plan(
+                            symbol="",
+                            side=OrderSide.BUY,
+                            quantity=qty,
+                            created_index=i,
+                        )
 
             self.update(date_idx, close_price)
 

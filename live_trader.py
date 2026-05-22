@@ -39,6 +39,7 @@ from broker import (
     OrderType,
     Position,
 )
+from engine.execution import ExecutionConfig, ExecutionModel, ExecutionStyle, ExecutionTiming
 from utils import get_logger, load_toml
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 from utils.signal_gate import SignalGate
@@ -120,6 +121,7 @@ class LiveTrader:
         self.cache = CacheManager()
         self.provider = DataProvider(cache=self.cache)
         self.risk = RiskLimits.from_config(self.config)
+        self.execution_model = self._load_execution_model(self.config)
         self.notifier = notifier or Notifier(dry_run=True)
         self._entry_prices: Dict[str, float] = {}  # for circuit breaker tracking
         self._orphan_strategy = self.config.get("defaults", {}).get("orphan_strategy", "")
@@ -441,23 +443,26 @@ class LiveTrader:
 
                 qty = self._gate.vol_scaled_qty(sig["_qty"])
                 if self._passes_risk(sig, qty, account):
-                    orders.append(Order(
+                    plan = self.execution_model.make_plan(
                         symbol=sym,
                         side=OrderSide.BUY,
-                        order_type=OrderType.MARKET,
                         quantity=qty,
-                    ))
+                        created_index=0,
+                    )
+                    orders.append(self.execution_model.to_broker_order(plan))
                 else:
                     print(f"  ! {sym} 风控检查未通过，跳过")
 
             elif sig["signal"] == -1 and has_position:
                 # Sell signal + has position → SELL
-                orders.append(Order(
+                plan = self.execution_model.make_plan(
                     symbol=sym,
                     side=OrderSide.SELL,
-                    order_type=OrderType.MARKET,
                     quantity=abs(pos.quantity),
-                ))
+                    created_index=0,
+                    reason=sig.get("strategy", "signal"),
+                )
+                orders.append(self.execution_model.to_broker_order(plan))
 
         return orders
 
@@ -746,6 +751,20 @@ class LiveTrader:
         return load_toml(path)
 
     @staticmethod
+    def _load_execution_model(config: dict) -> ExecutionModel:
+        ec = config.get("execution", {})
+        timing = ExecutionTiming(ec.get("timing", "next_open"))
+        style = ExecutionStyle(ec.get("style", "market"))
+        return ExecutionModel(ExecutionConfig(
+            timing=timing,
+            style=style,
+            slippage_pct=ec.get("slippage_pct", 0.0005),
+            commission_rate=ec.get("commission_rate", 0.0003),
+            limit_timeout_seconds=ec.get("limit_timeout_seconds", 300),
+            market_timeout_seconds=ec.get("market_timeout_seconds", 60),
+        ))
+
+    @staticmethod
     def _print_order(order: Order):
         print(f"  [DRY-RUN] {order.side.value} {order.symbol} "
               f"{order.quantity}股 "
@@ -772,7 +791,7 @@ class LiveTrader:
 
         # Poll for completion
         is_limit = order.order_type == OrderType.LIMIT
-        timeout_s = 300 if is_limit else 60  # 5 min for limit, 60 s for market
+        timeout_s = self.execution_model.timeout_seconds(order)
         poll_interval = 3
         elapsed = 0
 

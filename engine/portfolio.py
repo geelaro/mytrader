@@ -17,8 +17,10 @@ import numpy as np
 import pandas as pd
 
 from data import DataProvider
+from broker import OrderSide, OrderStatus
 from strategy import BaseStrategy, STRATEGY_MAP as _STRATEGY_MAP
 from engine.trader import BacktestEngine, BacktestResult
+from engine.execution import ExecutionConfig, ExecutionModel, ExecutionTiming
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,8 @@ class PortfolioBacktest:
         sizing_mode: str = "fixed_capital",
         risk_per_trade: float = 0.005,
         risk_atr_mult: float = 2.0,
+        execution_model: ExecutionModel | None = None,
+        execution_timing: str = "next_open",
         # --- enhanced risk ---
         max_sector_weight: float = 0.0,
         sector_map: Optional[dict] = None,
@@ -99,6 +103,14 @@ class PortfolioBacktest:
         self.max_positions = max_positions
         self.commission_rate = commission_rate
         self.slippage_pct = slippage_pct
+        if execution_model is None:
+            execution_model = ExecutionModel(ExecutionConfig(
+                timing=ExecutionTiming(execution_timing),
+                slippage_pct=slippage_pct,
+                commission_rate=commission_rate,
+                max_participation_rate=max_participation_rate,
+            ))
+        self.execution_model = execution_model
         self.max_symbol_weight = max_symbol_weight
         self.max_daily_new_positions = max_daily_new_positions
         self.max_gross_exposure = max_gross_exposure
@@ -205,33 +217,38 @@ class PortfolioBacktest:
 
                 pending = st.get("pending_order")
                 if pending is not None:
-                    if pending["side"] == "sell" and st["position"] > 0:
-                        cash = self._close_trade(
-                            st, date_idx, open_price, pending["reason"],
-                            open_trade_idx, trades, i, cash,
-                        )
-                        st["pending_order"] = None
-                        continue
-                    if pending["side"] == "buy" and st["position"] == 0:
-                        qty = pending["qty"]
-                        actual_price = open_price * (1 + self.slippage_pct)
-                        cost = actual_price * qty * (1 + self.commission_rate)
-                        if cost <= cash and qty > 0:
-                            cash -= cost
-                            st["position"] = qty
-                            st["entry_price"] = actual_price
-                            st["highest"] = open_price
-                            st["capital_allocated"] = cost
-
-                            trade = PortfolioTrade(
-                                symbol=st["leg"].symbol,
-                                entry_time=date_idx,
-                                qty=qty,
-                                entry_price=actual_price,
+                    fill = self.execution_model.execute_bar(
+                        pending,
+                        row,
+                        date_idx,
+                        idx_pos,
+                        available_qty=st["position"] if pending.side == OrderSide.SELL else None,
+                    )
+                    if pending.side == OrderSide.SELL and st["position"] > 0:
+                        if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                            cash = self._apply_close_fill(
+                                st, fill, pending.reason,
+                                open_trade_idx, trades, i, cash,
                             )
-                            trades.append(trade)
-                            open_trade_idx[i] = len(trades) - 1
-                    st["pending_order"] = None
+                            pending.quantity -= fill.filled_qty
+                        if (fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED)
+                                or st["position"] == 0):
+                            st["pending_order"] = None
+                        continue
+                    if pending.side == OrderSide.BUY:
+                        if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                            if self._apply_open_fill(st, fill, trades, open_trade_idx, i, cash):
+                                cash += fill.net_cash_delta
+                                pending.quantity -= fill.filled_qty
+                        if (fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED)
+                                or pending.quantity <= 0):
+                            st["pending_order"] = None
+                        total_equity += st["position"] * price
+                        continue
+                    elif fill.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                        st["pending_order"] = None
+                        total_equity += st["position"] * price
+                        continue
 
                 # Exit check
                 if st["position"] > 0:
@@ -244,7 +261,13 @@ class PortfolioBacktest:
                         highest_since_entry=st["highest"],
                     )
                     if exit_now:
-                        st["pending_order"] = {"side": "sell", "reason": reason}
+                        st["pending_order"] = self.execution_model.make_plan(
+                            symbol=st["leg"].symbol,
+                            side=OrderSide.SELL,
+                            quantity=st["position"],
+                            created_index=idx_pos,
+                            reason=reason,
+                        )
 
                 # Entry check
                 elif (st["position"] == 0
@@ -343,7 +366,12 @@ class PortfolioBacktest:
                                 continue
 
                         if cost <= cash and qty > 0:
-                            st["pending_order"] = {"side": "buy", "qty": qty}
+                            st["pending_order"] = self.execution_model.make_plan(
+                                symbol=sym,
+                                side=OrderSide.BUY,
+                                quantity=qty,
+                                created_index=idx_pos,
+                            )
                             daily_new_count += 1
 
                 total_equity += st["position"] * price
@@ -412,6 +440,86 @@ class PortfolioBacktest:
         # Track stop-loss exit for cooldown
         if reason.startswith("止损"):
             self._stop_dates[st["leg"].symbol] = date_idx
+        return cash
+
+    def _apply_open_fill(
+        self,
+        st: dict,
+        fill,
+        trades: List[PortfolioTrade],
+        open_trade_idx: dict,
+        leg_index: int,
+        cash: float,
+    ) -> bool:
+        """Apply a backtest fill to open or add to a portfolio leg."""
+        cost = fill.gross_value + fill.commission
+        if cost > cash or fill.filled_qty <= 0:
+            return False
+
+        old_qty = st["position"]
+        st["position"] += fill.filled_qty
+        st["highest"] = max(st.get("highest", 0), fill.fill_price)
+        st["capital_allocated"] += cost
+        if old_qty > 0:
+            st["entry_price"] = (
+                st["entry_price"] * old_qty + fill.fill_price * fill.filled_qty
+            ) / st["position"]
+            if leg_index in open_trade_idx:
+                t = trades[open_trade_idx[leg_index]]
+                t.qty = st["position"]
+                t.entry_price = st["entry_price"]
+        else:
+            st["entry_price"] = fill.fill_price
+            trade = PortfolioTrade(
+                symbol=st["leg"].symbol,
+                entry_time=fill.date,
+                qty=fill.filled_qty,
+                entry_price=fill.fill_price,
+            )
+            trades.append(trade)
+            open_trade_idx[leg_index] = len(trades) - 1
+        return True
+
+    def _apply_close_fill(
+        self,
+        st: dict,
+        fill,
+        reason: str,
+        open_trade_idx: dict,
+        trades: List[PortfolioTrade],
+        leg_index: int,
+        cash: float,
+    ) -> float:
+        """Apply a backtest fill to close or reduce a portfolio leg."""
+        qty = min(fill.filled_qty, st["position"])
+        if qty <= 0:
+            return cash
+        avg_entry_cost = st["capital_allocated"] / st["position"] if st["position"] > 0 else 0
+        entry_cost = avg_entry_cost * qty
+        exit_proceeds = fill.fill_price * qty - fill.fill_price * qty * self.commission_rate
+        cash += exit_proceeds
+        st["position"] -= qty
+        st["capital_allocated"] -= entry_cost
+
+        if leg_index in open_trade_idx:
+            t = trades[open_trade_idx[leg_index]]
+            if st["position"] == 0:
+                t.exit_time = fill.date
+                t.exit_price = fill.fill_price
+                t.pnl = exit_proceeds - entry_cost
+                t.pnl_pct = (t.pnl / entry_cost * 100) if entry_cost > 0 else 0
+                t.reason = reason
+                t.hold_days = (fill.date - t.entry_time).days
+                del open_trade_idx[leg_index]
+            else:
+                t.qty = st["position"]
+
+        if st["position"] == 0:
+            st["capital_allocated"] = 0
+            st["entry_price"] = 0
+            st["highest"] = 0
+        if reason.startswith("止损"):
+            self._stop_dates[st["leg"].symbol] = fill.date
         return cash
 
     def _apply_execution_constraints(

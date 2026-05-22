@@ -133,6 +133,8 @@ class ExecutionModel:
         requested = max(0, int(plan.quantity))
         if requested <= 0:
             return self._result(plan, date, requested, 0, 0.0, OrderStatus.REJECTED, "zero_qty")
+        if not self.due(plan, current_index):
+            return self._result(plan, date, requested, 0, 0.0, OrderStatus.SUBMITTED, "not_due")
 
         style = plan.style or self.config.style
         if style == ExecutionStyle.LIMIT and self.expired(plan, current_index):

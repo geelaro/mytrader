@@ -31,9 +31,9 @@ def test_golden_enhanced_macd_fixed_capital(golden_df):
     r = engine.get_result(df["Close"].pct_change().dropna())
 
     assert r.total_trades == 4, f"trades: {r.total_trades}"
-    assert r.total_return_pct == pytest.approx(-3.1103, abs=0.01), f"return: {r.total_return_pct:.4f}"
-    assert r.sharpe_ratio == pytest.approx(-1.3825, abs=0.01), f"sharpe: {r.sharpe_ratio:.4f}"
-    assert r.max_drawdown_pct == pytest.approx(-3.2145, abs=0.01), f"maxdd: {r.max_drawdown_pct:.4f}"
+    assert r.total_return_pct == pytest.approx(-2.5970, abs=0.01), f"return: {r.total_return_pct:.4f}"
+    assert r.sharpe_ratio == pytest.approx(-1.1506, abs=0.01), f"sharpe: {r.sharpe_ratio:.4f}"
+    assert r.max_drawdown_pct == pytest.approx(-3.1977, abs=0.01), f"maxdd: {r.max_drawdown_pct:.4f}"
 
 
 def test_golden_weekly_macd_kdj_fixed_capital(golden_df):
@@ -67,7 +67,7 @@ def test_golden_turtle_trading_fixed_capital(golden_df):
 # ---------------------------------------------------------------------------
 
 _GOLDEN_RISK_BUDGET = {
-    "enhanced_macd":   {"trades": 4, "return": -1.5344, "sharpe": -1.3950, "maxdd": -1.5860},
+    "enhanced_macd":   {"trades": 4, "return": -1.2794, "sharpe": -1.1579, "maxdd": -1.5769},
     "weekly_macd_kdj": {"trades": 2, "return": -1.0825, "sharpe": -2.4509, "maxdd": -1.8213},
     "turtle_trading":  {"trades": 1, "return": -0.8298, "sharpe": -0.7136, "maxdd": -1.5699},
 }
