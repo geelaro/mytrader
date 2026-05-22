@@ -186,20 +186,15 @@ class DataProvider:
     def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
         """Heuristic: does *df* cover up to the requested end date?
 
-        Checks the tail and obvious internal holes.  This is intentionally a
-        conservative calendar heuristic, not a full exchange calendar.
+        Only checks tail recency — gap detection is delegated to
+        ``missing_ranges`` which fetches missing segments incrementally.
+        Internal gaps from exchange holidays (Fri→Tue = 4 days) are
+        expected and must not trigger a full refetch.
         """
         if df is None or df.empty:
             return False
         last = df.index[-1]
         expected_last = pd.Timestamp(end)
-        # Allow a normal weekend gap (Fri→Mon = 3 days), but trigger fetch if older.
         if last < expected_last - pd.Timedelta(days=3):
             return False
-
-        dates = pd.DatetimeIndex(df.index).sort_values().normalize()
-        if len(dates) > 1:
-            max_gap_days = dates.to_series().diff().dt.days.max()
-            if pd.notna(max_gap_days) and max_gap_days > 3:
-                return False
         return True
