@@ -21,13 +21,21 @@ OPS_SRC_BROKER = "broker"
 
 
 class CacheManager:
-    """SQLite cache for daily OHLCV bars.
+    """Unified local data store — OHLCV cache, signal history, risk state,
+    trade PnL, and operational log.
 
-    Schema
-    ------
-    ohlcv_daily(symbol TEXT, date TEXT, open REAL, high REAL, low REAL,
-                close REAL, volume INTEGER, source TEXT,
-                PRIMARY KEY (symbol, date))
+    ── Organisation ─────────────────────────────────────────────────────
+    OHLCV            load / save / date_range / missing_ranges
+    Signal history   save_signal / query_signals
+    Risk state       save_risk_state / load_risk_state
+    Entry prices     save_entry_price / load_entry_price / load_all /
+                     delete_entry_price
+    Trade PnL        save_trade_pnl / query_trade_pnl
+    Ops log          log_ops
+    ──────────────────────────────────────────────────────────────────────
+    All non-read methods are guarded by a threading.RLock so the single
+    SQLite connection is safe for multi-threaded access (Notifier worker,
+    Streamlit sessions, LiveTrader main loop).
     """
 
     def __init__(self, db_path: str | None = None):
@@ -194,9 +202,9 @@ class CacheManager:
             pass
         self._commit()
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # OHLCV cache
+    # ==================================================================
 
     def load(
         self, symbol: str, start: Optional[str] = None, end: Optional[str] = None
@@ -243,9 +251,9 @@ class CacheManager:
             return None, None
         return row[0], row[1]
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Trade PnL
+    # ==================================================================
 
     def save(
         self, symbol: str, df: pd.DataFrame, source: str = ""
@@ -310,9 +318,9 @@ class CacheManager:
             raise
         return len(db_df)
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Signal history
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     def save_signal(
         self, scan_date: str, symbol: str, strategy: str,
@@ -351,9 +359,9 @@ class CacheManager:
         return [dict(zip(["id", "scan_date", "symbol", "strategy", "bar_date",
                           "signal", "price", "atr", "indicators"], row)) for row in rows]
 
-    # ------------------------------------------------------------------
-    # Risk state persistence
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Risk state
+    # ==================================================================
 
     def save_risk_state(self, key: str, value: str):
         with self._lock:
