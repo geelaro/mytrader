@@ -207,10 +207,16 @@ def compute_bollinger(
     return df
 
 
-def resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
-    """Resample daily OHLCV to weekly (Friday close)."""
+def resample_weekly(df: pd.DataFrame, weekday: str = "FRI") -> pd.DataFrame:
+    """Resample daily OHLCV to weekly (default Friday close).
+
+    Parameters
+    ----------
+    weekday : str
+        Weekday anchor for resample, e.g. ``"FRI"`` (US), ``"WED"`` (some Asian markets).
+    """
     return (
-        df.resample("W-FRI")
+        df.resample(f"W-{weekday}")
         .agg(
             {
                 "Open": "first",

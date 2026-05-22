@@ -60,6 +60,35 @@ class PortfolioTrade:
 
 
 # ---------------------------------------------------------------------------
+# Leg runtime state (replaces dict[str, Any] pattern)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LegState:
+    leg: Leg
+    strategy: object  # BaseStrategy
+    df: pd.DataFrame
+    position: int = 0
+    entry_price: float = 0.0
+    highest: float = 0.0
+    capital_allocated: float = 0.0
+    pending_order: Optional[object] = None  # ExecutionPlan
+    last_price: float = 0.0
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value):
+        setattr(self, key, value)
+
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+
+# ---------------------------------------------------------------------------
 # Portfolio backtest engine
 # ---------------------------------------------------------------------------
 
@@ -178,18 +207,9 @@ class PortfolioBacktest:
         timeline = sorted(all_dates)
 
         # Per-leg state
-        leg_state = {}
+        leg_state: dict[int, LegState] = {}
         for i, (leg, strategy, df_sig) in enumerate(leg_data):
-            leg_state[i] = {
-                "leg": leg,
-                "strategy": strategy,
-                "df": df_sig,
-                "position": 0,
-                "entry_price": 0.0,
-                "highest": 0.0,
-                "capital_allocated": 0.0,
-                "pending_order": None,
-            }
+            leg_state[i] = LegState(leg=leg, strategy=strategy, df=df_sig)
 
         cash = self.initial_capital
         trades: List[PortfolioTrade] = []

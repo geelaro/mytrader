@@ -16,18 +16,51 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data import DataProvider
-from strategy.weekly_macd_kdj import WeeklyMACD_KDJ
+from strategy import STRATEGY_MAP
 from engine.trader import BacktestEngine
 
 
-def run():
-    provider = DataProvider()
-    strategy = WeeklyMACD_KDJ()
-    symbols = ["AAPL", "NVDA", "TSLA", "GOOG", "AMZN", "MU", "INTC", "ORCL", "QQQ", "SPY"]
+def run(
+    strategy: str = "weekly_macd_kdj",
+    symbols: list = None,
+    start_range: str = "2018-01-01",
+    end_range: str = "2024-06-01",
+    window_years: int = 2,
+    step_months: int = 3,
+    initial_capital: float = 10000,
+) -> pd.DataFrame:
+    """Run rolling-window alpha decay analysis.
 
-    window_years = 2
-    step_months = 3
-    start_dates = pd.bdate_range("2018-01-01", "2024-06-01", freq=f"{step_months}MS")
+    Parameters
+    ----------
+    strategy : str
+        Strategy name (key of STRATEGY_MAP).
+    symbols : list[str] | None
+        List of ticker symbols (default: US tech watchlist).
+    start_range : str
+        Earliest roll start date (YYYY-MM-DD).
+    end_range : str
+        Latest roll start date (YYYY-MM-DD).
+    window_years : int
+        Rolling window size in years.
+    step_months : int
+        Step size between windows in months.
+    initial_capital : float
+        Capital per symbol backtest.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: start, end, strategy_return, benchmark_return, alpha, symbols
+    """
+    provider = DataProvider()
+    strategy_cls = STRATEGY_MAP[strategy]
+    strat = strategy_cls()
+
+    if symbols is None:
+        symbols = ["AAPL", "NVDA", "TSLA", "GOOG", "AMZN", "MU", "INTC", "ORCL", "QQQ", "SPY"]
+
+    start_dates = pd.bdate_range(start_range, end_range, freq=f"{step_months}MS")
 
     results = []
     for start_dt in start_dates:
@@ -41,13 +74,13 @@ def run():
             df = provider.get_daily(sym, start="2015-01-01", end=end)
             if df is None or len(df) < 200:
                 continue
-            df_sig = strategy.calculate_indicators(df)
+            df_sig = strat.calculate_indicators(df)
             df_sig = df_sig[(df_sig.index >= start) & (df_sig.index <= end)]
             if len(df_sig) < 50:
                 continue
-            engine = BacktestEngine(initial_capital=10000)
+            engine = BacktestEngine(initial_capital=initial_capital)
             try:
-                bench = engine.run(strategy, df_sig)
+                bench = engine.run(strat, df_sig)
                 r = engine.get_result(bench)
                 strat_returns.append(r.total_return_pct)
                 bench_returns.append(r.buy_hold_return_pct)
@@ -69,7 +102,7 @@ def run():
 
     if not results:
         print("No results")
-        return
+        return pd.DataFrame()
 
     df = pd.DataFrame(results)
     print(df.to_string(index=False, formatters={
@@ -110,6 +143,8 @@ def run():
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120)
     print(f"\n图表已保存: {path}")
+
+    return df
 
 
 if __name__ == "__main__":

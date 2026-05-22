@@ -17,22 +17,52 @@ import matplotlib.pyplot as plt
 from engine.portfolio import PortfolioBacktest, Leg
 
 
-def run():
-    symbols = ["AAPL", "NVDA", "TSLA", "GOOG", "AMZN", "MU", "INTC", "ORCL", "QQQ", "SPY"]
-    start, end = "2018-01-01", "2026-05-19"
+def run(
+    symbols: list = None,
+    strategy: str = "weekly_macd_kdj",
+    start: str = "2018-01-01",
+    end: str = "2026-05-19",
+    initial_capital: float = 100000,
+    n_sims: int = 2000,
+    seed: int = 42,
+) -> dict:
+    """Run Monte Carlo drawdown simulation by shuffling trade sequences.
 
-    legs = [Leg(sym, "weekly_macd_kdj") for sym in symbols]
-    pf = PortfolioBacktest(legs, initial_capital=100000)
+    Parameters
+    ----------
+    symbols : list[str] | None
+        List of ticker symbols (default: US tech watchlist).
+    strategy : str
+        Strategy name applied to all symbols.
+    start, end : str
+        Backtest date range (YYYY-MM-DD).
+    initial_capital : float
+        Portfolio initial capital.
+    n_sims : int
+        Number of Monte Carlo permutations.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    dict with keys: trades, win_rate, avg_pnl, pnl_std, max_dds, end_equities,
+    expected_return, percentiles, dd_probs
+    """
+    if symbols is None:
+        symbols = ["AAPL", "NVDA", "TSLA", "GOOG", "AMZN", "MU", "INTC", "ORCL", "QQQ", "SPY"]
+
+    legs = [Leg(sym, strategy) for sym in symbols]
+    pf = PortfolioBacktest(legs, initial_capital=initial_capital)
     result = pf.run(start=start, end=end)
 
     # Use trade PnL as % of initial capital (realistic portfolio drawdown)
-    initial_capital = result.initial_capital
+    initial_cap = result.initial_capital
     pnl_pcts = np.array([
-        t.pnl / initial_capital * 100 for t in result.trades if t.pnl is not None
+        t.pnl / initial_cap * 100 for t in result.trades if t.pnl is not None
     ])
     if len(pnl_pcts) == 0:
         print("无交易数据")
-        return
+        return {"trades": 0, "error": "no trades"}
 
     print(f"交易总数: {len(pnl_pcts)}")
     win_rate = (pnl_pcts > 0).sum() / len(pnl_pcts) * 100
@@ -45,7 +75,7 @@ def run():
     max_dds = []
     end_equities = []
 
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     for _ in range(n_sims):
         shuffled = rng.permutation(pnl_pcts)
         equity = 100.0
@@ -95,6 +125,24 @@ def run():
     path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(path, dpi=120)
     print(f"\n图表已保存: {path}")
+
+    percentiles = {f"P{pct:02d}": float(np.percentile(max_dds, pct))
+                   for pct in [5, 25, 50, 75, 95]}
+    dd_probs = {}
+    for threshold in [20, 30, 40, 50, 60]:
+        dd_probs[threshold] = float((max_dds >= threshold).sum() / n_sims * 100)
+
+    return {
+        "trades": len(pnl_pcts),
+        "win_rate": float(win_rate),
+        "avg_pnl": float(pnl_pcts.mean()),
+        "pnl_std": float(pnl_pcts.std()),
+        "expected_return": float(final_return),
+        "max_dds": max_dds.tolist(),
+        "end_equities": end_equities.tolist(),
+        "percentiles": percentiles,
+        "dd_probs": dd_probs,
+    }
 
 
 if __name__ == "__main__":
