@@ -744,7 +744,6 @@ class LiveTrader:
             return result
 
         # Poll for completion
-        is_limit = order.order_type == OrderType.LIMIT
         timeout_s = self.execution_model.timeout_seconds(order)
         poll_interval = 3
         elapsed = 0
@@ -759,9 +758,11 @@ class LiveTrader:
             if result.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
                 return result
 
-        # Timeout — cancel if limit order
-        if is_limit and result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-            logger.warning("限价单超时，撤单: %s %s", order.symbol, order.order_id)
+        # Timeout — cancel any non-terminal order so the next
+        # daemon cycle starts clean (prevents duplicate orders).
+        if result.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+            logger.warning("订单超时未成交，撤单: %s %s (%s)",
+                           order.symbol, order.order_id, result.status.value)
             self.broker.cancel_order(result.order_id)
             result.status = OrderStatus.CANCELLED
 
