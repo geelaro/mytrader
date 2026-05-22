@@ -298,7 +298,7 @@ class LiveTrader:
 
     def _scan_signals(self, target_date: str, positions: Dict[str, Position]) -> List[dict]:
         """Run strategies across watchlist + orphan positions, return signal dicts."""
-        lookback = self.config.get("default", {}).get("lookback_years", 3)
+        lookback = self.config.get("scanner", {}).get("lookback_years", 3)
 
         # --- orphan detection (live-only concern) ---
         self._orphan_symbols = set()

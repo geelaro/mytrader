@@ -79,23 +79,33 @@ class RiskController:
             self.pause_reason = ""
             self.alert_sent = False
 
+        paused = False
+        reason = ""
         if r._day_start_equity > 0 and equity < r._day_start_equity * (1 - r.max_daily_loss_pct):
             loss_pct = (r._day_start_equity - equity) / r._day_start_equity * 100
-            self.trading_paused = True
-            self.pause_reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
+            paused = True
+            reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
         elif r._peak_equity > 0 and equity < r._peak_equity * (1 - r.max_total_drawdown_pct):
             dd_pct = (r._peak_equity - equity) / r._peak_equity * 100
-            self.trading_paused = True
-            self.pause_reason = f"历史峰值回撤超限 ({dd_pct:.1f}% > {r.max_total_drawdown_pct*100:.0f}%)"
+            paused = True
+            reason = f"历史峰值回撤超限 ({dd_pct:.1f}% > {r.max_total_drawdown_pct*100:.0f}%)"
         elif r._consecutive_losses >= r.max_consecutive_losses:
-            self.trading_paused = True
-            self.pause_reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"
+            paused = True
+            reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"
         elif positions:
             total_exposure = sum(p.market_value for p in positions.values() if p.market_value > 0)
             exposure_pct = total_exposure / equity if equity > 0 else 0
             if exposure_pct > r.max_total_exposure_pct:
-                self.trading_paused = True
-                self.pause_reason = f"总敞口超限 ({exposure_pct*100:.1f}% > {r.max_total_exposure_pct*100:.0f}%)"
+                paused = True
+                reason = f"总敞口超限 ({exposure_pct*100:.1f}% > {r.max_total_exposure_pct*100:.0f}%)"
+
+        # ── Apply pause state ──────────────────────────────────────────
+        # Use local paused flag so that when conditions improve (e.g. a
+        # sell drops exposure below the cap) the pause is *cleared* within
+        # the same day.  Before this change trading_paused was a one-way
+        # latch reset only at midnight.
+        self.trading_paused = paused
+        self.pause_reason = reason
 
         if self.trading_paused:
             print(f"\n  !! 交易暂停: {self.pause_reason}")
