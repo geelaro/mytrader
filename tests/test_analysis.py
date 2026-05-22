@@ -34,11 +34,11 @@ class TestPerturbParams:
         assert 3 in values  # 2*1.1=2.2→2(same)→forced to 3
 
     def test_float_params_kept_float(self):
-        base = {"atr_stop_mult": 2.0}
-        grid = {"atr_stop_mult": [1.5, 2.0, 3.0]}
+        base = {"trail_atr_mult": 2.0}
+        grid = {"trail_atr_mult": [1.5, 2.0, 3.0]}
         variants = perturb_params(base, grid)
         for v in variants:
-            assert isinstance(v["atr_stop_mult"], float)
+            assert isinstance(v["trail_atr_mult"], float)
 
     def test_no_duplicates(self):
         base = {"kdj_n": 7, "kdj_k": 2, "kdj_d": 2}
@@ -60,7 +60,7 @@ class TestIsIntParam:
         assert _is_int_param("kdj_n", {"kdj_n": [7, 9, 14]}) is True
 
     def test_float_from_grid(self):
-        assert _is_int_param("atr_stop_mult", {"atr_stop_mult": [1.5, 2.0]}) is False
+        assert _is_int_param("trail_atr_mult", {"trail_atr_mult": [1.5, 2.0]}) is False
 
     def test_unknown_param(self):
         assert _is_int_param("unknown", {"kdj_n": [7]}) is False

@@ -225,7 +225,10 @@ def resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """Add ADX / +DI / -DI columns to *df* (Wilder smoothing via EMA)."""
+    """Add ADX / +DI / -DI / ATR columns to *df* (Wilder smoothing via EMA).
+
+    Includes ATR so callers don't need a separate ``compute_atr()`` call.
+    """
     high_diff = df["High"].diff()
     low_diff = -df["Low"].diff()
     plus_dm = pd.Series(
@@ -238,6 +241,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     minus_dm = minus_dm.clip(lower=0)
 
     atr_s = compute_atr(df, period).replace(0, np.nan).clip(lower=1e-8)
+    df["ATR"] = atr_s
     plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s
     minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_s
 

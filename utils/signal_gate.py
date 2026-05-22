@@ -76,7 +76,7 @@ class SignalGate:
         """Scale position size down in high-volatility regimes."""
         if (self.ms_enabled and self.market_state is not None
                 and self.market_state.volatility == Volatility.HIGH):
-            return max(1, int(qty * self.vol_high_scalar))
+            return 0 if qty == 0 else max(1, int(qty * self.vol_high_scalar))
         return qty
 
     # -- Internal ---------------------------------------------------------

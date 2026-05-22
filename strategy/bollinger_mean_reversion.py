@@ -21,7 +21,7 @@ class BollingerMeanReversionParams(StrategyParams):
     rsi_oversold: float = 30.0
     rsi_turnup: float = 3.0
     atr_period: int = 14
-    atr_stop_mult: float = 2.0
+    trail_atr_mult: float = 2.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 
@@ -29,14 +29,14 @@ class BollingerMeanReversionParams(StrategyParams):
         "bb_period": [15, 20, 25],
         "bb_std": [1.5, 2.0, 2.5],
         "rsi_oversold": [25, 30, 35],
-        "atr_stop_mult": [1.5, 2.0, 3.0],
+        "trail_atr_mult": [1.5, 2.0, 3.0],
     }
 
     def validate(self):
         if not (self.bb_std > 0): raise ValueError("bb_std must be positive")
         if not (0 < self.rsi_oversold < 50): raise ValueError("rsi_oversold must be in (0, 50)")
         if not (self.rsi_turnup > 0): raise ValueError("rsi_turnup must be positive")
-        if not (self.atr_stop_mult > 0): raise ValueError("atr_stop_mult must be positive")
+        if not (self.trail_atr_mult > 0): raise ValueError("trail_atr_mult must be positive")
         if not (0 < self.risk_per_trade <= 1): raise ValueError("validation failed")
 
 
@@ -98,7 +98,7 @@ class BollingerMeanReversion(BaseStrategy):
 
     def position_size(self, capital: float, price: float, atr: float) -> int:
         return self._risk_budget_size(capital, price, atr,
-            self.params.risk_per_trade, self.params.atr_stop_mult,
+            self.params.risk_per_trade, self.params.trail_atr_mult,
             self.params.max_position_pct)
 
     # ------------------------------------------------------------------
@@ -115,7 +115,7 @@ class BollingerMeanReversion(BaseStrategy):
         atr = float(df["ATR"].iloc[i])
         p = self.params
 
-        stop_loss = entry_price - atr * p.atr_stop_mult
+        stop_loss = entry_price - atr * p.trail_atr_mult
         if price <= stop_loss:
             return True, "止损"
 

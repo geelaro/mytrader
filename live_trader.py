@@ -67,9 +67,11 @@ class RiskLimits:
     base_risk_pct: float = 0.02
     vol_sensitivity: float = 5.0
     min_vol_scalar: float = 0.3
+    max_total_drawdown_pct: float = 0.30
 
     # -- runtime state --
     _day_start_equity: float = 0.0
+    _peak_equity: float = 0.0
     _date: str = ""
     _consecutive_losses: int = 0
     _daily_trade_count: int = 0
@@ -250,6 +252,10 @@ class LiveTrader:
             # Track risk state
             if order.status == OrderStatus.FILLED:
                 self._update_risk_state(order)
+                if order.side == OrderSide.SELL:
+                    account = self.broker.get_account()
+                    positions_dict = {p.symbol: p for p in self.broker.get_positions()}
+                    self._check_global_risk(account, positions_dict)
 
         if not orders:
             print("\n  无新订单 — 信号与持仓一致")
@@ -336,7 +342,7 @@ class LiveTrader:
                     # Thin-data fallback: try FutuBroker kline
                     start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback)).strftime("%Y-%m-%d")
                     df = self.provider.get_daily(sym, start=start, end=target_date)
-                    if (df is None or len(df) < 50) and hasattr(self.broker, "get_historical_kline"):
+                    if (df is None or len(df) < 50):
                         futu_df = self.broker.get_historical_kline(sym, start, target_date)
                         if not futu_df.empty:
                             self.cache.save(sym, futu_df, source="futu")
@@ -460,6 +466,9 @@ class LiveTrader:
             self.risk._day_start_equity = account.total_equity
             self.risk._date = today
             self._persist_risk_state()
+        if account.total_equity > self.risk._peak_equity:
+            self.risk._peak_equity = account.total_equity
+            self._persist_risk_state()
 
     def _restore_risk_state(self):
         """Restore risk state and entry prices from SQLite after restart."""
@@ -473,6 +482,8 @@ class LiveTrader:
             self.risk._consecutive_losses = int(cl) if cl else 0
             self.risk._daily_trade_count = int(dt) if dt else 0
             self.risk._day_start_equity = float(dse) if dse else 0.0
+        pe = self.cache.load_risk_state("peak_equity")
+        self.risk._peak_equity = float(pe) if pe else 0.0
         # Entry prices survive across days (needed for circuit breaker)
         self._entry_prices = {
             sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
@@ -482,6 +493,7 @@ class LiveTrader:
         """Write current risk state to SQLite."""
         self.cache.save_risk_state("date", self.risk._date)
         self.cache.save_risk_state("day_start_equity", str(self.risk._day_start_equity))
+        self.cache.save_risk_state("peak_equity", str(self.risk._peak_equity))
         self.cache.save_risk_state("consecutive_losses", str(self.risk._consecutive_losses))
         self.cache.save_risk_state("daily_trade_count", str(self.risk._daily_trade_count))
 
@@ -550,6 +562,10 @@ class LiveTrader:
             loss_pct = (r._day_start_equity - equity) / r._day_start_equity * 100
             self._trading_paused = True
             self._pause_reason = f"日内亏损超限 ({loss_pct:.1f}% > {r.max_daily_loss_pct*100:.0f}%)"
+        elif r._peak_equity > 0 and equity < r._peak_equity * (1 - r.max_total_drawdown_pct):
+            dd_pct = (r._peak_equity - equity) / r._peak_equity * 100
+            self._trading_paused = True
+            self._pause_reason = f"历史峰值回撤超限 ({dd_pct:.1f}% > {r.max_total_drawdown_pct*100:.0f}%)"
         elif r._consecutive_losses >= r.max_consecutive_losses:
             self._trading_paused = True
             self._pause_reason = f"连续亏损熔断 ({r._consecutive_losses}/{r.max_consecutive_losses})"

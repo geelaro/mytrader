@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from .base import (
     Account,
     Broker,
@@ -74,6 +76,9 @@ class MockBroker(Broker):
             frozen_margin=frozen,
             total_pnl=total - self._initial_cash,
         )
+
+    def get_historical_kline(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        return pd.DataFrame()
 
     def get_positions(self) -> List[Position]:
         # Update market values from last prices

@@ -174,5 +174,10 @@ class Broker(ABC):
         """Optional: fetch latest prices for symbols, return {symbol: price}."""
         return {}
 
+    def get_historical_kline(self, symbol: str, start: str, end: str):
+        """Optional: fetch daily OHLCV kline from broker. Returns empty DataFrame by default."""
+        import pandas as pd
+        return pd.DataFrame()
+
     def __repr__(self):
         return f"<Broker:{self.name}>"

@@ -109,7 +109,7 @@ class TencentSource(DataSource):
 
     def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         sym = symbol.upper()
-        code = _TENCENT_CODE_MAP.get(sym, f"us{sym}.OQ")
+        code = _TENCENT_CODE_MAP.get(sym, f"us{sym}")
 
         params = {"param": f"{code},day,{start},,2000,qfq"}
         try:

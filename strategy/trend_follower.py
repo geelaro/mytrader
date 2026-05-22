@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr, compute_adx
+from .base import BaseStrategy, StrategyParams, compute_adx
 
 
 @dataclass(frozen=True)
@@ -60,9 +60,8 @@ class TrendFollower(BaseStrategy):
 
         df["SMA_short"] = df["Close"].rolling(p.short_ma).mean()
         df["SMA_long"] = df["Close"].rolling(p.long_ma).mean()
-        df["ATR"] = compute_atr(df, p.atr_period)
 
-        # ADX
+        # ADX (also sets ATR column)
         compute_adx(df, p.adx_period)
 
         # Entry signals only
