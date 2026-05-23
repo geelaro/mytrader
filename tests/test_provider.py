@@ -13,7 +13,7 @@ from data.protocol import (
     CN_SYMBOLS,
     SOURCE_PRIORITY,
 )
-from data.sources import YFinanceSource, TencentSource, SinaSource, AKShareSource
+from data.sources import TencentSource, SinaSource, SinaUSSource, YahooChartSource, AKShareSource
 from data.provider import DataProvider
 from data.cache import CacheManager
 
@@ -50,7 +50,7 @@ class TestClassifySymbol:
 
 class TestSourcePriority:
     def test_us_priority(self):
-        assert SOURCE_PRIORITY["us"][0] == "tencent"
+        assert SOURCE_PRIORITY["us"] == ["sina_us", "tencent", "yahoo_chart"]
 
     def test_cn_priority(self):
         assert SOURCE_PRIORITY["cn"][0] == "sina"
@@ -124,15 +124,23 @@ class TestSourceSupports:
         assert src.supports("sh510050")
         assert not src.supports("AAPL")
 
-    def test_yfinance_rejects_cn(self):
-        src = YFinanceSource()
-        assert not src.supports("510300")
-        assert not src.supports("SH510050")
-
     def test_akshare_knows_cn(self):
         src = AKShareSource()
         assert src.supports("510300")
         assert src.supports("sh510050")
+
+    def test_sina_us_knows_us(self):
+        src = SinaUSSource()
+        assert src.supports("AAPL")
+        assert src.supports("NVDA")
+        assert src.supports("QQQ")
+        assert not src.supports("510300")
+
+    def test_yahoo_chart_knows_us(self):
+        src = YahooChartSource()
+        assert src.supports("AAPL")
+        assert src.supports("TSLA")
+        assert not src.supports("510300")
 
 
 # ===================================================================
@@ -347,41 +355,6 @@ class TestSinaSourceFetch:
             assert df.empty
 
 
-class TestYFinanceSourceFetch:
-    def test_fetch_returns_dataframe(self):
-        from data.sources import YFinanceSource
-
-        mock_df = pd.DataFrame({
-            "Open": [190, 191], "High": [192, 193],
-            "Low": [189, 190], "Close": [191, 192],
-            "Volume": [50000000, 45000000],
-        }, index=pd.to_datetime(["2025-01-02", "2025-01-03"]))
-
-        src = YFinanceSource()
-        with patch("yfinance.download", return_value=mock_df):
-            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
-            assert len(df) == 2
-            assert list(df.columns) == OHLCV_COLUMNS
-
-    def test_fetch_empty_returns_empty_df(self):
-        from data.sources import YFinanceSource
-
-        src = YFinanceSource()
-        with patch("yfinance.download", return_value=pd.DataFrame()):
-            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
-            assert df.empty
-
-    def test_fetch_exception_returns_empty(self):
-        from data.sources import YFinanceSource
-
-        src = YFinanceSource()
-        with patch("yfinance.download", side_effect=Exception("fail")):
-            with patch("data.sources.logger") as mock_logger:
-                df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
-                assert df.empty
-                mock_logger.exception.assert_called_once()
-
-
 class TestAKShareSourceFetch:
     def test_fetch_returns_dataframe(self):
         from data.sources import AKShareSource
@@ -410,3 +383,113 @@ class TestAKShareSourceFetch:
             src = AKShareSource()
             df = src.fetch("sh510300", "2025-01-01", "2025-01-10")
             assert df.empty
+
+
+# ===================================================================
+# SinaUSSource fetch mock
+# ===================================================================
+
+_MOCK_SINAUS_RESP = (
+    "var=(["
+    '{"d":"2025-01-02","o":"190.00","h":"192.00","l":"189.00","c":"191.00","v":"50000000"},'
+    '{"d":"2025-01-03","o":"191.50","h":"193.00","l":"191.00","c":"192.00","v":"45000000"}'
+    "])"
+)
+
+
+class TestSinaUSSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = _MOCK_SINAUS_RESP
+        mock_session.get.return_value = mock_resp
+
+        src = SinaUSSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert len(df) == 2
+            assert list(df.columns) == OHLCV_COLUMNS
+            assert df["Close"].iloc[0] == 191.0
+
+    def test_fetch_empty_response(self):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = "var=([])"
+        mock_session.get.return_value = mock_resp
+
+        src = SinaUSSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_fetch_request_exception(self):
+        import requests as req
+        mock_session = MagicMock()
+        mock_session.get.side_effect = req.RequestException("timeout")
+
+        src = SinaUSSource()
+        with patch("data.sources._make_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert isinstance(df, pd.DataFrame) and df.empty
+
+
+
+# ===================================================================
+# YahooChartSource fetch mock
+# ===================================================================
+
+_MOCK_YAHOO_RESP = {
+    "chart": {
+        "result": [{
+            "meta": {"symbol": "AAPL"},
+            "timestamp": [1704150000, 1704236400],
+            "indicators": {
+                "quote": [{
+                    "open": [190.0, 191.5],
+                    "high": [192.0, 193.0],
+                    "low": [189.0, 191.0],
+                    "close": [191.0, 192.0],
+                    "volume": [50000000, 45000000],
+                }]
+            }
+        }]
+    }
+}
+
+
+class TestYahooChartSourceFetch:
+    def test_fetch_returns_dataframe(self):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _MOCK_YAHOO_RESP
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_resp
+
+        src = YahooChartSource()
+        with patch("data.sources._yahoo_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert len(df) == 2
+            assert list(df.columns) == OHLCV_COLUMNS
+            assert df["Close"].iloc[0] == 191.0
+
+    def test_fetch_empty_chart_returns_empty(self):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"chart": {"result": [None]}}
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_resp
+
+        src = YahooChartSource()
+        with patch("data.sources._yahoo_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert df.empty
+
+    def test_fetch_request_exception(self):
+        import requests as req
+        mock_session = MagicMock()
+        mock_session.get.side_effect = req.RequestException("timeout")
+
+        src = YahooChartSource()
+        with patch("data.sources._yahoo_session", return_value=mock_session):
+            df = src.fetch("AAPL", "2025-01-01", "2025-01-10")
+            assert isinstance(df, pd.DataFrame) and df.empty

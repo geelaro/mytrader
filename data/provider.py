@@ -25,6 +25,8 @@ from .protocol import (
 from .sources import (
     TencentSource,
     SinaSource,
+    SinaUSSource,
+    YahooChartSource,
     AKShareSource,
 )
 
@@ -59,11 +61,14 @@ class DataProvider:
     ):
         self.cache = cache or CacheManager()
         self._sources: List[DataSource] = sources or [
+            SinaUSSource(),
             TencentSource(),
             SinaSource(),
+            YahooChartSource(),
             AKShareSource(),
         ]
-        self._fetch_failures: set = set()  # symbols that failed this session
+        self._fetch_failures: set = set()  # symbols that failed this session entirely
+        self._failed_sources: Set[str] = set()  # sources that failed this session (skip for all symbols)
 
     # ------------------------------------------------------------------
     # Public API

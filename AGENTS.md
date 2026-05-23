@@ -79,6 +79,27 @@ Access config: `from config import config` (singleton), then `config.risk.max_po
 - `data/cache.py` — `CacheManager` reads `MYTRADER_DB` env var; falls back to `trading_data.db`.
 - DB tables: `ohlcv_daily`, `signals`, `order_log`, `slippage_log`, `ops_log`, `entry_prices`, `trade_pnl`, `risk_state`.
 
+## Undo / rollback workflow
+
+When reverting changes made in earlier work, **prefer git operations over manual file editing**:
+
+```bash
+# 1. Undo the last commit but keep changes staged
+git reset --soft HEAD~1
+
+# 2. Unstage the specific parts you want to remove
+git reset HEAD -- file_to_keep.py
+
+# 3. Checkout the files you want to revert
+git checkout -- file_to_revert.py
+
+# 4. Commit the corrected set
+git add -A && git commit -m "..."
+```
+
+This avoids error-prone manual edits across many files. Use `git stash` for
+work-in-progress you want to temporarily set aside.
+
 ## Known traps
 
 - **`kdj_d=1`** — causes zero trades. Documented in README, don't set it.

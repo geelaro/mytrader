@@ -461,11 +461,12 @@ class CacheManager:
     def missing_ranges(
         self, symbol: str, start: str, end: str
     ) -> List[Tuple[str, str]]:
-        """Return list of (start_date, end_date) tuples that need fetching.
+        """Return merged (start_date, end_date) tuples that need fetching.
 
         Compares the requested interval against what's already cached.
-        If the entire range is cached, returns an empty list.  In addition to
-        head/tail gaps, detect internal holes larger than a normal weekend.
+        Adjacent gaps (separated by ≤ 7 calendar days) are merged into a
+        single larger range to minimise round-trips.  Returns an empty list
+        when the entire range is covered.
         """
         req_start_ts = pd.Timestamp(start).normalize()
         req_end_ts = pd.Timestamp(end).normalize()
@@ -507,5 +508,24 @@ class CacheManager:
             gap_start = last + pd.Timedelta(days=1)
             if gap_start <= req_end_ts:
                 gaps.append((str(gap_start.date()), str(req_end_ts.date())))
+
+        if len(gaps) <= 1:
+            return gaps
+
+        # Merge adjacent gaps separated by ≤ 7 calendar days into a single
+        # range.  This avoids fetching dozens of tiny 2-3 day slices when
+        # the cache has sparse coverage (e.g. weekend/holiday holes).
+        merged: List[Tuple[str, str]] = []
+        cur_start, cur_end = gaps[0]
+        for gs, ge in gaps[1:]:
+            gs_ts = pd.Timestamp(gs)
+            cur_end_ts = pd.Timestamp(cur_end)
+            if (gs_ts - cur_end_ts).days <= 8:  # 1-day gap + weekend tolerance
+                cur_end = ge
+            else:
+                merged.append((cur_start, cur_end))
+                cur_start, cur_end = gs, ge
+        merged.append((cur_start, cur_end))
+        return merged
 
         return gaps

@@ -5,8 +5,10 @@ Every source implements the DataSource protocol from .protocol.
 
 import json
 import logging
+import re
 from abc import ABC
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -28,37 +30,37 @@ def _make_session() -> requests.Session:
     return s
 
 
+_YAHOO_SESSION: Optional[requests.Session] = None
+
+
+def _yahoo_session() -> requests.Session:
+    """Return a requests.Session with Yahoo cookie set.
+
+    Yahoo Finance requires a cookie from fc.yahoo.com before serving
+    chart endpoints.  The session is cached per process.
+    """
+    global _YAHOO_SESSION
+    if _YAHOO_SESSION is not None:
+        return _YAHOO_SESSION
+    s = requests.Session()
+    s.trust_env = False
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    })
+    try:
+        s.get("https://fc.yahoo.com", timeout=10)
+    except requests.RequestException:
+        pass
+    _YAHOO_SESSION = s
+    return s
+
+
 # ---------------------------------------------------------------------------
-# YFinance — global fallback
+# Tencent — US stock daily K-line (free, no key required)
 # ---------------------------------------------------------------------------
-
-class YFinanceSource(DataSource):
-    """Yahoo Finance — covers US equities, ETFs, and most global markets."""
-
-    @property
-    def name(self) -> str:
-        return "yfinance"
-
-    def supports(self, symbol: str) -> bool:
-        s = symbol.upper().strip()
-        # Don't attempt CN symbols — they have dedicated sources
-        if s[:2] in ("SH", "SZ") or (s.isdigit() and len(s) == 6):
-            return False
-        return True
-
-    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        try:
-            import yfinance as yf
-            df = yf.download(symbol, start=start, end=end, progress=False)
-            if df is None or df.empty:
-                return pd.DataFrame(columns=OHLCV_COLUMNS)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.rename(columns={c: c.title() for c in df.columns}, inplace=True)
-            return self.validate(df.dropna(subset=["Open", "High", "Low", "Close"]), symbol)
-        except Exception:
-            logger.exception("yfinance fetch failed for %s", symbol)
-            return pd.DataFrame(columns=OHLCV_COLUMNS)
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +330,155 @@ class AKShareSource(DataSource):
     def _normalise_symbol(symbol: str) -> str:
         s = symbol.lower().strip()
         return _A_KSHARE_MAP.get(s, s)
+
+    @staticmethod
+    def _normalise_symbol(symbol: str) -> str:
+        s = symbol.lower().strip()
+        if s in CN_SYMBOLS:
+            return CN_SYMBOLS[s]
+        if s.startswith(("sh", "sz")):
+            return s
+        # Guess exchange — most 6-digit ETF codes starting with 5 are SSE
+        prefix = "sh" if s[0] in ("5", "6", "9") else "sz"
+        return prefix + s
+
+
+# ---------------------------------------------------------------------------
+# Sina US stock daily K-line — primary US source (back to 1984)
+# ---------------------------------------------------------------------------
+
+class SinaUSSource(DataSource):
+    """Sina Finance US stock daily K-line API.
+
+    Longer history than Tencent (back to 1984), zero authentication.
+    """
+
+    URL = (
+        "https://stock.finance.sina.com.cn/usstock/api/"
+        "jsonp.php/var/US_MinKService.getDailyK"
+    )
+
+    @property
+    def name(self) -> str:
+        return "sina_us"
+
+    def supports(self, symbol: str) -> bool:
+        sym = symbol.upper().strip()
+        return sym.isalpha() and 1 <= len(sym) <= 5
+
+    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        sym = symbol.upper()
+        params = {"symbol": sym, "num": 5000}
+        try:
+            s = _make_session()
+            r = s.get(self.URL, params=params,
+                      headers={"Referer": "https://finance.sina.com.cn/"}, timeout=30)
+        except requests.RequestException as e:
+            logger.warning("SinaUS fetch error for %s: %s", sym, e)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        m = re.search(r"\((\[.+\])\)", r.text)
+        if not m:
+            logger.debug("SinaUS empty/unparsable response for %s", sym)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        try:
+            items = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            logger.debug("SinaUS JSON decode failed for %s", sym)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        if not items:
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        rows = []
+        for item in items:
+            rows.append({
+                "date": pd.Timestamp(item.get("d")),
+                "Open": float(item.get("o", 0)),
+                "High": float(item.get("h", 0)),
+                "Low": float(item.get("l", 0)),
+                "Close": float(item.get("c", 0)),
+                "Volume": float(item.get("v", 0)),
+            })
+
+        df = pd.DataFrame(rows).set_index("date").sort_index()
+        df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
+        return self.validate(df, symbol)
+
+
+
+# ---------------------------------------------------------------------------
+# Yahoo Finance chart v8 — fallback for US stocks
+# ---------------------------------------------------------------------------
+
+class YahooChartSource(DataSource):
+    """Yahoo Finance chart v8 API.
+
+    Uses period1/period2 Unix timestamps for precise date range control.
+    Covers US equities, ETFs, and global markets.
+    Requires a Yahoo cookie to avoid 403.
+    """
+
+    URL = "https://query2.finance.yahoo.com/v8/finance/chart"
+
+    @property
+    def name(self) -> str:
+        return "yahoo_chart"
+
+    def supports(self, symbol: str) -> bool:
+        sym = symbol.upper().strip()
+        if sym[:2] in ("SH", "SZ") or (sym.isdigit() and len(sym) == 6):
+            return False
+        return True
+
+    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        sym = symbol.upper()
+        try:
+            t1 = int(pd.Timestamp(start).timestamp())
+            t2 = int(pd.Timestamp(end).timestamp())
+        except Exception:
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        params = {
+            "interval": "1d",
+            "period1": t1,
+            "period2": t2,
+        }
+        try:
+            s = _yahoo_session()
+            r = s.get(f"{self.URL}/{sym}", params=params, timeout=30)
+            r.raise_for_status()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("YahooChart fetch error for %s: %s", sym, e)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        data = r.json()
+        chart = data.get("chart", {}).get("result", [{}])
+        if not chart or chart[0] is None:
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        result = chart[0]
+        timestamps = result.get("timestamp", [])
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+
+        rows = []
+        for i, ts in enumerate(timestamps):
+            o = quote.get("open", [None])[i]
+            h = quote.get("high", [None])[i]
+            lv = quote.get("low", [None])[i]
+            c = quote.get("close", [None])[i]
+            v = quote.get("volume", [None])[i]
+            if any(x is None for x in (o, h, lv, c, v)):
+                continue
+            rows.append({
+                "date": pd.Timestamp.fromtimestamp(ts).normalize(),
+                "Open": round(float(o), 4),
+                "High": round(float(h), 4),
+                "Low": round(float(lv), 4),
+                "Close": round(float(c), 4),
+                "Volume": float(v),
+            })
+
+        df = pd.DataFrame(rows).set_index("date").sort_index()
+        return self.validate(df, symbol)

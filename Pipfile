@@ -11,7 +11,6 @@ name = "pypi"
 [packages]
 pandas = "*"
 numpy = "*"
-yfinance = "*"
 matplotlib = "*"
 akshare = "*"
 tomli = "*"
