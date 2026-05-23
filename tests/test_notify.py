@@ -277,7 +277,6 @@ class TestCardBuilders:
 
     def test_strat_label(self):
         nf = Notifier(dry_run=True, async_mode=False)
-        assert nf._strat_label("enhanced_macd") == "增强MACD"
         assert nf._strat_label("trend_follower") == "趋势跟踪"
         assert nf._strat_label("weekly_macd") == "周线MACD"
         assert nf._strat_label("weekly_macd_kdj") == "周线KDJ+MACD"

@@ -15,6 +15,7 @@ warnings.filterwarnings('ignore')
 from data import DataProvider
 from broker import OrderSide, OrderStatus
 from engine.execution import ExecutionConfig, ExecutionModel, ExecutionTiming
+from utils.sizing import calc_risk_budget_qty
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -105,18 +106,11 @@ class BacktestEngine:
 
     def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
         """Return position size such that stop_distance loss = risk_per_trade % of capital."""
+        raw_qty = calc_risk_budget_qty(capital, price, atr, self.risk_per_trade, self.risk_atr_mult)
         if price <= 0:
             return 0
-        if atr is None or np.isnan(atr) or atr <= 0:
-            atr = price * 0.02  # fallback: 2 % of price
-        risk_dollar = capital * self.risk_per_trade
-        stop_distance = atr * self.risk_atr_mult
-        if stop_distance <= 0:
-            return 0
-        shares = int(risk_dollar / stop_distance)
-        # Hard cap: never risk more than available cash
         max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
-        return max(0, min(shares, max_shares))
+        return max(0, min(raw_qty, max_shares))
 
     def buy(self, date, price, quantity):
         if quantity <= 0 or price <= 0:

@@ -8,11 +8,11 @@
 
 | 模块 | 说明 |
 |------|------|
-| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare 三源，SQLite 本地缓存 + 增量更新 |
-| 策略库 | 10 个策略（趋势/均值回归/动量突破/波动率），BaseStrategy 统一接口 |
+| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare/YFinance 四源，SQLite 本地缓存 + 增量更新 |
+| 策略库 | 7 个活跃策略（趋势/动量突破/波动率），BaseStrategy 统一接口 |
 | 策略选择层 | SignalGate 门控层：`active`（实盘执行）+ `monitor`（观察对比），市场状态感知 + 风控暂停 + 敞口检查 |
 | 回测引擎 | 含滑点佣金，退出逻辑收归策略，支持单标 + 组合回测 |
-| 仓位管理 | `fixed_capital`（策略自定） / `risk_budget`（ATR 风险预算）双模式 |
+| 仓位管理 | `fixed_capital`（策略自定）/ `risk_budget`（ATR 风险预算）双模式，回测实盘共用 `utils/sizing.py` |
 | 参数优化 | 网格搜索 + Walk-forward 样本外验证（资金连续传递）+ 热力图 |
 | 分析工具 | 成本敏感性 + 参数鲁棒性 + Monte Carlo 模拟 + 滚动窗口 α 衰减 + 压力测试 |
 | 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 + 每日报告 |
@@ -23,7 +23,7 @@
 | 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/行业/日开仓上限） |
 | 运维可观测 | ops_log 统一运维表（source/level/event 维度），trade_pnl 买卖自动配对，24h 拒单率指标 |
 | Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 → 实盘记录 → 运行健康面板 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（485 测试 + 黄金样本回归） |
+| CI | GitHub Actions — push/PR 自动跑 pytest（571 测试 + 黄金样本回归）|
 
 ## 策略
 
@@ -36,22 +36,22 @@
 | `donchian_breakout` | 动量突破 | ★★ | 唐奇安通道突破 + 移动止损 |
 | `trend_follower` | 趋势 | ★ | MA + ADX + Chandelier 移动止损 |
 | `weekly_macd` | 周线趋势 | ★ | MACD 金叉死叉 |
-| `enhanced_macd` | 趋势 | ✗ | 双MA + MACD + RSI + ATR 止损止盈（过拟合）|
-| `bollinger_mean_reversion` | 均值回归 | ✗ | 布林下轨 + RSI 超卖回升（零交易）|
-| `bollinger_squeeze` | 波动率收缩 | ✗ | BB 带宽低分位 + 突破上轨（零交易）|
 
 > 推荐度基于 2026-05 全策略鲁棒性扫描（AAPL / risk_budget 2% / IS 2019-2024 / OOS 2024-2026）
+>
+> ~~`enhanced_macd` `bollinger_mean_reversion` `bollinger_squeeze`~~ — 已从活跃策略移除（过拟合/零交易），源文件保留于 `strategy/` 供测试兼容
 
 ## 项目结构
 
 ```
 mytrader/
   data/              # 数据管线 (protocol/cache/provider/sources)
-  strategy/          # 策略库 (base + 10 个策略)
+  strategy/          # 策略库 (base + 7 个活跃策略 + 3 个已弃用)
   broker/            # 券商接口 (base + mock + futu)
   engine/            # 回测引擎
   ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult)
   ├─ portfolio.py    #   组合回测 (PortfolioBacktest/PortfolioTrade)
+  ├─ execution.py    #   执行模型 (回测/实盘共用的订单执行语义)
   └─ optimize.py     #   参数优化 (grid_search/walk_forward)
   analysis/          # 分析工具
   ├─ cost_sensitivity.py    #   成本敏感性网格扫描
@@ -59,17 +59,22 @@ mytrader/
   ├─ monte_carlo.py         #   Monte Carlo 模拟（交易序列随机化）
   ├─ rolling_alpha.py       #   滚动窗口 α 衰减检测
   └─ stress_test.py         #   极端行情压力测试 (2008/2020/2022)
+  live/              # 实盘交易组件
+  ├─ risk_controller.py     #   风控检查、仓位计算、熔断持久化
+  └─ order_manager.py       #   信号→订单生成、提交、轮询、滑点记录
   utils/             # 工具
   ├─ signal_gate.py         #   策略门控层（市场状态+风控+敞口+孤儿守卫）
   ├─ market_state.py        #   四象限市场状态分类器
-  ├─ sectors.py             #   行业分类映射
   ├─ notify.py              #   飞书通知 (Webhook/App 双模式)
-  └─ ...
-  logs/              # 运行时日志 (live.log / daily.log / mytrader.log)
-  tests/             # 485 个测试 (含黄金样本回归 test_golden.py)
+  ├─ signal_scanner.py      #   共享信号扫描引擎
+  ├─ sizing.py              #   统一仓位计算（回测实盘共用）
+  ├─ sectors.py             #   行业分类映射
+  ├─ risk.py                #   RiskLimits 数据类
+  └─ metrics.py             #   回撤统计、敞口重构
+  tests/             # 571 个测试 (含黄金样本回归 test_golden.py)
   reports/           # 自动生成的 CSV + PNG 报告
-  daily.py           # 每日回溯扫描 (入口脚本)
   live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
+  daily.py           # 每日回溯扫描 (入口脚本)
   dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
   config.py          # 统一运行时配置
   watchlist.toml     # 标的 + 策略 + 风控 + 日志 + 孤儿持仓配置
@@ -82,7 +87,7 @@ mytrader/
 # Python 3.10+
 pip install pipenv
 pipenv install --dev
-pipenv run python -m pytest tests/ -v   # 485 tests, verify env
+pipenv run pytest tests/ -v   # 571 tests, verify env
 ```
 
 ## 核心流程（30 分钟上手）
@@ -101,7 +106,7 @@ print_result(r)
 ### 2. Dashboard（5 min）
 
 ```bash
-pipenv run streamlit run dashboard.py  --server.port 8501 --server.headless true # http://localhost:8501
+pipenv run streamlit run dashboard.py --server.port 8501 --server.headless true  # http://localhost:8501
 ```
 
 - **单标 Tab**：选标的/策略 → 权益曲线 + 买卖点 + 策略对比
@@ -181,7 +186,7 @@ result, _ = run_backtest("AAPL", start="2020-01-01",
 
 ## 仓位管理
 
-两种仓位模式，通过 `sizing_mode` 切换：
+两种仓位模式，通过 `sizing_mode` 切换。**回测与实盘共用同一仓位计算函数**（`utils/sizing.py`），确保参数优化结果可直接迁移到实盘。
 
 ### fixed_capital（默认）
 
@@ -193,11 +198,13 @@ result, _ = run_backtest("AAPL", "2020-01-01", strategy_cls=WeeklyMACD_KDJ)
 
 ### risk_budget（风险预算，推荐实盘使用）
 
-引擎统一按 `风险金额 / 止损距离` 计算仓位：
+引擎统一按 `风险金额 / 止损距离` 计算仓位。公式与 `RiskController` 共用 `calc_risk_budget_qty()`：
 
 ```
-qty = capital × risk_per_trade / (ATR × risk_atr_mult)
+qty = capital × risk_pct / (ATR × stop_atr_mult) × vol_scalar
 ```
+
+其中 `vol_scalar` 实盘启用（根据 `vol_sensitivity` 自适应缩放），回测默认关闭（`vol_sensitivity=0`）。
 
 ```python
 result, _ = run_backtest(
@@ -266,7 +273,7 @@ IS 寻优 → 邻域 ±10%/±20% 扰动 → OOS 分布 → ROBUST~OVERFIT + VIAB
 
 ```bash
 pipenv run python analysis/param_robustness.py -s weekly_macd_kdj --symbol AAPL
-pipenv run python analysis/param_robustness.py -s enhanced_macd --sizing-mode risk_budget
+pipenv run python analysis/param_robustness.py -s turtle_trading --sizing-mode risk_budget
 ```
 
 输出解读：
@@ -302,7 +309,7 @@ pipenv run python analysis/stress_test.py -s weekly_macd_kdj --symbol AAPL
 
 在启动 `live_trader.py` 实盘前，逐项确认：
 
-- [ ] **485 测试全部通过** `pytest tests/ -q`
+- [ ] **571 测试全部通过** `pytest tests/ -q`
 - [ ] **黄金样本无漂移** — CI 绿标
 - [ ] `param_robustness` 评级 ROBUST 或 STABLE，非 OVERFIT
 - [ ] `cost_sensitivity` 评级 A 或 B（10bp/3bp 佣金下仍盈利）
@@ -330,8 +337,8 @@ pipenv run python analysis/stress_test.py -s weekly_macd_kdj --symbol AAPL
 非 watchlist 标的的持仓自动纳入扫描（只卖不买）。在 `watchlist.toml` 配置兜底策略：
 
 ```toml
-[defaults]
-orphan_strategy = "daily_macd_kdj"
+[orphan]
+strategy = "daily_macd_kdj"
 ```
 
 ### Docker 部署
@@ -358,8 +365,10 @@ docker run -d --name mytrader \
 `config.py` 提供统一的运行时配置，支持层级覆盖：
 
 ```
-默认值 (config.py) → config.yaml (可选) → 环境变量 (.env)
+默认值 (DEFAULT_CONFIG) → config.yaml (可选) → 环境变量 (.env)
 ```
+
+配置异常时输出 warning 日志并回退到默认值，不会静默失败。
 
 ## 添加新标的
 
@@ -394,7 +403,10 @@ class MyStrategy(BaseStrategy):
         return 20
 ```
 
-在 `strategy/__init__.py` 的 `STRATEGY_MAP` 注册，并在 `engine/optimize.py` 的 `PARAM_GRIDS` 添加搜索空间。
+需要同步修改 3 处：
+1. `strategy/__init__.py` — 添加到 `STRATEGY_MAP`
+2. 策略类定义 `grid` 属性（优化器自动发现）
+3. `watchlist.toml` — 添加 `[strategy.xxx]` 参数段
 
 ## 接入券商
 

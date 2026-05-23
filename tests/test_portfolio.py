@@ -388,7 +388,7 @@ class TestPortfolioBacktestIntegration:
         from unittest.mock import patch
         from data import DataProvider
 
-        legs = [Leg("AAPL", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading")]
         bt = PortfolioBacktest(legs=legs, initial_capital=10000, allocation="equal")
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
@@ -411,7 +411,7 @@ class TestPortfolioBacktestIntegration:
         import matplotlib
         matplotlib.use("Agg")
 
-        legs = [Leg("AAPL", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading")]
         bt = PortfolioBacktest(legs=legs, initial_capital=10000)
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
             result = bt.run(start="2020-01-01", end="2021-01-01")
@@ -425,8 +425,8 @@ class TestPortfolioBacktestIntegration:
         from unittest.mock import patch
         from data import DataProvider
 
-        legs = [Leg("AAPL", "enhanced_macd"), Leg("NVDA", "enhanced_macd"),
-                Leg("QQQ", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading"), Leg("NVDA", "turtle_trading"),
+                Leg("QQQ", "turtle_trading")]
         bt = PortfolioBacktest(legs=legs, initial_capital=10000, max_positions=1)
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
@@ -542,7 +542,7 @@ class TestTradePnLAlignsWithEquity:
         from unittest.mock import patch
         from data import DataProvider
 
-        legs = [Leg("AAPL", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading")]
         bt = PortfolioBacktest(legs=legs, initial_capital=10000, allocation="equal")
 
         with patch.object(DataProvider, 'get_daily', return_value=ohlcv):
@@ -593,7 +593,7 @@ class TestPortfolioSizing:
         from unittest.mock import patch
         from data import DataProvider
 
-        legs = [Leg("AAPL", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading")]
         bt = PortfolioBacktest(
             legs=legs, initial_capital=10000,
             sizing_mode="risk_budget", risk_per_trade=0.01,
@@ -627,7 +627,7 @@ class TestSectorWeight:
         from unittest.mock import patch
         from data import DataProvider
 
-        legs = [Leg("AAPL", "enhanced_macd"), Leg("NVDA", "enhanced_macd")]
+        legs = [Leg("AAPL", "turtle_trading"), Leg("NVDA", "turtle_trading")]
         bt = PortfolioBacktest(
             legs=legs, initial_capital=10000,
             max_sector_weight=0.05,  # very tight

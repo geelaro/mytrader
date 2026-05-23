@@ -13,6 +13,7 @@ config.yaml can override runtime params like log level, trading hours etc.
 """
 
 import copy
+import logging
 import os
 import threading
 from pathlib import Path
@@ -155,7 +156,8 @@ class RuntimeConfig:
         try:
             with open(yaml_path, "rt", encoding="utf-8") as f:
                 user_data = _yaml.safe_load(f) or {}
-        except Exception:
+        except Exception as e:
+            logging.warning("config.yaml 解析失败，使用默认配置: %s", e)
             return
         if not isinstance(user_data, dict):
             return

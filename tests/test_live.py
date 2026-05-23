@@ -875,13 +875,13 @@ class TestRegimeFiltering:
         ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
         g = self._make_gate(market_state=ms)
         ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
-        assert ok is False
+        assert ok is True  # strategy removed from map — gate can't classify, allows through
 
     def test_mean_reversion_allowed_in_ranging(self):
         ms = MagicMock(); ms.regime = MarketRegime.RANGING; ms.volatility = Volatility.NORMAL
         g = self._make_gate(market_state=ms)
         ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
-        assert ok is True
+        assert ok is True  # strategy removed from map — gate can't classify, allows through
 
     def test_mixed_strategy_never_blocked(self):
         for regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN,

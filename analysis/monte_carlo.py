@@ -70,8 +70,9 @@ def run(
     print(f"平均单笔盈亏: {pnl_pcts.mean():+.2f}% (占初始资金)")
     print(f"单笔标准差: {pnl_pcts.std():.2f}%")
 
-    # Monte Carlo: shuffle trade order 2000 times, track drawdowns
-    n_sims = 2000
+    # Monte Carlo: shuffle trade order, track drawdowns
+    if n_sims is None:
+        n_sims = 2000
     max_dds = []
     end_equities = []
 

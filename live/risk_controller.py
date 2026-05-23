@@ -5,6 +5,7 @@ from typing import Dict
 
 from broker import Order, OrderSide
 from utils import get_logger
+from utils.sizing import calc_risk_budget_qty
 
 logger = get_logger("live")
 
@@ -52,12 +53,12 @@ class RiskController:
             cl = self.cache.load_risk_state("consecutive_losses")
             dt = self.cache.load_risk_state("daily_trade_count")
             dse = self.cache.load_risk_state("day_start_equity")
+            pe = self.cache.load_risk_state("peak_equity")
             self.risk._date = today
             self.risk._consecutive_losses = int(cl) if cl else 0
             self.risk._daily_trade_count = int(dt) if dt else 0
             self.risk._day_start_equity = float(dse) if dse else 0.0
-        pe = self.cache.load_risk_state("peak_equity")
-        self.risk._peak_equity = float(pe) if pe else 0.0
+            self.risk._peak_equity = float(pe) if pe else 0.0
         self.entry_prices = {
             sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
         }
@@ -172,19 +173,17 @@ class RiskController:
             return 0
 
         r = self.risk
-        risk_dollar = capital * r.base_risk_pct
-
-        if atr > 0:
-            vol_ratio = atr / price
-            vol_scalar = 1.0 / (1.0 + vol_ratio * r.vol_sensitivity)
-            vol_scalar = max(vol_scalar, r.min_vol_scalar)
-            qty = int(risk_dollar / (atr * 2) * vol_scalar)
-        else:
-            qty = int(capital * 0.30 / price)
+        raw_qty = calc_risk_budget_qty(
+            capital, price, atr,
+            risk_pct=r.base_risk_pct,
+            stop_atr_mult=2.0,
+            vol_sensitivity=r.vol_sensitivity,
+            min_vol_scalar=r.min_vol_scalar,
+        )
 
         ref = total_equity if total_equity > 0 else capital
         max_qty = int(ref * r.max_position_pct / price)
-        return max(1, min(qty, max_qty))
+        return max(1, min(raw_qty, max_qty))
 
     def on_trade_filled(self, order: Order):
         r = self.risk

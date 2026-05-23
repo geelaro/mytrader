@@ -115,10 +115,10 @@ class TestScanDay:
             "watchlist": [{
                 "symbol": "TEST",
                 "name": "TestStock",
-                "active": "enhanced_macd",
+                "active": "trend_follower",
                 "monitor": ["turtle_trading"],
             }],
-            "strategy": {"enhanced_macd": {}, "turtle_trading": {}},
+            "strategy": {"trend_follower": {}, "turtle_trading": {}},
         }
         results = scan_day(config, target_date="2025-06-01",
                            provider=provider, cache=temp_cache)

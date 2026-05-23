@@ -111,13 +111,12 @@ class TestVolatility:
 class TestStrategyTypeChecks:
     def test_trend_strategies(self):
         assert is_trend_strategy("turtle_trading") is True
-        assert is_trend_strategy("enhanced_macd") is True
+        assert is_trend_strategy("trend_follower") is True
         assert is_trend_strategy("weekly_macd_kdj") is True
-        assert is_trend_strategy("bollinger_mean_reversion") is False
         assert is_trend_strategy("daily_macd_kdj") is False
 
     def test_mean_reversion_strategies(self):
-        assert is_mean_reversion_strategy("bollinger_mean_reversion") is True
+        assert is_mean_reversion_strategy("bollinger_mean_reversion") is False  # removed from active map
         assert is_mean_reversion_strategy("turtle_trading") is False
         assert is_mean_reversion_strategy("daily_macd_kdj") is False
 
@@ -141,7 +140,7 @@ class TestSignalGate:
         ms = MagicMock(); ms.regime = MarketRegime.TRENDING_UP; ms.volatility = Volatility.NORMAL
         g = SignalGate(ms_enabled=True, market_state=ms)
         ok, _ = g.allow_buy({"symbol": "AAPL", "strategy": "bollinger_mean_reversion"}, {}, None)
-        assert ok is False
+        assert ok is True  # strategy removed from map — gate can't classify, allows through
 
     def test_pause_blocks_buy(self):
         from utils.signal_gate import SignalGate
