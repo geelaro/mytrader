@@ -9,8 +9,8 @@
 ## 总览
 
 ```
-阶段一  致命修复     第 1 周    ████████░░░░░░░   (5 项, P0)
-阶段二  架构矫正     第 2-3 周  ░░░░░░░░░░░░░░   (5 项, P1)
+阶段一  致命修复     第 1 周    ████████████████   (5 项, 已完成)
+阶段二  架构矫正     第 2-3 周  ██░░░░░░░░░░░░░░   (1/5 项, P1)
 阶段三  质量加固     第 4 周    ░░░░░░░░░░░░░░   (6 项, P2)
 阶段四  MTF 框架     第 5-6 周  ░░░░░░░░░░░░░░   (4 项)
 阶段五  策略与组合   第 7-8 周  ░░░░░░░░░░░░░░   (4 项)
@@ -91,13 +91,16 @@
 
 ### P1-4 Tencent 单源加 fallback 链
 
-- [ ] 完成
-- **文件:** `data/sources.py`
+- [x] 完成
+- **文件:** `data/sources.py` `data/protocol.py` `data/cache.py`
 - **问题:** `SOURCE_PRIORITY["us"] = ["tencent"]` — 腾讯 API 为唯一 US 数据源，无 SLA，随时可能变动或限流
 - **方案:**
-  1. AKShare 添加美股支持
-  2. `SOURCE_PRIORITY["us"]` 扩展为 `["tencent", "akshare", "yfinance"]`
-  3. 任一源失败自动降级到下一个
+  1. 新增 `SinaUSSource` — 新浪美股日K，回溯至 1984 年，实测可用
+  2. 新增 `YahooChartSource` — Yahoo v8 chart API + cookie 流，作为第三级回退
+  3. 回退链: `sina_us → tencent → yahoo_chart`
+  4. 彻底移除 `yfinance` 依赖和 `YFinanceSource`
+  5. `missing_ranges()` 新增缺口合并逻辑，避免几十个小缺口触发级联请求
+- **变更:** +208/-75 行源码, +167 行测试, 576 passed
 
 ### P1-5 CacheManager 按职责拆分
 
@@ -341,6 +344,7 @@
 | 2026-05-23 | 阶段一 | P0-3 Config YAML 异常警告 | 完成 | 改用 logging.warning() 记录解析错误 |
 | 2026-05-23 | 阶段一 | P0-4 Monte Carlo 参数覆盖 | 完成 | n_sims = n_sims or 2000 |
 | 2026-05-23 | 阶段一 | P0-5 失效策略移除 | 完成 | 从 STRATEGY_MAP/watchlist.toml 移除, 保留源文件供测试导入 |
+| 2026-05-23 | 阶段二 | P1-4 数据源多链 | 完成 | SinaUSSource + YahooChartSource, 移除 yfinance, 回退链 sina_us→tencent→yahoo_chart, missing_ranges 缺口合并 |
 
 ---
 
