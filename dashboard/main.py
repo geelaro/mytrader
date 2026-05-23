@@ -39,11 +39,11 @@ def main():
     selected_symbol = st.sidebar.selectbox("标的", symbols)
 
     strategy_options = list(STRATEGY_MAP.keys())
-    selected_strategy = st.sidebar.selectbox("策略", strategy_options, index=3)
+    selected_strategy = st.sidebar.selectbox("策略", strategy_options, index=2)
 
     backtest_years = st.sidebar.slider("回测年数", 1, 10, 4)
-    allocation_mode = st.sidebar.selectbox("组合分配模式", ["equal", "dynamic_equal"], index=0)
-    pf_strategy = st.sidebar.selectbox("组合策略", strategy_options, index=3,
+    allocation_mode = st.sidebar.selectbox("组合分配模式", ["equal", "dynamic_equal"], index=1)
+    pf_strategy = st.sidebar.selectbox("组合策略", strategy_options, index=2,
                                        help="所有标的使用统一策略")
 
     @st.cache_resource
