@@ -146,29 +146,46 @@ def _render_pnl_attribution(pf_result, pf_strategy):
         st.info(f"无已完成交易（共 {len(pf_result.trades)} 笔开仓记录，0 笔已平仓）")
         return
 
-    attr_rows = []
-    for t in pf_result.closed_trades:
-        pnl = t.pnl or 0
-        attr_rows.append({
-            "symbol": t.symbol,
-            "month": pd.Timestamp(t.entry_time).strftime("%Y-%m"),
-            "pnl": pnl,
-            "pnl_pct": t.pnl_pct or 0,
-            "entry": pd.Timestamp(t.entry_time),
-        })
-    df_attr = pd.DataFrame(attr_rows)
-    total_pnl = df_attr["pnl"].sum()
+    try:
+        attr_rows = []
+        for t in pf_result.closed_trades:
+            pnl = float(t.pnl or 0)
+            try:
+                month_str = str(t.entry_time)[:7] if t.entry_time else "?"
+            except Exception:
+                month_str = "?"
+            attr_rows.append({
+                "symbol": str(t.symbol),
+                "month": month_str,
+                "pnl": pnl,
+                "pnl_pct": float(t.pnl_pct or 0),
+            })
+        df_attr = pd.DataFrame(attr_rows)
+        total_pnl = df_attr["pnl"].sum()
+    except Exception as e:
+        st.error(f"收益归因解析错误: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        return
 
     fc1, fc2, fc3 = st.columns([1, 1, 2])
     with fc1:
-        min_date = df_attr["entry"].min().date()
-        max_date = df_attr["entry"].max().date()
-        attr_start = st.date_input("筛选起始", min_date, key="attr_start")
+        # Use month-based filter instead of entry date
+        months = sorted(df_attr["month"].unique().tolist())
+        if months:
+            attr_start = st.selectbox("起始月", months, index=0, key="attr_start")
+            attr_end = st.selectbox("结束月", months, index=len(months)-1, key="attr_end")
+        else:
+            attr_start = attr_end = ""
     with fc2:
-        attr_end = st.date_input("筛选结束", max_date, key="attr_end")
+        all_syms = sorted(df_attr["symbol"].unique().tolist())
+        attr_sym = st.multiselect("标的", all_syms, default=all_syms, key="attr_sym")
 
-    mask = (df_attr["entry"] >= pd.Timestamp(attr_start)) & (df_attr["entry"] <= pd.Timestamp(attr_end))
-    df_filt = df_attr[mask]
+    df_filt = df_attr.copy()
+    if attr_start and attr_end:
+        df_filt = df_filt[(df_filt["month"] >= attr_start) & (df_filt["month"] <= attr_end)]
+    if attr_sym:
+        df_filt = df_filt[df_filt["symbol"].isin(attr_sym)]
     filt_pnl = df_filt["pnl"].sum()
 
     with fc3:
