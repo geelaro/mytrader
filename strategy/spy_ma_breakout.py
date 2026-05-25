@@ -15,6 +15,9 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 
 from .base import BaseStrategy, StrategyParams, compute_atr
+from utils import get_logger as _get_logger
+
+_spy_logger = _get_logger("strategy.spy_ma_breakout")
 
 # Module-level SPY filter cache
 _spy_filter_cache: Optional[pd.Series] = None
@@ -85,7 +88,7 @@ class SPYMABreakout(BaseStrategy):
                     _spy_filter_cache = self._spy_filter
                     _spy_filter_ma_period = self.params.ma_period
             except Exception:
-                pass
+                _spy_logger.warning("SPY 数据获取失败，宏观过滤器不可用 — 策略将无过滤运行")
 
     @property
     def min_bars(self) -> int:

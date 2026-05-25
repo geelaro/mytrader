@@ -89,9 +89,10 @@ class StrategyEnsemble(BaseStrategy):
         if state.volatility == Volatility.HIGH:
             vol_bonus = 0.1
 
-        # Collect each member's signal series
+        # Collect each member's signal + full DataFrame
         member_signals: List[pd.Series] = []
         member_regimes: List[str] = []
+        member_dfs: List[pd.DataFrame] = []
         for strat, regime_label in self._members:
             try:
                 df_sig = strat.calculate_indicators(df, df_weekly=df_weekly)
@@ -99,6 +100,7 @@ class StrategyEnsemble(BaseStrategy):
                 df_sig = strat.calculate_indicators(df)
             member_signals.append(df_sig["Signal"])
             member_regimes.append(regime_label)
+            member_dfs.append(df_sig)
 
         # Weighted score
         score = pd.Series(0.0, index=df.index[:len(member_signals[0])])
@@ -125,12 +127,8 @@ class StrategyEnsemble(BaseStrategy):
         if conflict.any():
             result.loc[conflict, "Signal"] = np.sign(score[conflict]).astype(int)
 
-        # Carry forward ATR from first member that has it
-        for strat, _ in self._members:
-            try:
-                df_sig = strat.calculate_indicators(df, df_weekly=df_weekly)
-            except TypeError:
-                df_sig = strat.calculate_indicators(df)
+        # Carry forward ATR from first member that has it (from cached df_sig)
+        for df_sig in member_dfs:
             if "ATR" in df_sig.columns:
                 result["ATR"] = df_sig["ATR"]
                 break

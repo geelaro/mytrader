@@ -331,11 +331,8 @@ class AKShareSource(DataSource):
     @staticmethod
     def _normalise_symbol(symbol: str) -> str:
         s = symbol.lower().strip()
-        return _A_KSHARE_MAP.get(s, s)
-
-    @staticmethod
-    def _normalise_symbol(symbol: str) -> str:
-        s = symbol.lower().strip()
+        if s in _A_KSHARE_MAP:
+            return _A_KSHARE_MAP[s]
         if s in CN_SYMBOLS:
             return CN_SYMBOLS[s]
         if s.startswith(("sh", "sz")):

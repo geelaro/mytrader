@@ -57,11 +57,7 @@ class BacktestResult:
     buy_hold_return_pct: float
     initial_capital: float
     final_equity: float
-    rejections: list = None
-
-    def __post_init__(self):
-        if self.rejections is None:
-            self.rejections = []
+    rejections: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -170,12 +166,15 @@ class BacktestEngine:
             if old_entry and old_entry.get('direction') == 'SHORT':
                 e = old_entry
                 cover_qty = min(fill.filled_qty, e['quantity'])
+                entry_proceeds = e['price'] * cover_qty * (1 - self.commission_rate)
+                pnl = entry_proceeds - total_cost
+                short_pnl_pct = (pnl / (e['price'] * cover_qty) * 100) if e['price'] > 0 else 0
                 trade = Trade(
                     entry_date=e['date'], exit_date=fill.date,
                     entry_price=e['price'], exit_price=fill.fill_price,
                     quantity=cover_qty,
-                    pnl=(e['price'] - fill.fill_price) * cover_qty,
-                    pnl_pct=(e['price'] / fill.fill_price - 1) * 100,
+                    pnl=pnl,
+                    pnl_pct=short_pnl_pct,
                     exit_reason=fill.reason if hasattr(fill, 'reason') else 'cover',
                     direction='SHORT')
                 self.trades.append(trade)
@@ -422,12 +421,15 @@ class BacktestEngine:
             cost = actual_price * qty * (1 + self.commission_rate)
             if self.current_entry and self.current_entry.get('direction') == 'SHORT':
                 e = self.current_entry
+                entry_proceeds = e['price'] * qty * (1 - self.commission_rate)
+                pnl = entry_proceeds - cost
+                short_pnl_pct = (pnl / (e['price'] * qty) * 100) if e['price'] > 0 else 0
                 trade = Trade(
                     entry_date=e['date'], exit_date=last_date,
                     entry_price=e['price'], exit_price=actual_price,
                     quantity=qty,
-                    pnl=(e['price'] - actual_price) * qty,
-                    pnl_pct=(e['price'] / actual_price - 1) * 100,
+                    pnl=pnl,
+                    pnl_pct=short_pnl_pct,
                     exit_reason="回测结束",
                     direction='SHORT')
                 self.trades.append(trade)

@@ -38,10 +38,12 @@ class SignalScanner:
         provider: DataProvider,
         cache: Optional[CacheManager] = None,
         lookback_years: int = 3,
+        weekly_anchor: str = "W-FRI",
     ):
         self.provider = provider
         self.cache = cache
         self.lookback_years = lookback_years
+        self.weekly_anchor = weekly_anchor
         self._data_cache: Dict[str, pd.DataFrame] = {}  # symbol → daily df
         self._weekly_cache: Dict[str, pd.DataFrame] = {}  # symbol → weekly df
 
@@ -201,12 +203,16 @@ class SignalScanner:
     def _fetch_weekly(
         self, symbol: str, start: str, end: str
     ) -> Optional[pd.DataFrame]:
-        """Fetch weekly OHLCV for *symbol* (resampled from daily, cached in-scan)."""
+        """Fetch weekly OHLCV for *symbol* (resampled from daily, cached in-scan).
+
+        Uses ``self.weekly_anchor`` for the resample weekday (default ``W-FRI``
+        for US markets; pass ``W-WED`` or ``W-THU`` for Asian markets).
+        """
         if symbol not in self._weekly_cache:
             daily = self._fetch_data(symbol, start, end)
             if daily is not None and not daily.empty:
                 self._weekly_cache[symbol] = (
-                    daily.resample("W-FRI")
+                    daily.resample(self.weekly_anchor)
                     .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
                     .dropna()
                 )

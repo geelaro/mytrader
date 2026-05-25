@@ -155,7 +155,6 @@ class _CacheBase:
     def enable_batch(self):
         """Defer all commits — caller must call commit_batch() once."""
         with self._lock:
-            self._batch_mode = False
             self._batch_mode = True
 
     def commit_batch(self):

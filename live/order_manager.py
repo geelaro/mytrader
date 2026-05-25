@@ -118,6 +118,11 @@ class OrderManager:
                 candidates_long.append((sym, sig))
 
             elif sig["signal"] == -1 and not has_position:
+                ok, reason = self.gate.allow_sell(sig)
+                if not ok:
+                    print(f"  ! {sym} {reason}，跳过")
+                    self.cache.log_ops("gate_reject", symbol=sym, detail=reason, level="WARN")
+                    continue
                 candidates_short.append((sym, sig))
 
         # ---- Phase 3: batch equal-risk allocation for all open orders --------
