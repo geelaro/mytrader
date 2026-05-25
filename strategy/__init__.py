@@ -9,6 +9,7 @@ from .atr_breakout import ATRBreakout, ATRBreakoutParams
 from .bollinger_squeeze import BollingerSqueeze, BollingerSqueezeParams  # deprecated — kept for test imports
 from .turtle_trading import TurtleTrading, TurtleTradingParams
 from .spy_ma_breakout import SPYMABreakout, SPYMABreakoutParams
+from .ensemble import StrategyEnsemble, EnsembleParams
 
 STRATEGY_MAP = {
     "trend_follower": TrendFollower,
@@ -52,6 +53,8 @@ __all__ = [
     "DailyMACDKDJParams",
     "SPYMABreakout",
     "SPYMABreakoutParams",
+    "StrategyEnsemble",
+    "EnsembleParams",
     "STRATEGY_MAP",
     "SIGNAL_LABEL",
 ]

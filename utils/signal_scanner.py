@@ -46,6 +46,7 @@ class SignalScanner:
         self.weekly_anchor = weekly_anchor
         self._data_cache: Dict[str, pd.DataFrame] = {}  # symbol → daily df
         self._weekly_cache: Dict[str, pd.DataFrame] = {}  # symbol → weekly df
+        self._proxy_cache: Optional[pd.DataFrame] = None  # shared proxy for ensemble
 
     # ------------------------------------------------------------------
     # Public API
@@ -100,6 +101,7 @@ class SignalScanner:
 
         self._data_cache.clear()
         self._weekly_cache.clear()
+        self._proxy_cache = None
         return results
 
     # ------------------------------------------------------------------
@@ -119,6 +121,12 @@ class SignalScanner:
         is_orphan = item.get("_orphan", False)
         active_strat = item.get("active", "")
         monitor_list = item.get("monitor", []) if active_first else []
+
+        # ── ensemble mode: active is a list of strategy names ─────────
+        if isinstance(active_strat, list) and active_strat:
+            return self._scan_ensemble(
+                symbol, name, active_strat, item, start, target_date, is_orphan,
+            )
 
         strategy_names = [active_strat] + monitor_list if active_strat else monitor_list
         if not strategy_names:
@@ -189,6 +197,73 @@ class SignalScanner:
 
         return results
 
+    def _scan_ensemble(
+        self, symbol: str, name: str, members: list, item: dict,
+        start: str, target_date: str, is_orphan: bool,
+    ) -> List[dict]:
+        """Build a StrategyEnsemble from *members* and return one signal dict."""
+        df = self._fetch_data(symbol, start, target_date)
+        if df is None or df.empty:
+            return []
+
+        # Lazy-fetch proxy data once per scan pass
+        if self._proxy_cache is None:
+            self._proxy_cache = self.provider.get_daily("SPY", start=start, end=target_date)
+
+        from strategy.ensemble import StrategyEnsemble
+        from strategy import STRATEGY_MAP as _SMAP
+
+        tags = item.get("regime_tags") or ["trend"] * len(members)
+        if len(tags) != len(members):
+            logger.warning("regime_tags 长度与 members 不匹配: %s", symbol)
+            return []
+
+        member_params = item.get("params", {}).get("members", {})
+        pairs = []
+        for strat_name, tag in zip(members, tags):
+            cls = _SMAP.get(strat_name)
+            if cls is None:
+                logger.warning("未知策略: %s", strat_name)
+                return []
+            mp = member_params.get(strat_name, {})
+            pairs.append((cls(**mp), tag))
+
+        ep = item.get("ensemble_params") or {}
+        ensemble = StrategyEnsemble(
+            members=pairs, proxy_df=self._proxy_cache, **ep,
+        )
+        df_sig = ensemble.calculate_indicators(df)
+
+        idx = -1
+        signal = int(df_sig["Signal"].iloc[idx])
+        price = float(df_sig["Close"].iloc[idx])
+        atr = float(df_sig["ATR"].iloc[idx]) if "ATR" in df_sig.columns else 0
+
+        bar_date = (
+            target_date if target_date in df_sig.index.strftime("%Y-%m-%d")
+            else df_sig.index[-1].strftime("%Y-%m-%d")
+        )
+
+        indicators: Dict[str, float] = {}
+        for col in df_sig.columns:
+            if col not in ("Open", "High", "Low", "Close", "Volume", "Signal"):
+                val = df_sig[col].iloc[idx]
+                if isinstance(val, (float, int)) and not pd.isna(val):
+                    indicators[col] = round(float(val), 4)
+
+        if self.cache is not None:
+            self.cache.save_signal(
+                scan_date=target_date, symbol=symbol, strategy="ensemble",
+                bar_date=bar_date, signal=signal, price=price, atr=atr,
+                indicators=json.dumps(indicators, ensure_ascii=False),
+            )
+
+        return [{
+            "symbol": symbol, "name": name, "strategy": "ensemble",
+            "signal": signal, "price": price, "atr": atr,
+            "bar_date": bar_date, "indicators": indicators, "orphan": is_orphan,
+        }]
+
     def _fetch_data(
         self, symbol: str, start: str, end: str
     ) -> Optional[pd.DataFrame]:
@@ -234,6 +309,12 @@ def enrich_scan_items(config: dict) -> List[dict]:
     for item in config.get("watchlist", []):
         active = item.get("active", "")
         merged = dict(item)
-        merged["params"] = config.get("strategy", {}).get(active, {})
+        if isinstance(active, list):
+            # Ensemble mode — collect per-member params
+            merged["params"] = {"members": {}}
+            for name in active:
+                merged["params"]["members"][name] = config.get("strategy", {}).get(name, {})
+        else:
+            merged["params"] = config.get("strategy", {}).get(active, {})
         items.append(merged)
     return items

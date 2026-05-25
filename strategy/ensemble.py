@@ -64,6 +64,7 @@ class StrategyEnsemble(BaseStrategy):
         members: List[Tuple[BaseStrategy, str]],
         proxy_df: pd.DataFrame,
         weights: Optional[dict] = None,
+        member_weights: Optional[List[float]] = None,
         **kwargs,
     ):
         super().__init__(EnsembleParams(**kwargs))
@@ -71,6 +72,7 @@ class StrategyEnsemble(BaseStrategy):
         self._classifier = MarketStateClassifier(proxy_df)
         self._classifier.calculate()
         self._weights = weights or _DEFAULT_WEIGHTS
+        self._member_weights = member_weights  # per-member scalar multipliers
         self._regime_map = {s.regime: r for s, r in members}
 
     @property
@@ -102,10 +104,14 @@ class StrategyEnsemble(BaseStrategy):
             member_regimes.append(regime_label)
             member_dfs.append(df_sig)
 
-        # Weighted score
+        # Weighted score (regime weight × optional per-member weight)
         score = pd.Series(0.0, index=df.index[:len(member_signals[0])])
-        for sig_series, regime_label in zip(member_signals, member_regimes):
-            w = weights.get(regime_label, 0.33) + (vol_bonus if regime_label == "trend" else 0)
+        n = len(member_signals)
+        for idx, (sig_series, regime_label) in enumerate(zip(member_signals, member_regimes)):
+            w = weights.get(regime_label, 0.33)
+            if self._member_weights and idx < len(self._member_weights):
+                w *= self._member_weights[idx] * n  # normalize: sum(mw)=1 keeps total equal
+            w += (vol_bonus if regime_label == "trend" else 0)
             score = score + sig_series.astype(float) * w
 
         # Consensus count (how many members agree on direction)

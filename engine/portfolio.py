@@ -30,13 +30,54 @@ from engine.execution import ExecutionConfig, ExecutionModel, ExecutionTiming
 
 @dataclass
 class Leg:
-    """One leg of the portfolio — a symbol + strategy pair."""
+    """One leg of the portfolio — a symbol + strategy (or ensemble of strategies).
+
+    Ensemble mode is triggered when ``members`` is a non-empty list.  In that
+    mode ``strategy_name`` is ignored and the ensemble is built from the
+    listed member strategy names, each paired with its ``regime_tags`` label.
+    """
 
     symbol: str
-    strategy_name: str
+    strategy_name: str = ""
     params: dict = field(default_factory=dict)
+    members: Optional[List[str]] = None
+    regime_tags: Optional[List[str]] = None
+    ensemble_params: Optional[dict] = None
 
-    def create_strategy(self) -> BaseStrategy:
+    def create_strategy(
+        self, proxy_df: Optional["pd.DataFrame"] = None
+    ) -> BaseStrategy:
+        # ── ensemble mode ───────────────────────────────────────────
+        if self.members:
+            if proxy_df is None:
+                raise ValueError(
+                    "proxy_df is required for ensemble legs; "
+                    "run() provides it automatically"
+                )
+            from strategy.ensemble import StrategyEnsemble
+            from strategy import STRATEGY_MAP as _SMAP
+
+            # Build member (strategy_instance, regime_label) pairs
+            pairs = []
+            tags = self.regime_tags or ["trend"] * len(self.members)
+            if len(tags) != len(self.members):
+                raise ValueError(
+                    f"regime_tags length ({len(tags)}) != members length "
+                    f"({len(self.members)}) for {self.symbol}"
+                )
+            member_params = self.params.get("members", {})
+            for name, tag in zip(self.members, tags):
+                cls = _SMAP.get(name)
+                if cls is None:
+                    raise ValueError(f"Unknown ensemble member: {name}")
+                mp = member_params.get(name, {})
+                pairs.append((cls(**mp), tag))
+
+            ep = dict(self.ensemble_params or {})
+            mw = ep.pop("member_weights", None)
+            return StrategyEnsemble(members=pairs, proxy_df=proxy_df, member_weights=mw, **ep)
+
+        # ── single-strategy mode ────────────────────────────────────
         cls = _STRATEGY_MAP.get(self.strategy_name)
         if cls is None:
             raise ValueError(f"Unknown strategy: {self.strategy_name}")
@@ -187,6 +228,15 @@ class PortfolioBacktest:
 
         provider = DataProvider()
 
+        # Fetch proxy data once if any leg is an ensemble
+        proxy_df = None
+        has_ensemble = any(leg.members for leg in self.legs)
+        if has_ensemble:
+            proxy_df = provider.get_daily("SPY", start=start, end=end)
+            if proxy_df is None or proxy_df.empty:
+                print("  ! SPY 无数据，集成代理不可用")
+                proxy_df = None
+
         # Fetch all data & calculate signals upfront
         leg_data = []  # list of (leg, strategy, df_sig)
         for leg in self.legs:
@@ -195,10 +245,11 @@ class PortfolioBacktest:
                 print(f"  ! {leg.symbol} 无数据，跳过")
                 continue
             df = df.dropna(subset=["Open", "High", "Low", "Close"])
-            strategy = leg.create_strategy()
+            strategy = leg.create_strategy(proxy_df=proxy_df)
             df_sig = strategy.calculate_indicators(df)
+            display_name = "ensemble" if leg.members else leg.strategy_name
             leg_data.append((leg, strategy, df_sig))
-            print(f"  {leg.symbol:<8s}  {leg.strategy_name:<20s}  {len(df_sig)} 根K线")
+            print(f"  {leg.symbol:<8s}  {display_name:<20s}  {len(df_sig)} 根K线")
 
         if not leg_data:
             raise RuntimeError("所有标的均无数据")
@@ -370,12 +421,19 @@ class PortfolioBacktest:
         """Check exit signal for a held LONG position."""
         if price > st["highest"]:
             st["highest"] = price
-        exit_now, reason = st["strategy"].check_exit(
-            df_sig, idx_pos,
-            entry_price=st["entry_price"],
-            highest_since_entry=st["highest"],
-            position={"date": st["entry_date"], "direction": "LONG"},
-        )
+        try:
+            exit_now, reason = st["strategy"].check_exit(
+                df_sig, idx_pos,
+                entry_price=st["entry_price"],
+                highest_since_entry=st["highest"],
+                position={"date": st["entry_date"], "direction": "LONG"},
+            )
+        except TypeError:
+            exit_now, reason = st["strategy"].check_exit(
+                df_sig, idx_pos,
+                entry_price=st["entry_price"],
+                highest_since_entry=st["highest"],
+            )
         if exit_now:
             st["pending_order"] = self.execution_model.make_plan(
                 symbol=st["leg"].symbol,
@@ -392,13 +450,21 @@ class PortfolioBacktest:
         """
         if price < st["lowest"]:
             st["lowest"] = price
-        exit_now, reason = st["strategy"].check_exit(
-            df_sig, idx_pos,
-            entry_price=st["entry_price"],
-            highest_since_entry=st.get("highest", 0),
-            lowest_since_entry=st["lowest"],
-            position={"date": st["entry_date"], "direction": "SHORT"},
-        )
+        try:
+            exit_now, reason = st["strategy"].check_exit(
+                df_sig, idx_pos,
+                entry_price=st["entry_price"],
+                highest_since_entry=st.get("highest", 0),
+                lowest_since_entry=st["lowest"],
+                position={"date": st["entry_date"], "direction": "SHORT"},
+            )
+        except TypeError:
+            exit_now, reason = st["strategy"].check_exit(
+                df_sig, idx_pos,
+                entry_price=st["entry_price"],
+                highest_since_entry=st.get("highest", 0),
+                position={"date": st["entry_date"], "direction": "SHORT"},
+            )
         if exit_now:
             st["pending_order"] = self.execution_model.make_plan(
                 symbol=st["leg"].symbol,
@@ -426,6 +492,8 @@ class PortfolioBacktest:
 
         direction = "LONG" if sig == 1 else ("SHORT" if sig == -1 else None)
         if direction is None:
+            return daily_new_count
+        if direction == "SHORT" and getattr(st["strategy"], "long_only", True):
             return daily_new_count
 
         sym = st["leg"].symbol

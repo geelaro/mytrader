@@ -101,7 +101,8 @@ def scan_day(
         for r in group:
             label = SIGNAL_LABEL.get(r["signal"], str(r["signal"]))
             if r["signal"] != 0:
-                tag = " ★" if r["strategy"] == active_strat else "  "
+                is_active = r["strategy"] == active_strat if isinstance(active_strat, str) else r["strategy"] == "ensemble"
+                tag = " ★" if is_active else "  "
                 signal_lines.append(
                     f"  {r['strategy']:<20s}  {label:<5s}  "
                     f"价格: {r['price']:.2f}  ATR: {r['atr']:.2f}{tag}"
@@ -251,7 +252,9 @@ def _run_optimize_and_update(config: dict, args, target_date: str):
 
     for item in watchlist:
         active = item.get("active", "")
-        if not active or active == "enhanced_macd":  # skip deprecated
+        if not active or active == "enhanced_macd":
+            continue
+        if isinstance(active, list):  # ensemble — optimise members individually
             continue
         sym = item["symbol"]
         current_params = strategy_params.get(active, {})
