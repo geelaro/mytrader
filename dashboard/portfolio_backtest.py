@@ -281,7 +281,9 @@ def _render_trade_details(pf_result, pf_strategy):
             except Exception:
                 entry_str = str(t.entry_time)[:10] if t.entry_time else ""
                 exit_str = ""
+            direction_label = "做多" if getattr(t, 'direction', 'LONG') == 'LONG' else "做空"
             trade_rows.append({
+                "方向": direction_label,
                 "标的": str(t.symbol),
                 "入场日": entry_str,
                 "出场日": exit_str,
@@ -331,7 +333,7 @@ def _render_trade_details(pf_result, pf_strategy):
         filtered_pnl = df_filtered["PnL"].sum()
         st.metric("筛选PnL合计", f"${filtered_pnl:+,.0f}")
 
-    display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
+    display_cols = ["方向", "标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
     st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True, height=400)
 
 

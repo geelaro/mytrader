@@ -108,7 +108,10 @@ def render_single_backtest(selected_symbol, selected_strategy, backtest_years,
                         )
                         trade_rows = []
                         for t in result.trades:
+                            direction = getattr(t, 'direction', 'LONG')
+                            label = "做多" if direction == "LONG" else "做空"
                             trade_rows.append({
+                                "方向": label,
                                 "入场日": t.entry_date.strftime("%Y-%m-%d") if hasattr(t.entry_date, "strftime") else str(t.entry_date)[:10],
                                 "出场日": t.exit_date.strftime("%Y-%m-%d") if hasattr(t.exit_date, "strftime") else str(t.exit_date)[:10],
                                 "数量": t.quantity,

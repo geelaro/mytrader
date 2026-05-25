@@ -1,18 +1,8 @@
-# 每日回溯配置文件
-# active = 实盘/信号执行的策略（每个标的一个）
-# monitor = 观察对比的策略（回测用，不执行）
-
 [scanner]
 lookback_years = 3
 
 [orphan]
-# 孤儿持仓（不在 watchlist 中的已有持仓）使用的策略
-# 只响应卖出信号，不产生买入信号，让持仓自然退出
 strategy = "daily_macd_kdj"
-
-# ---------------------------------------------------------------------------
-# 监控标的列表
-# ---------------------------------------------------------------------------
 
 [[watchlist]]
 symbol = "AAPL"
@@ -74,9 +64,11 @@ name = "S&P 500 ETF"
 active = "weekly_macd_kdj"
 monitor = ["turtle_trading"]
 
-# ---------------------------------------------------------------------------
-# 策略参数
-# ---------------------------------------------------------------------------
+[[watchlist]]
+symbol = "SMH"
+name = "SMH"
+active = "weekly_macd_kdj"
+monitor = []
 
 [strategy.weekly_macd]
 macd_fast = 12
@@ -99,14 +91,14 @@ kdj_n = 9
 kdj_k = 3
 kdj_d = 3
 atr_period = 14
-trail_atr_mult = 4.0
+trail_atr_mult = 4
 risk_per_trade = 0.02
 max_position_pct = 0.95
 
 [strategy.donchian_breakout]
 channel_period = 20
 atr_period = 14
-trail_atr_mult = 3.0
+trail_atr_mult = 3
 risk_per_trade = 0.02
 max_position_pct = 0.95
 volume_confirm = true
@@ -114,8 +106,8 @@ volume_confirm = true
 [strategy.atr_breakout]
 ma_period = 20
 atr_period = 14
-breakout_atr_mult = 2.0
-trail_atr_mult = 3.0
+breakout_atr_mult = 2
+trail_atr_mult = 3
 risk_per_trade = 0.02
 max_position_pct = 0.95
 ma_type = "ema"
@@ -125,48 +117,9 @@ short_period = 20
 long_period = 50
 channel_period = 20
 atr_period = 14
-trail_atr_mult = 3.0
+trail_atr_mult = 3
 risk_per_trade = 0.02
 max_position_pct = 0.95
-
-# ---------------------------------------------------------------------------
-# 市场状态识别
-# ---------------------------------------------------------------------------
-
-[market_state]
-# 启用市场状态过滤（true 开启）
-enabled = true
-# 用于判断市场状态的代理标的（需在 watchlist 或数据源可获取）
-proxy_symbol = "SPY"
-# 高波动时仓位缩放系数（0.7 = 缩至 70%）
-vol_high_scalar = 0.7
-
-# ---------------------------------------------------------------------------
-# 风控参数
-# ---------------------------------------------------------------------------
-
-[risk]
-max_position_pct = 0.30
-max_total_exposure_pct = 0.80
-max_daily_loss_pct = 0.05
-min_order_value = 500.0
-max_slippage_pct = 0.02
-max_consecutive_losses = 3
-max_daily_trades = 5
-base_risk_pct = 0.02
-vol_sensitivity = 5.0
-min_vol_scalar = 0.3
-max_total_drawdown_pct = 0.30
-
-# ---------------------------------------------------------------------------
-# 日志
-# ---------------------------------------------------------------------------
-
-[log]
-level = "INFO"
-file_dir = "logs"
-max_bytes = 10485760
-backup_count = 3
 
 [strategy.trend_follower]
 short_ma = 20
@@ -174,6 +127,30 @@ long_ma = 50
 adx_period = 14
 adx_threshold = 20
 atr_period = 14
-trail_atr_mult = 3.0
+trail_atr_mult = 3
 risk_per_trade = 0.02
 max_position_pct = 0.95
+
+[market_state]
+enabled = true
+proxy_symbol = "SPY"
+vol_high_scalar = 0.7
+
+[risk]
+max_position_pct = 0.3
+max_total_exposure_pct = 0.8
+max_daily_loss_pct = 0.05
+min_order_value = 500
+max_slippage_pct = 0.02
+max_consecutive_losses = 3
+max_daily_trades = 5
+base_risk_pct = 0.02
+vol_sensitivity = 5
+min_vol_scalar = 0.3
+max_total_drawdown_pct = 0.3
+
+[log]
+level = "INFO"
+file_dir = "logs"
+max_bytes = 10485760
+backup_count = 3

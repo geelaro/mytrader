@@ -57,6 +57,7 @@ class PortfolioTrade:
     pnl_pct: Optional[float] = None
     reason: str = ""
     hold_days: Optional[int] = None
+    direction: str = "LONG"
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +569,7 @@ class PortfolioBacktest:
                 entry_time=fill.date,
                 qty=fill.filled_qty,
                 entry_price=fill.fill_price,
+                direction="SHORT",
             )
             trades.append(trade)
             open_trade_idx[leg_index] = len(trades) - 1
