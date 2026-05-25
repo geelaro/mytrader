@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr, compute_bollinger
+from .base import BaseStrategy, StrategyParams, compute_atr, compute_bollinger, compute_rsi
 
 
 @dataclass(frozen=True)
@@ -65,13 +65,7 @@ class BollingerMeanReversion(BaseStrategy):
         df["ATR"] = compute_atr(df, p.atr_period)
 
         # RSI
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = (-delta).clip(lower=0)
-        avg_gain = gain.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI"] = 100 - (100 / (1 + rs))
+        df = compute_rsi(df, p.rsi_period)
 
         # RSI minimum over last 5 bars — used to detect turn-up
         df["RSI_low5"] = df["RSI"].rolling(5).min()

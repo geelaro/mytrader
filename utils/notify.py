@@ -187,6 +187,7 @@ class Notifier:
     _strat_cn = {
         "trend_follower": "趋势跟踪",
         "weekly_macd": "周线MACD",
+        "macd_kdj": "KDJ+MACD",
         "weekly_macd_kdj": "周线KDJ+MACD",
         "daily_macd_kdj": "日线KDJ+MACD",
         "turtle_trading": "海龟交易",
@@ -281,6 +282,79 @@ class Notifier:
 
         card = self._mk_card(
             title=f"每日回溯完成 — {datetime.now().strftime('%Y-%m-%d')}",
+            color=COLOR["info"],
+            elements=elements,
+        )
+        return self._send({"msg_type": "interactive", "card": card})
+
+    def daily_card(
+        self,
+        pnl_by_strategy: dict = None,
+        pnl_by_symbol: dict = None,
+        positions_data: list = None,
+        risk_events: dict = None,
+        signals_preview: list = None,
+    ) -> bool:
+        """Enhanced EOD card with PnL attribution, risk events, positions.
+
+        Parameters
+        ----------
+        pnl_by_strategy : dict[str, float]
+        pnl_by_symbol : dict[str, float]
+        positions_data : list[dict]
+            Each: symbol, shares, avg_price, last_price, unrealized_pnl
+        risk_events : dict
+            circuit_breaks, slippage_exceeded, consecutive_losses
+        signals_preview : list[dict]
+            Up to 5 next-day preview signals.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        elements = []
+
+        # PnL attribution
+        if pnl_by_strategy:
+            lines = [f"{k}: ${v:+,.0f}" for k, v in pnl_by_strategy.items()]
+            elements.append(self._mk_field("PnL 按策略", "\n".join(lines[:8])))
+        if pnl_by_symbol:
+            lines = [f"{k}: ${v:+,.0f}" for k, v in pnl_by_symbol.items()]
+            elements.append(self._mk_field("PnL 按标的", "\n".join(lines[:8])))
+
+        # Positions
+        if positions_data:
+            lines = []
+            for p in positions_data[:10]:
+                upnl = p.get("unrealized_pnl", 0)
+                lines.append(f"{p['symbol']} {p.get('shares',0)}股 "
+                           f"@{p.get('avg_price',0):.2f} 浮盈${upnl:+,.0f}")
+            elements.append(self._mk_field("当前持仓", "\n".join(lines)))
+
+        # Risk events
+        if risk_events:
+            lines = []
+            if risk_events.get("circuit_breaks", 0) > 0:
+                lines.append(f"熔断: {risk_events['circuit_breaks']}次")
+            if risk_events.get("slippage_exceeded", 0) > 0:
+                lines.append(f"滑点超标: {risk_events['slippage_exceeded']}次")
+            if risk_events.get("consecutive_losses", 0) > 0:
+                lines.append(f"连亏: {risk_events['consecutive_losses']}笔")
+            if lines:
+                elements.append(self._mk_field("风控事件", "\n".join(lines)))
+
+        # Signal preview
+        if signals_preview:
+            lines = []
+            for s in signals_preview[:5]:
+                sig_val = s.get("signal", 0)
+                sig = "买入" if sig_val == 1 else ("卖出" if sig_val == -1 else "—")
+                lines.append(f"{s.get('strategy','?'):<18s} {sig} {s['symbol']} "
+                           f"@{s.get('price',0):.2f}")
+            elements.append(self._mk_field("明日信号预览", "\n".join(lines)))
+
+        if not elements:
+            elements.append(self._mk_field("状态", "无异常，策略运行正常"))
+
+        card = self._mk_card(
+            title=f"日报 — {today}",
             color=COLOR["info"],
             elements=elements,
         )

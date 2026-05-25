@@ -1,4 +1,12 @@
-"""SQLite-based OHLCV cache — local storage with incremental-update support."""
+"""SQLite-based local storage — OHLCV cache, state persistence, ops logging.
+
+Classes
+-------
+- ``OhlcvCache`` — OHLCV load / save / date_range / missing_ranges
+- ``StateStore`` — risk_state, entry_prices, trade_pnl persistence
+- ``OpsLogger`` — ops_log, order_log, slippage_log writes
+- ``CacheManager`` — full backward-compat facade (all three + signal_history)
+"""
 
 from __future__ import annotations
 
@@ -20,52 +28,27 @@ OPS_SRC_DASHBOARD = "dashboard"
 OPS_SRC_BROKER = "broker"
 
 
-class CacheManager:
-    """Unified local data store — OHLCV cache, signal history, risk state,
-    trade PnL, and operational log.
+# ======================================================================
+# Shared base
+# ======================================================================
 
-    ── Organisation ─────────────────────────────────────────────────────
-    OHLCV            load / save / date_range / missing_ranges
-    Signal history   save_signal / query_signals
-    Risk state       save_risk_state / load_risk_state
-    Entry prices     save_entry_price / load_entry_price / load_all /
-                     delete_entry_price
-    Trade PnL        save_trade_pnl / query_trade_pnl
-    Ops log          log_ops
-    ──────────────────────────────────────────────────────────────────────
-    All non-read methods are guarded by a threading.RLock so the single
-    SQLite connection is safe for multi-threaded access (Notifier worker,
-    Streamlit sessions, LiveTrader main loop).
+
+class _CacheBase:
+    """Shared connection lifecycle, schema init, commit control.
+
+    All non-read methods are guarded by a ``threading.RLock`` so a single
+    SQLite connection is safe for multi-threaded access.
     """
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
             db_path = os.environ.get("MYTRADER_DB", "trading_data.db")
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).resolve()
         self._conn: Optional[sqlite3.Connection] = None
         self._batch_mode = False
         self._lock = threading.RLock()
 
-    # ------------------------------------------------------------------
-    # Connection management
-    # ------------------------------------------------------------------
-
-    def _commit(self):
-        """Commit only when not batching."""
-        if not self._batch_mode:
-            self.conn.commit()
-
-    def enable_batch(self):
-        """Defer all commits — caller must call commit_batch() once."""
-        with self._lock:
-            self._batch_mode = False  # safety reset
-            self._batch_mode = True
-
-    def commit_batch(self):
-        """Flush all deferred writes in one commit."""
-        with self._lock:
-            self.conn.commit()
-            self._batch_mode = False
+    # -- connection ---------------------------------------------------------
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -79,22 +62,26 @@ class CacheManager:
                 self._conn.close()
                 self._conn = None
 
-    def log_ops(self, event: str, symbol: str = "", detail: str = "",
-                value: float = 0, level: str = "INFO", source: str = OPS_SRC_LIVE):
-        """Record an operational event (pause, rejection, slippage, etc.)."""
-        with self._lock:
-            self.init_schema()
-            self.conn.execute(
-                "INSERT INTO ops_log (source, level, event, symbol, detail, value) VALUES (?,?,?,?,?,?)",
-                [source, level, event, symbol, detail, value],
-            )
-            self._commit()
+    def _commit(self):
+        if not self._batch_mode:
+            self.conn.commit()
 
-    # ------------------------------------------------------------------
-    # Schema
-    # ------------------------------------------------------------------
+    def enable_batch(self):
+        """Defer all commits — caller must call commit_batch() once."""
+        with self._lock:
+            self._batch_mode = False
+            self._batch_mode = True
+
+    def commit_batch(self):
+        """Flush all deferred writes in one commit."""
+        with self._lock:
+            self.conn.commit()
+            self._batch_mode = False
+
+    # -- schema -------------------------------------------------------------
 
     def init_schema(self):
+        """Create all tables, indexes, and run migrations."""
         with self._lock:
             self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS ohlcv_daily (
@@ -183,28 +170,52 @@ class CacheManager:
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous  = NORMAL;
         """)
-        # Schema migrations — add columns that may be missing in older DBs
-        for table, col_def in [
-            ("ohlcv_daily", "source TEXT DEFAULT ''"),
-            ("ops_log", "source TEXT DEFAULT 'live_trader'"),
-            ("ops_log", "level TEXT DEFAULT 'INFO'"),
-        ]:
-            try:
-                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
-            except sqlite3.OperationalError:
-                pass  # column already exists
-        # Indexes that depend on migrated columns — must run after ALTER TABLE
-        try:
-            self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_ops_src_ts ON ops_log(source, ts)"
-            )
-        except sqlite3.OperationalError:
-            pass
+        self._run_migrations()
         self._commit()
 
-    # ==================================================================
-    # OHLCV cache
-    # ==================================================================
+    def _run_migrations(self):
+        """Versioned schema migrations — safer than ad-hoc ALTER TABLE."""
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)"
+        )
+        cur = self.conn.execute("SELECT MAX(version) FROM schema_version")
+        row = cur.fetchone()
+        current = row[0] if row and row[0] is not None else 0
+
+        migrations = [
+            (1, [
+                "ALTER TABLE ohlcv_daily ADD COLUMN source TEXT DEFAULT ''",
+                "ALTER TABLE ops_log ADD COLUMN source TEXT DEFAULT 'live_trader'",
+                "ALTER TABLE ops_log ADD COLUMN level TEXT DEFAULT 'INFO'",
+            ]),
+            (2, [
+                "CREATE INDEX IF NOT EXISTS idx_ops_src_ts ON ops_log(source, ts)",
+            ]),
+        ]
+
+        for version, statements in migrations:
+            if version <= current:
+                continue
+            for stmt in statements:
+                try:
+                    self.conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass  # column/index already exists
+            self.conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                [version],
+            )
+
+
+# ======================================================================
+# OhlcvCache
+# ======================================================================
+
+
+class OhlcvCache(_CacheBase):
+    """OHLCV daily cache with incremental-update helpers."""
+
+    # -- load ---------------------------------------------------------------
 
     def load(
         self, symbol: str, start: Optional[str] = None, end: Optional[str] = None
@@ -228,7 +239,6 @@ class CacheManager:
         if df.empty:
             return pd.DataFrame(columns=OHLCV_COLUMNS)
 
-        # DB stores lowercase — map to canonical Title case
         df.rename(columns={
             "open": "Open", "high": "High", "low": "Low",
             "close": "Close", "volume": "Volume",
@@ -251,14 +261,10 @@ class CacheManager:
             return None, None
         return row[0], row[1]
 
-    # ==================================================================
-    # Trade PnL
-    # ==================================================================
+    # -- save ---------------------------------------------------------------
 
-    def save(
-        self, symbol: str, df: pd.DataFrame, source: str = ""
-    ) -> int:
-        """Insert or replace bars.  Returns number of rows written."""
+    def save(self, symbol: str, df: pd.DataFrame, source: str = "") -> int:
+        """Insert or replace bars. Returns number of rows written."""
         with self._lock:
             if df is None or df.empty:
                 return 0
@@ -268,7 +274,6 @@ class CacheManager:
         self.init_schema()
         df = df.copy()
 
-        # Ensure we have a date column
         if df.index.name != "date" and "date" not in df.columns:
             raise ValueError("DataFrame must have a 'date' index or column")
         if "date" not in df.columns:
@@ -278,7 +283,6 @@ class CacheManager:
         df["source"] = source
         df["date"] = df["date"].map(lambda x: str(pd.Timestamp(x).date()))
 
-        # Normalise case for DB columns (use lowercase)
         col_map = {
             "Open": "open", "High": "high", "Low": "low",
             "Close": "close", "Volume": "volume",
@@ -290,7 +294,6 @@ class CacheManager:
             db_df[low] = df[cap] if cap in df.columns else 0
         db_df["source"] = df["source"]
 
-        # Upsert within an explicit transaction for atomicity
         dates = [str(d) for d in db_df["date"].unique()]
         if not dates:
             return 0
@@ -318,145 +321,7 @@ class CacheManager:
             raise
         return len(db_df)
 
-    # ==================================================================
-    # Signal history
-    # ==================================================================
-
-    def save_signal(
-        self, scan_date: str, symbol: str, strategy: str,
-        bar_date: str, signal: int, price: float, atr: float,
-        indicators: str = "",
-    ):
-        with self._lock:
-            self._save_signal(scan_date, symbol, strategy, bar_date, signal, price, atr, indicators)
-
-    def _save_signal(self, scan_date, symbol, strategy, bar_date, signal, price, atr, indicators=""):
-        self.init_schema()
-        # Upsert — remove previous scan for this date+symbol+strategy
-        self.conn.execute(
-            "DELETE FROM signal_history WHERE scan_date = ? AND symbol = ? AND strategy = ?",
-            [scan_date, symbol.upper(), strategy],
-        )
-        self.conn.execute(
-            "INSERT INTO signal_history (scan_date, symbol, strategy, bar_date, signal, price, atr, indicators) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [scan_date, symbol.upper(), strategy, bar_date, signal, price, atr, indicators],
-        )
-        self._commit()
-
-    def query_signals(self, scan_date: str | None = None, symbol: str | None = None) -> list[dict]:
-        self.init_schema()
-        query = "SELECT * FROM signal_history WHERE 1=1"
-        params = []
-        if scan_date:
-            query += " AND scan_date >= ?"
-            params.append(scan_date)
-        if symbol:
-            query += " AND symbol = ?"
-            params.append(symbol.upper())
-        query += " ORDER BY scan_date DESC, symbol ASC"
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(zip(["id", "scan_date", "symbol", "strategy", "bar_date",
-                          "signal", "price", "atr", "indicators"], row)) for row in rows]
-
-    # ==================================================================
-    # Risk state
-    # ==================================================================
-
-    def save_risk_state(self, key: str, value: str):
-        with self._lock:
-            self._save_risk_state(key, value)
-
-    def _save_risk_state(self, key: str, value: str):
-        self.init_schema()
-        self.conn.execute(
-            "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
-            [key, value],
-        )
-        self._commit()
-
-    def load_risk_state(self, key: str) -> Optional[str]:
-        self.init_schema()
-        row = self.conn.execute(
-            "SELECT value FROM risk_state WHERE key = ?", [key]
-        ).fetchone()
-        return row[0] if row else None
-
-    def save_entry_price(self, symbol: str, price: float, entry_date: str):
-        with self._lock:
-            self._save_entry_price(symbol, price, entry_date)
-
-    def _save_entry_price(self, symbol: str, price: float, entry_date: str):
-        self.init_schema()
-        self.conn.execute(
-            "INSERT OR REPLACE INTO entry_prices (symbol, price, entry_date) VALUES (?, ?, ?)",
-            [symbol.upper(), price, entry_date],
-        )
-        self._commit()
-
-    def load_entry_price(self, symbol: str) -> Optional[tuple]:
-        self.init_schema()
-        row = self.conn.execute(
-            "SELECT price, entry_date FROM entry_prices WHERE symbol = ?",
-            [symbol.upper()],
-        ).fetchone()
-        return (row[0], row[1]) if row else None
-
-    def load_all_entry_prices(self) -> dict:
-        self.init_schema()
-        rows = self.conn.execute(
-            "SELECT symbol, price, entry_date FROM entry_prices"
-        ).fetchall()
-        return {row[0]: (row[1], row[2]) for row in rows}
-
-    def delete_entry_price(self, symbol: str):
-        with self._lock:
-            self._delete_entry_price(symbol)
-
-    def _delete_entry_price(self, symbol: str):
-        self.init_schema()
-        self.conn.execute(
-            "DELETE FROM entry_prices WHERE symbol = ?", [symbol.upper()]
-        )
-        self._commit()
-
-    def save_trade_pnl(self, symbol: str, side: str, qty: int,
-                       entry_price: float, exit_price: float,
-                       exit_date: str, order_id: str):
-        """Record a completed round-trip trade PnL."""
-        with self._lock:
-            self._save_trade_pnl(symbol, side, qty, entry_price, exit_price, exit_date, order_id)
-
-    def _save_trade_pnl(self, symbol: str, side: str, qty: int,
-                        entry_price: float, exit_price: float,
-                        exit_date: str, order_id: str):
-        pnl = (exit_price - entry_price) * qty
-        pnl_pct = (exit_price / entry_price - 1) * 100
-        self.init_schema()
-        self.conn.execute(
-            "INSERT OR REPLACE INTO trade_pnl VALUES (?,?,?,?,?,?,?,?,?)",
-            [symbol.upper(), side, qty, entry_price, exit_price,
-             round(pnl, 2), round(pnl_pct, 2), exit_date, order_id],
-        )
-        self._commit()
-
-    def query_trade_pnl(self, symbol: str = None, limit: int = 50) -> list[dict]:
-        """Return recent trade PnL records."""
-        self.init_schema()
-        query = "SELECT * FROM trade_pnl"
-        params = []
-        if symbol:
-            query += " WHERE symbol = ?"
-            params.append(symbol.upper())
-        query += " ORDER BY exit_date DESC LIMIT ?"
-        params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(zip(["symbol","side","qty","entry_price","exit_price",
-                         "pnl","pnl_pct","exit_date","order_id"], row)) for row in rows]
-
-    # ------------------------------------------------------------------
-    # Incremental helpers
-    # ------------------------------------------------------------------
+    # -- incremental helpers ------------------------------------------------
 
     def missing_ranges(
         self, symbol: str, start: str, end: str
@@ -465,8 +330,7 @@ class CacheManager:
 
         Compares the requested interval against what's already cached.
         Adjacent gaps (separated by ≤ 7 calendar days) are merged into a
-        single larger range to minimise round-trips.  Returns an empty list
-        when the entire range is covered.
+        single larger range to minimise round-trips.
         """
         req_start_ts = pd.Timestamp(start).normalize()
         req_end_ts = pd.Timestamp(end).normalize()
@@ -512,15 +376,12 @@ class CacheManager:
         if len(gaps) <= 1:
             return gaps
 
-        # Merge adjacent gaps separated by ≤ 7 calendar days into a single
-        # range.  This avoids fetching dozens of tiny 2-3 day slices when
-        # the cache has sparse coverage (e.g. weekend/holiday holes).
         merged: List[Tuple[str, str]] = []
         cur_start, cur_end = gaps[0]
         for gs, ge in gaps[1:]:
             gs_ts = pd.Timestamp(gs)
             cur_end_ts = pd.Timestamp(cur_end)
-            if (gs_ts - cur_end_ts).days <= 8:  # 1-day gap + weekend tolerance
+            if (gs_ts - cur_end_ts).days <= 8:
                 cur_end = ge
             else:
                 merged.append((cur_start, cur_end))
@@ -528,4 +389,181 @@ class CacheManager:
         merged.append((cur_start, cur_end))
         return merged
 
-        return gaps
+
+# ======================================================================
+# StateStore
+# ======================================================================
+
+
+class StateStore(_CacheBase):
+    """Risk state, entry prices, and trade PnL persistence."""
+
+    # -- risk state ---------------------------------------------------------
+
+    def save_risk_state(self, key: str, value: str):
+        with self._lock:
+            self._save_risk_state(key, value)
+
+    def _save_risk_state(self, key: str, value: str):
+        self.init_schema()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
+            [key, value],
+        )
+        self._commit()
+
+    def load_risk_state(self, key: str) -> Optional[str]:
+        self.init_schema()
+        row = self.conn.execute(
+            "SELECT value FROM risk_state WHERE key = ?", [key]
+        ).fetchone()
+        return row[0] if row else None
+
+    # -- entry prices -------------------------------------------------------
+
+    def save_entry_price(self, symbol: str, price: float, entry_date: str):
+        with self._lock:
+            self._save_entry_price(symbol, price, entry_date)
+
+    def _save_entry_price(self, symbol: str, price: float, entry_date: str):
+        self.init_schema()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO entry_prices (symbol, price, entry_date) VALUES (?, ?, ?)",
+            [symbol.upper(), price, entry_date],
+        )
+        self._commit()
+
+    def load_entry_price(self, symbol: str) -> Optional[tuple]:
+        self.init_schema()
+        row = self.conn.execute(
+            "SELECT price, entry_date FROM entry_prices WHERE symbol = ?",
+            [symbol.upper()],
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def load_all_entry_prices(self) -> dict:
+        self.init_schema()
+        rows = self.conn.execute(
+            "SELECT symbol, price, entry_date FROM entry_prices"
+        ).fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def delete_entry_price(self, symbol: str):
+        with self._lock:
+            self._delete_entry_price(symbol)
+
+    def _delete_entry_price(self, symbol: str):
+        self.init_schema()
+        self.conn.execute(
+            "DELETE FROM entry_prices WHERE symbol = ?", [symbol.upper()]
+        )
+        self._commit()
+
+    # -- trade PnL ----------------------------------------------------------
+
+    def save_trade_pnl(self, symbol: str, side: str, qty: int,
+                       entry_price: float, exit_price: float,
+                       exit_date: str, order_id: str):
+        """Record a completed round-trip trade PnL."""
+        with self._lock:
+            self._save_trade_pnl(symbol, side, qty, entry_price, exit_price, exit_date, order_id)
+
+    def _save_trade_pnl(self, symbol: str, side: str, qty: int,
+                        entry_price: float, exit_price: float,
+                        exit_date: str, order_id: str):
+        pnl = (exit_price - entry_price) * qty
+        pnl_pct = (exit_price / entry_price - 1) * 100
+        self.init_schema()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trade_pnl VALUES (?,?,?,?,?,?,?,?,?)",
+            [symbol.upper(), side, qty, entry_price, exit_price,
+             round(pnl, 2), round(pnl_pct, 2), exit_date, order_id],
+        )
+        self._commit()
+
+    def query_trade_pnl(self, symbol: str = None, limit: int = 50) -> list[dict]:
+        """Return recent trade PnL records."""
+        self.init_schema()
+        query = "SELECT * FROM trade_pnl"
+        params = []
+        if symbol:
+            query += " WHERE symbol = ?"
+            params.append(symbol.upper())
+        query += " ORDER BY exit_date DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(zip(["symbol","side","qty","entry_price","exit_price",
+                         "pnl","pnl_pct","exit_date","order_id"], row)) for row in rows]
+
+
+# ======================================================================
+# OpsLogger
+# ======================================================================
+
+
+class OpsLogger(_CacheBase):
+    """Operational event logging — ops_log, order_log, slippage_log."""
+
+    def log_ops(self, event: str, symbol: str = "", detail: str = "",
+                value: float = 0, level: str = "INFO", source: str = OPS_SRC_LIVE):
+        """Record an operational event (pause, rejection, slippage, etc.)."""
+        with self._lock:
+            self.init_schema()
+            self.conn.execute(
+                "INSERT INTO ops_log (source, level, event, symbol, detail, value) VALUES (?,?,?,?,?,?)",
+                [source, level, event, symbol, detail, value],
+            )
+            self._commit()
+
+
+# ======================================================================
+# CacheManager — backward-compat facade
+# ======================================================================
+
+
+class CacheManager(OhlcvCache, StateStore, OpsLogger):
+    """Full combined cache — all three specialized stores + signal history.
+
+    This is the backward-compatible class. New code can reach for the
+    specialised classes directly if only a subset is needed.
+
+    ── Signal history (only present in the combined facade) ───────────
+    """
+
+    # -- signal history -----------------------------------------------------
+
+    def save_signal(
+        self, scan_date: str, symbol: str, strategy: str,
+        bar_date: str, signal: int, price: float, atr: float,
+        indicators: str = "",
+    ):
+        with self._lock:
+            self._save_signal(scan_date, symbol, strategy, bar_date, signal, price, atr, indicators)
+
+    def _save_signal(self, scan_date, symbol, strategy, bar_date, signal, price, atr, indicators=""):
+        self.init_schema()
+        self.conn.execute(
+            "DELETE FROM signal_history WHERE scan_date = ? AND symbol = ? AND strategy = ?",
+            [scan_date, symbol.upper(), strategy],
+        )
+        self.conn.execute(
+            "INSERT INTO signal_history (scan_date, symbol, strategy, bar_date, signal, price, atr, indicators) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [scan_date, symbol.upper(), strategy, bar_date, signal, price, atr, indicators],
+        )
+        self._commit()
+
+    def query_signals(self, scan_date: str | None = None, symbol: str | None = None) -> list[dict]:
+        self.init_schema()
+        query = "SELECT * FROM signal_history WHERE 1=1"
+        params = []
+        if scan_date:
+            query += " AND scan_date >= ?"
+            params.append(scan_date)
+        if symbol:
+            query += " AND symbol = ?"
+            params.append(symbol.upper())
+        query += " ORDER BY scan_date DESC, symbol ASC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(zip(["id", "scan_date", "symbol", "strategy", "bar_date",
+                          "signal", "price", "atr", "indicators"], row)) for row in rows]

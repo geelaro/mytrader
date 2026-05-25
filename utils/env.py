@@ -46,6 +46,13 @@ def load_toml(path: str) -> dict:
         return tomllib.load(f)
 
 
+def save_toml(path: str, data: dict):
+    """Write a dict as TOML. Requires ``tomli-w`` (dev dependency)."""
+    import tomli_w
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+
+
 # Run on import
 _fix_windows_encoding()
 _setup_matplotlib()

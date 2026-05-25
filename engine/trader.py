@@ -31,6 +31,7 @@ class Trade:
     pnl: float
     pnl_pct: float
     exit_reason: str
+    direction: str = "LONG"
     holding_days: int = 0
 
     def __post_init__(self):
@@ -92,7 +93,7 @@ class BacktestEngine:
 
     def reset(self):
         self.cash = self.initial_capital
-        self.position = 0
+        self.position = 0  # positive = long, negative = short
         self.trades: List[Trade] = []
         self.equity_history: List[Tuple[pd.Timestamp, float]] = []
         self.current_entry: Optional[Dict] = None
@@ -104,6 +105,15 @@ class BacktestEngine:
     def equity(self):
         return self.cash + self.position * self._current_price
 
+    @property
+    def _direction(self) -> str:
+        """Current position direction: 'LONG', 'SHORT', or 'FLAT'."""
+        if self.position > 0:
+            return "LONG"
+        if self.position < 0:
+            return "SHORT"
+        return "FLAT"
+
     def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
         """Return position size such that stop_distance loss = risk_per_trade % of capital."""
         raw_qty = calc_risk_budget_qty(capital, price, atr, self.risk_per_trade, self.risk_atr_mult)
@@ -112,24 +122,35 @@ class BacktestEngine:
         max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
         return max(0, min(raw_qty, max_shares))
 
-    def buy(self, date, price, quantity):
+    def buy(self, date, price, quantity, direction="LONG"):
+        """Open or add to a position. *direction* = 'LONG' or 'SHORT'."""
         if quantity <= 0 or price <= 0:
             return False
-        actual_price = price * (1 + self.slippage_pct)
-        total_cost = actual_price * quantity * (1 + self.commission_rate)
-        if total_cost > self.cash:
-            quantity = int(self.cash / (actual_price * (1 + self.commission_rate)))
-            if quantity <= 0:
-                return False
+        if direction == "LONG":
+            actual_price = price * (1 + self.slippage_pct)
             total_cost = actual_price * quantity * (1 + self.commission_rate)
-        self.cash -= total_cost
-        self.position += quantity
-        self.current_entry = {'date': date, 'price': actual_price, 'quantity': quantity}
-        return True
+            if total_cost > self.cash:
+                quantity = int(self.cash / (actual_price * (1 + self.commission_rate)))
+                if quantity <= 0:
+                    return False
+                total_cost = actual_price * quantity * (1 + self.commission_rate)
+            self.cash -= total_cost
+            self.position += quantity
+            self.current_entry = {'date': date, 'price': actual_price, 'quantity': quantity, 'direction': 'LONG'}
+            return True
+        else:  # SHORT
+            actual_price = price * (1 - self.slippage_pct)
+            proceeds = actual_price * quantity * (1 - self.commission_rate)
+            self.cash += proceeds
+            self.position -= quantity
+            self.current_entry = {'date': date, 'price': actual_price, 'quantity': quantity, 'direction': 'SHORT'}
+            return True
 
     def _apply_buy_fill(self, fill) -> bool:
+        """Execute a BUY fill — long entry OR short cover."""
         if fill.filled_qty <= 0 or fill.fill_price <= 0:
             return False
+        is_cover = self.position < 0
         total_cost = fill.gross_value + fill.commission
         if total_cost > self.cash:
             affordable = int(self.cash / (fill.fill_price * (1 + self.commission_rate)))
@@ -143,7 +164,37 @@ class BacktestEngine:
         old_qty = self.position
         old_entry = self.current_entry
         self.position += fill.filled_qty
-        if old_entry and old_qty > 0:
+
+        if is_cover:
+            # Covering a short — record trade
+            if old_entry and old_entry.get('direction') == 'SHORT':
+                e = old_entry
+                cover_qty = min(fill.filled_qty, e['quantity'])
+                trade = Trade(
+                    entry_date=e['date'], exit_date=fill.date,
+                    entry_price=e['price'], exit_price=fill.fill_price,
+                    quantity=cover_qty,
+                    pnl=(e['price'] - fill.fill_price) * cover_qty,
+                    pnl_pct=(e['price'] / fill.fill_price - 1) * 100,
+                    exit_reason=fill.reason if hasattr(fill, 'reason') else 'cover',
+                    direction='SHORT')
+                self.trades.append(trade)
+                if self.position == 0:
+                    self.current_entry = None
+                else:
+                    remain = e['quantity'] - cover_qty
+                    if remain > 0:
+                        self.current_entry = {**e, 'quantity': remain}
+                    else:
+                        self.current_entry = None
+                return True
+            # Fallback: no entry record — just update position
+            if self.position == 0:
+                self.current_entry = None
+            return True
+
+        # Long entry / add
+        if old_entry and old_qty > 0 and old_entry.get('direction') != 'SHORT':
             avg_price = (
                 old_entry['price'] * old_qty + fill.fill_price * fill.filled_qty
             ) / self.position
@@ -151,16 +202,19 @@ class BacktestEngine:
                 'date': old_entry['date'],
                 'price': avg_price,
                 'quantity': self.position,
+                'direction': 'LONG',
             }
         else:
             self.current_entry = {
                 'date': fill.date,
                 'price': fill.fill_price,
                 'quantity': fill.filled_qty,
+                'direction': 'LONG',
             }
         return True
 
     def sell(self, date, price, quantity=None, reason='signal'):
+        """Exit a long position."""
         if quantity is None:
             quantity = self.position
         quantity = min(quantity, self.position)
@@ -172,15 +226,17 @@ class BacktestEngine:
         self.position -= quantity
 
         trade = None
-        if self.current_entry and self.current_entry['quantity'] > 0:
+        if self.current_entry and self.current_entry.get('quantity', 0) > 0:
             e = self.current_entry
+            entry_p = e['price']
             trade = Trade(
                 entry_date=e['date'], exit_date=date,
-                entry_price=e['price'], exit_price=actual_price,
+                entry_price=entry_p, exit_price=actual_price,
                 quantity=quantity,
-                pnl=(actual_price - e['price']) * quantity,
-                pnl_pct=(actual_price / e['price'] - 1) * 100,
-                exit_reason=reason)
+                pnl=(actual_price - entry_p) * quantity,
+                pnl_pct=(actual_price / entry_p - 1) * 100,
+                exit_reason=reason,
+                direction=e.get('direction', 'LONG'))
             self.trades.append(trade)
             if self.position == 0:
                 self.current_entry = None
@@ -188,31 +244,53 @@ class BacktestEngine:
                 self.current_entry = {**e, 'quantity': e['quantity'] - quantity}
             if trade and trade.exit_reason.startswith("止损"):
                 self._last_stop_date = date
-        elif self.position >= 0:
-            # Fallback: current_entry lost (edge case), reconstruct from sell price
+        elif self.position >= 0 and self.current_entry:
             trade = Trade(
                 entry_date=date, exit_date=date,
                 entry_price=actual_price, exit_price=actual_price,
-                quantity=quantity,
-                pnl=0.0, pnl_pct=0.0,
-                exit_reason=f"{reason}(状态异常)")
+                quantity=quantity, pnl=0.0, pnl_pct=0.0,
+                exit_reason=f"{reason}(状态异常)",
+                direction='LONG')
             self.trades.append(trade)
             if self.position == 0:
                 self.current_entry = None
-            if trade and trade.exit_reason.startswith("止损"):
-                self._last_stop_date = date
         return trade
 
     def _apply_sell_fill(self, fill, reason='signal'):
-        if fill.filled_qty <= 0 or self.position <= 0:
+        """Execute a SELL fill — long exit OR short entry."""
+        if fill.filled_qty <= 0:
             return None
+        is_short_entry = self.position <= 0
+
+        if is_short_entry:
+            # Short entry — receive cash, position goes negative
+            proceeds = fill.fill_price * fill.filled_qty - fill.fill_price * fill.filled_qty * self.commission_rate
+            self.cash += proceeds
+            self.position -= fill.filled_qty
+            old_entry = self.current_entry
+            if old_entry and old_entry.get('direction') == 'SHORT' and old_entry.get('quantity', 0) > 0:
+                avg_price = (old_entry['price'] * old_entry['quantity'] + fill.fill_price * fill.filled_qty) / (old_entry['quantity'] + fill.filled_qty)
+                self.current_entry = {
+                    'date': old_entry['date'], 'price': avg_price,
+                    'quantity': old_entry['quantity'] + fill.filled_qty, 'direction': 'SHORT',
+                }
+            else:
+                self.current_entry = {
+                    'date': fill.date, 'price': fill.fill_price,
+                    'quantity': fill.filled_qty, 'direction': 'SHORT',
+                }
+            return None  # No trade record — trade is recorded on cover
+
+        # Long exit
         quantity = min(fill.filled_qty, self.position)
+        if quantity <= 0:
+            return None
         proceeds = fill.fill_price * quantity - fill.fill_price * quantity * self.commission_rate
         self.cash += proceeds
         self.position -= quantity
 
         trade = None
-        if self.current_entry and self.current_entry['quantity'] > 0:
+        if self.current_entry and self.current_entry.get('quantity', 0) > 0:
             e = self.current_entry
             trade = Trade(
                 entry_date=e['date'], exit_date=fill.date,
@@ -220,7 +298,8 @@ class BacktestEngine:
                 quantity=quantity,
                 pnl=(fill.fill_price - e['price']) * quantity,
                 pnl_pct=(fill.fill_price / e['price'] - 1) * 100,
-                exit_reason=reason)
+                exit_reason=reason,
+                direction=e.get('direction', 'LONG'))
             self.trades.append(trade)
             if self.position == 0:
                 self.current_entry = None
@@ -282,102 +361,184 @@ class BacktestEngine:
         """Execute backtest loop over *df* using *strategy* signals.
 
         Signals are evaluated on bar close and executed at the next bar's open.
-        This avoids look-ahead bias from acting on a close that was only known
-        after the signal bar finished.
+
+        Signal semantics
+        ----------------
+          1  = long entry
+         -1  = short entry
+          0  = neutral (hold / wait)
 
         Returns
         -------
         benchmark_returns : pd.Series
             Buy-and-hold returns of the close price over the backtest period.
         """
-        highest = 0.0
-        pending_order = None
+        self._highest = 0.0
+        self._lowest = float('inf')
+        self._pending_order = None
 
         for i in range(strategy.min_bars, len(df)):
             date_idx = df.index[i]
             close_price = float(df["Close"].iloc[i])
-            open_price = float(df["Open"].iloc[i]) if "Open" in df.columns else close_price
-            atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
 
-            if pending_order is not None:
-                # --- execution bar: apply pending order, then skip to next ---
-                fill = self.execution_model.execute_bar(
-                    pending_order,
-                    df.iloc[i],
-                    date_idx,
-                    i,
-                    available_qty=self.position if pending_order.side == OrderSide.SELL else None,
-                )
-                if pending_order.side == OrderSide.BUY:
-                    if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                        if self._apply_buy_fill(fill):
-                            highest = fill.fill_price
-                            pending_order.quantity -= fill.filled_qty
-                    if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending_order.quantity <= 0:
-                        pending_order = None
-                elif pending_order.side == OrderSide.SELL:
-                    if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                        self._apply_sell_fill(fill, reason=pending_order.reason)
-                    if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or self.position == 0:
-                        pending_order = None
-                # Execution bar is a pure fill bar — no signal evaluation,
-                # no partial-fill remainder override risk.
+            if self._pending_order is not None:
+                self._process_pending_order(df, i, date_idx, close_price)
                 self.update(date_idx, close_price)
                 continue
 
             if self.position > 0 and self.current_entry:
-                if close_price > highest:
-                    highest = close_price
-                exit_now, reason = strategy.check_exit(
-                    df, i,
-                    entry_price=self.current_entry["price"],
-                    highest_since_entry=highest,
-                    position=self.current_entry,
-                )
-                if exit_now:
-                    pending_order = self.execution_model.make_plan(
-                        symbol="",
-                        side=OrderSide.SELL,
-                        quantity=self.position,
-                        created_index=i,
-                        reason=reason,
-                    )
+                self._check_exit_signal(strategy, df, i, close_price)
 
-            elif strategy.entry_signal(df, i) and self.position == 0 and i < len(df) - 1:
-                entry_allowed = True
-                # --- risk: cooldown after stop ---
-                if self.cooldown_after_stop_days > 0 and self._last_stop_date is not None:
-                    days_since_stop = (date_idx - self._last_stop_date).days
-                    if days_since_stop < self.cooldown_after_stop_days:
-                        self.rejections.append({
-                            "date": date_idx, "reason": "冷却期",
-                            "detail": f"距止损仅{days_since_stop}天 (<{self.cooldown_after_stop_days})",
-                        })
-                        entry_allowed = False
-                # --- end risk ---
-                if entry_allowed:
-                    if self.sizing_mode == "risk_budget":
-                        qty = self._calc_risk_budget_qty(self.cash, close_price, atr)
-                    else:
-                        qty = strategy.position_size(self.cash, close_price, atr)
-                    if qty > 0:
-                        pending_order = self.execution_model.make_plan(
-                            symbol="",
-                            side=OrderSide.BUY,
-                            quantity=qty,
-                            created_index=i,
-                        )
+            elif self.position < 0 and self.current_entry:
+                self._check_cover_signal(strategy, df, i, close_price)
+
+            elif self.position == 0 and i < len(df) - 1:
+                sig = strategy.entry_signal(df, i)
+                if isinstance(sig, bool):  # old-style: True means long entry
+                    if sig:
+                        self._check_entry_signal(strategy, df, i, close_price, date_idx, "LONG")
+                elif sig == 1:
+                    self._check_entry_signal(strategy, df, i, close_price, date_idx, "LONG")
+                elif sig == -1 and not getattr(strategy, 'long_only', True):
+                    self._check_entry_signal(strategy, df, i, close_price, date_idx, "SHORT")
 
             self.update(date_idx, close_price)
 
-        if close_out and self.position > 0:
-            last_price = float(df["Close"].iloc[-1])
-            self.sell(df.index[-1], last_price, reason="回测结束")
-            self._current_price = last_price
-            # Replace last bar's equity entry to avoid duplicate date
-            self.equity_history[-1] = (df.index[-1], self.equity)
+        if close_out and self.position != 0:
+            self._close_out(df, close_out)
 
         return df["Close"].pct_change().dropna()
+
+    # -- close-out -----------------------------------------------------------
+
+    def _close_out(self, df, close_out):
+        last_price = float(df["Close"].iloc[-1])
+        last_date = df.index[-1]
+        if self.position > 0:
+            self.sell(last_date, last_price, reason="回测结束")
+        elif self.position < 0:
+            qty = abs(self.position)
+            actual_price = last_price * (1 + self.slippage_pct)
+            cost = actual_price * qty * (1 + self.commission_rate)
+            if self.current_entry and self.current_entry.get('direction') == 'SHORT':
+                e = self.current_entry
+                trade = Trade(
+                    entry_date=e['date'], exit_date=last_date,
+                    entry_price=e['price'], exit_price=actual_price,
+                    quantity=qty,
+                    pnl=(e['price'] - actual_price) * qty,
+                    pnl_pct=(e['price'] / actual_price - 1) * 100,
+                    exit_reason="回测结束",
+                    direction='SHORT')
+                self.trades.append(trade)
+            self.cash -= cost
+            self.position = 0
+            self.current_entry = None
+        self._current_price = last_price
+        self.equity_history[-1] = (last_date, self.equity)
+
+    # -- loop sub-methods ----------------------------------------------------
+
+    def _process_pending_order(self, df, i, date_idx, close_price):
+        """Execute a pending order against bar *i*."""
+        fill = self.execution_model.execute_bar(
+            self._pending_order,
+            df.iloc[i],
+            date_idx,
+            i,
+            available_qty=abs(self.position) if self._pending_order.side == OrderSide.SELL and self.position > 0 else (abs(self.position) if self._pending_order.side == OrderSide.BUY and self.position < 0 else None),
+        )
+        if self._pending_order.side == OrderSide.BUY:
+            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                if self._apply_buy_fill(fill):
+                    if self.position > 0:
+                        self._highest = fill.fill_price
+                        self._lowest = fill.fill_price
+                    self._pending_order.quantity -= fill.filled_qty
+            if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or self._pending_order.quantity <= 0:
+                self._pending_order = None
+        elif self._pending_order.side == OrderSide.SELL:
+            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                self._apply_sell_fill(fill, reason=self._pending_order.reason)
+                if self.position < 0:
+                    self._lowest = fill.fill_price
+                    self._highest = fill.fill_price
+            if (fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED)
+                    or self.position == 0):
+                self._pending_order = None
+
+    def _check_exit_signal(self, strategy, df, i, close_price):
+        """Check for exit signal on an existing LONG position."""
+        if close_price > self._highest:
+            self._highest = close_price
+        exit_now, reason = strategy.check_exit(
+            df, i,
+            entry_price=self.current_entry["price"],
+            highest_since_entry=self._highest,
+            position=self.current_entry,
+        )
+        if exit_now:
+            self._pending_order = self.execution_model.make_plan(
+                symbol="",
+                side=OrderSide.SELL,
+                quantity=self.position,
+                created_index=i,
+                reason=reason,
+            )
+
+    def _check_cover_signal(self, strategy, df, i, close_price):
+        """Check for cover signal on an existing SHORT position."""
+        if close_price < self._lowest:
+            self._lowest = close_price
+        exit_now, reason = strategy.check_exit(
+            df, i,
+            entry_price=self.current_entry["price"],
+            highest_since_entry=self._highest,
+            lowest_since_entry=self._lowest,
+            position=self.current_entry,
+        )
+        if exit_now:
+            self._pending_order = self.execution_model.make_plan(
+                symbol="",
+                side=OrderSide.BUY,
+                quantity=abs(self.position),
+                created_index=i,
+                reason=reason,
+            )
+
+    def _check_entry_signal(self, strategy, df, i, close_price, date_idx, direction):
+        """Check for entry signal — sizing, cooldown gate, create order."""
+        if not self._apply_stop_cooldown(date_idx):
+            return
+        atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
+        if self.sizing_mode == "risk_budget":
+            qty = self._calc_risk_budget_qty(self.cash, close_price, atr)
+        else:
+            qty = strategy.position_size(self.cash, close_price, atr)
+        if qty <= 0:
+            return
+        if direction == "LONG":
+            self._pending_order = self.execution_model.make_plan(
+                symbol="", side=OrderSide.BUY, quantity=qty, created_index=i,
+            )
+        else:  # SHORT
+            self._pending_order = self.execution_model.make_plan(
+                symbol="", side=OrderSide.SELL, quantity=qty, created_index=i,
+                reason="short_entry",
+            )
+
+    def _apply_stop_cooldown(self, date_idx) -> bool:
+        """Return True if entry is allowed (not in stop-loss cooldown)."""
+        if self.cooldown_after_stop_days <= 0 or self._last_stop_date is None:
+            return True
+        days_since_stop = (date_idx - self._last_stop_date).days
+        if days_since_stop < self.cooldown_after_stop_days:
+            self.rejections.append({
+                "date": date_idx, "reason": "冷却期",
+                "detail": f"距止损仅{days_since_stop}天 (<{self.cooldown_after_stop_days})",
+            })
+            return False
+        return True
 
 
 # ---------------------------------------------------------------------------

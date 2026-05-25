@@ -11,6 +11,7 @@ from .base import (
     StrategyParams,
     compute_atr,
     compute_macd,
+    compute_rsi,
 )
 
 
@@ -78,13 +79,7 @@ class EnhancedMACDStrategy(BaseStrategy):
         df = compute_macd(df, p.macd_fast, p.macd_slow, p.macd_signal)
 
         # RSI
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = (-delta).clip(lower=0)
-        avg_gain = gain.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / p.rsi_period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI"] = 100 - (100 / (1 + rs))
+        df = compute_rsi(df, p.rsi_period)
 
         # ATR
         df["ATR"] = compute_atr(df, p.atr_period)

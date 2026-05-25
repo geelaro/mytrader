@@ -42,7 +42,8 @@ class SignalScanner:
         self.provider = provider
         self.cache = cache
         self.lookback_years = lookback_years
-        self._data_cache: Dict[str, pd.DataFrame] = {}  # symbol → df
+        self._data_cache: Dict[str, pd.DataFrame] = {}  # symbol → daily df
+        self._weekly_cache: Dict[str, pd.DataFrame] = {}  # symbol → weekly df
 
     # ------------------------------------------------------------------
     # Public API
@@ -72,6 +73,7 @@ class SignalScanner:
 
         results: List[dict] = []
         self._data_cache.clear()
+        self._weekly_cache.clear()
 
         # --- watchlist symbols -------------------------------------------------
         for item in config.get("watchlist", []):
@@ -95,6 +97,7 @@ class SignalScanner:
                 )
 
         self._data_cache.clear()
+        self._weekly_cache.clear()
         return results
 
     # ------------------------------------------------------------------
@@ -123,6 +126,8 @@ class SignalScanner:
         if df is None or df.empty:
             return []
 
+        df_weekly = self._fetch_weekly(symbol, start, target_date)
+
         bar_date = (
             target_date if target_date in df.index.strftime("%Y-%m-%d")
             else df.index[-1].strftime("%Y-%m-%d")
@@ -135,7 +140,10 @@ class SignalScanner:
             strat_params = item.get("params", {})
             strategy = STRATEGY_MAP[strat_name](**strat_params)
             try:
-                df_sig = strategy.calculate_indicators(df)
+                try:
+                    df_sig = strategy.calculate_indicators(df, df_weekly=df_weekly)
+                except TypeError:
+                    df_sig = strategy.calculate_indicators(df)
             except Exception:
                 logger.exception("策略计算失败: %s %s", symbol, strat_name)
                 continue
@@ -182,10 +190,29 @@ class SignalScanner:
     def _fetch_data(
         self, symbol: str, start: str, end: str
     ) -> Optional[pd.DataFrame]:
-        """Fetch OHLCV for *symbol*, caching per-symbol within a scan pass."""
+        """Fetch daily OHLCV for *symbol*, caching per-symbol within a scan pass."""
         if symbol not in self._data_cache:
             self._data_cache[symbol] = self.provider.get_daily(symbol, start=start, end=end)
         df = self._data_cache[symbol]
+        if df is None or df.empty:
+            return None
+        return df
+
+    def _fetch_weekly(
+        self, symbol: str, start: str, end: str
+    ) -> Optional[pd.DataFrame]:
+        """Fetch weekly OHLCV for *symbol* (resampled from daily, cached in-scan)."""
+        if symbol not in self._weekly_cache:
+            daily = self._fetch_data(symbol, start, end)
+            if daily is not None and not daily.empty:
+                self._weekly_cache[symbol] = (
+                    daily.resample("W-FRI")
+                    .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+                    .dropna()
+                )
+            else:
+                self._weekly_cache[symbol] = pd.DataFrame()
+        df = self._weekly_cache[symbol]
         if df is None or df.empty:
             return None
         return df

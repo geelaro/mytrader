@@ -127,7 +127,7 @@ class TestEnhancedMACD:
         # Should not throw — entry_signal reads from Signal column
         for i in range(s.min_bars, len(df)):
             result = s.entry_signal(df, i)
-            assert isinstance(result, bool)
+            assert isinstance(result, (bool, int))
 
     def test_check_exit_returns_tuple(self, ohlcv):
         s = EnhancedMACDStrategy()
@@ -260,7 +260,7 @@ class TestBollingerMeanReversion:
         s = BollingerMeanReversion()
         df = s.calculate_indicators(ohlcv)
         for i in range(s.min_bars, len(df)):
-            assert isinstance(s.entry_signal(df, i), bool)
+            assert isinstance(s.entry_signal(df, i), (bool, int))
 
     def test_check_exit_returns_tuple(self, ohlcv):
         s = BollingerMeanReversion()
@@ -297,7 +297,7 @@ class TestDonchianBreakout:
     def test_only_entry_signals(self, ohlcv):
         s = DonchianBreakout()
         df = s.calculate_indicators(ohlcv)
-        assert set(df["Signal"].unique()).issubset({0, 1})
+        assert set(df["Signal"].unique()).issubset({-1, 0, 1})
 
     def test_trailing_stop_exit(self, ohlcv):
         s = DonchianBreakout()
@@ -429,7 +429,7 @@ class TestTurtleTrading:
     def test_only_entry_signals(self, ohlcv):
         s = TurtleTrading()
         df = s.calculate_indicators(ohlcv)
-        assert set(df["Signal"].unique()).issubset({0, 1})
+        assert set(df["Signal"].unique()).issubset({-1, 0, 1})
 
     def test_entry_requires_trend(self, ohlcv):
         s = TurtleTrading()

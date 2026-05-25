@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr
 
 
 @dataclass(frozen=True)
@@ -32,11 +32,12 @@ class DonchianBreakoutParams(StrategyParams):
         if not (0 < self.risk_per_trade <= 1): raise ValueError("validation failed")
 
 
-class DonchianBreakout(BaseStrategy):
-    """Entry: close > highest high of last N bars. Exit: trailing stop or
-    close < channel midpoint."""
+class DonchianBreakout(ChandelierTrailingExit, BaseStrategy):
+    """Long: close > Donchian upper. Short: close < Donchian lower.
+    Exit: trailing stop or price crosses back beyond channel mid."""
 
     regime = "trend"
+    long_only = False
 
     params: DonchianBreakoutParams
 
@@ -63,12 +64,16 @@ class DonchianBreakout(BaseStrategy):
         # Volume MA for confirmation
         df["Volume_MA"] = df["Volume"].rolling(20).mean()
 
-        # Entry signals only — exit is handled in check_exit
+        # Signals — exit is handled in check_exit
         df["Signal"] = 0
         buy = df["Close"] > df["Donchian_upper"]
+        short = df["Close"] < df["Donchian_lower"]
         if p.volume_confirm:
-            buy = buy & (df["Volume"] > df["Volume_MA"])
+            vol_ok = df["Volume"] > df["Volume_MA"]
+            buy = buy & vol_ok
+            short = short & vol_ok
         df.loc[buy, "Signal"] = 1
+        df.loc[short, "Signal"] = -1
 
         return df
 
@@ -87,18 +92,21 @@ class DonchianBreakout(BaseStrategy):
         i: int,
         entry_price: float,
         highest_since_entry: float,
+        lowest_since_entry: Optional[float] = None,
         position: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
+        exit_flag, reason = self._chandelier_exit(df, i, highest_since_entry,
+                                                   lowest_since_entry, position)
+        if exit_flag:
+            return True, reason
+
         price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
-
-        chandelier_stop = highest_since_entry - self.params.trail_atr_mult * atr
-        if price <= chandelier_stop:
-            return True, "移动止损"
-
-        # Channel midpoint — breakout failed
         mid = float(df["Donchian_mid"].iloc[i])
-        if price <= mid:
-            return True, "跌破通道中线"
+        if position and position.get('direction') == 'SHORT':
+            if price >= mid:
+                return True, "突破通道中线(空)"
+        else:
+            if price <= mid:
+                return True, "跌破通道中线"
 
         return False, ""

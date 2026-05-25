@@ -1,16 +1,46 @@
-"""Turtle Trading — dual-SMA trend filter + Donchian breakout + ATR trailing stop.
+"""Turtle Trading — adapted from "大哥2.2" strategy.
 
-Adapted from the "大哥2.2" strategy for stock trading.
-Entry: close breaks above N-day Donchian upper AND short SMA > long SMA.
-Exit:  Chandelier trailing stop (close <= highest_since_entry - ATR * N).
+Long:  recursive SMA short > SMA long AND close >= Donchian upper (prev bar)
+Short: recursive SMA short < SMA long AND close <= Donchian lower (prev bar)
+Exit:  Chandelier trailing stop with entry-time ATR (fixed), tracked on High/Low.
+
+Key differences from vanilla Turtle:
+- SMA uses recursive seeding (seed = first close), matching 大哥2.2 exactly.
+- Donchian channel built on **Close** (not High/Low).
+- Entry triggered against **previous** bar's channel value.
+- Stop-loss ATR is **frozen at entry** (not updated daily).
 """
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr
+from .base import BaseStrategy, StrategyParams
+
+
+# -- helpers ---------------------------------------------------------------
+
+
+def _recursive_sma(series: pd.Series, period: int) -> pd.Series:
+    """Recursive SMA seeded from the first valid close (大哥2.2 formula).
+
+    ``sma[t] = (sma[t-1] * (n-1) + close[t]) / n``
+    """
+    sma = pd.Series(np.nan, index=series.index, dtype=float)
+    first = series.first_valid_index()
+    if first is None:
+        return sma
+    sma.loc[first] = series.loc[first]
+    prev = series.loc[first]
+    for idx in range(series.index.get_loc(first) + 1, len(series)):
+        prev = (prev * (period - 1) + series.iloc[idx]) / period
+        sma.iloc[idx] = prev
+    return sma
+
+
+# -- params -----------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -22,6 +52,8 @@ class TurtleTradingParams(StrategyParams):
     trail_atr_mult: float = 3.0
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
+    trend_filter: bool = True
+    trend_filter_bars: int = 60
 
     grid = {
         "short_period": [10, 20, 30],
@@ -31,21 +63,29 @@ class TurtleTradingParams(StrategyParams):
     }
 
     def validate(self):
-        if not (self.short_period < self.long_period): raise ValueError("short_period must be < long_period")
-        if not (self.channel_period >= 10): raise ValueError("channel_period must be >= 10")
-        if not (self.trail_atr_mult > 0): raise ValueError("trail_atr_mult must be > 0")
-        if not (0 < self.risk_per_trade <= 1): raise ValueError("validation failed")
+        if not (self.short_period < self.long_period):
+            raise ValueError("short_period must be < long_period")
+        if not (self.channel_period >= 10):
+            raise ValueError("channel_period must be >= 10")
+        if not (self.trail_atr_mult > 0):
+            raise ValueError("trail_atr_mult must be > 0")
+        if not (0 < self.risk_per_trade <= 1):
+            raise ValueError("validation failed")
+
+
+# -- strategy --------------------------------------------------------------
 
 
 class TurtleTrading(BaseStrategy):
-    """Dual-SMA trend filter + Donchian channel breakout + ATR trailing stop.
+    """大哥2.2-style channel breakout with recursive SMA trend filter.
 
-    Only takes long entries when the short-term SMA is above the long-term SMA,
-    confirming an uptrend. Entry triggers on a Donchian channel breakout.
-    Exit uses a Chandelier trailing stop from the highest price since entry.
+    Long:  close >= upper_channel[-1]  AND  SMA_short > SMA_long
+    Short: close <= lower_channel[-1]  AND  SMA_short < SMA_long
+    Exit:  Chandelier stop (entry-time ATR, High/Low tracking).
     """
 
     regime = "trend"
+    long_only = False
 
     params: TurtleTradingParams
 
@@ -57,40 +97,56 @@ class TurtleTrading(BaseStrategy):
         p = self.params
         return max(p.long_period, p.channel_period, p.atr_period) + 5
 
-    # ------------------------------------------------------------------
+    # -- indicators ---------------------------------------------------------
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         p = self.params
 
-        # Dual SMA — trend direction
-        df["SMA_short"] = df["Close"].rolling(p.short_period).mean()
-        df["SMA_long"] = df["Close"].rolling(p.long_period).mean()
+        # Recursive SMA (大哥2.2 formula)
+        df["SMA_short"] = _recursive_sma(df["Close"], p.short_period)
+        df["SMA_long"] = _recursive_sma(df["Close"], p.long_period)
 
-        # Donchian Channel
-        df["Donchian_upper"] = df["High"].rolling(p.channel_period).max().shift(1)
-        df["Donchian_lower"] = df["Low"].rolling(p.channel_period).min().shift(1)
+        # Donchian Channel on Close (大哥2.2: high_line / low_line)
+        df["Donchian_upper"] = df["Close"].rolling(p.channel_period).max()
+        df["Donchian_lower"] = df["Close"].rolling(p.channel_period).min()
 
+        # ATR (Welles Wilder)
+        from .base import compute_atr
         df["ATR"] = compute_atr(df, p.atr_period)
 
-        # Entry signals only — exit via check_exit
+        # Trend filter — suppress shorts when long-term SMA is rising
+        trend_up = pd.Series(False, index=df.index)
+        if p.trend_filter:
+            trend_up = df["SMA_long"] > df["SMA_long"].shift(p.trend_filter_bars)
+            trend_dn = df["SMA_long"] < df["SMA_long"].shift(p.trend_filter_bars)
+
+        # Signals — entry vs previous bar's channel (大哥2.2: high_line[-1])
         df["Signal"] = 0
         buy = (
             (df["SMA_short"] > df["SMA_long"])
-            & (df["Close"] > df["Donchian_upper"])
+            & (df["Close"] >= df["Donchian_upper"].shift(1))
         )
+        short = (
+            (df["SMA_short"] < df["SMA_long"])
+            & (df["Close"] <= df["Donchian_lower"].shift(1))
+        )
+        if p.trend_filter:
+            short = short & ~trend_up  # suppress short in uptrend
+            buy = buy & ~trend_dn     # suppress long in downtrend
         df.loc[buy, "Signal"] = 1
+        df.loc[short, "Signal"] = -1
 
         return df
 
-    # ------------------------------------------------------------------
+    # -- sizing -------------------------------------------------------------
 
     def position_size(self, capital: float, price: float, atr: float) -> int:
         return self._risk_budget_size(capital, price, atr,
             self.params.risk_per_trade, self.params.trail_atr_mult,
             self.params.max_position_pct)
 
-    # ------------------------------------------------------------------
+    # -- exit (大哥2.2 trailing stop) ---------------------------------------
 
     def check_exit(
         self,
@@ -98,13 +154,49 @@ class TurtleTrading(BaseStrategy):
         i: int,
         entry_price: float,
         highest_since_entry: float,
+        lowest_since_entry: Optional[float] = None,
         position: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
-        price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
+        """Chandelier stop with entry-time ATR, tracked on High/Low (大哥2.2).
 
-        chandelier_stop = highest_since_entry - self.params.trail_atr_mult * atr
-        if price <= chandelier_stop:
-            return True, "移动止损"
+        Long stop:  close <= max(high[entry:i]) - ATR_entry × trail_atr_mult
+        Short stop: close >= min(low[entry:i]) + ATR_entry × trail_atr_mult
+        """
+        price = float(df["Close"].iloc[i])
+        atr_col = df["ATR"]
+
+        # Locate entry bar and freeze ATR at entry (df.atr[pos_idx-1])
+        if position and 'date' in position:
+            entry_date = position['date']
+            if entry_date in df.index:
+                pos_idx = df.index.get_loc(entry_date)
+                entry_atr = float(atr_col.iloc[max(0, pos_idx - 1)])
+            else:
+                entry_atr = float(atr_col.iloc[i])
+        else:
+            entry_atr = float(atr_col.iloc[i])
+
+        direction = position.get('direction', 'LONG') if position else 'LONG'
+
+        if direction == 'SHORT':
+            # Track lowest Low since entry
+            if position and 'date' in position and position['date'] in df.index:
+                pos_idx = df.index.get_loc(position['date'])
+                lowest_low = float(df["Low"].iloc[pos_idx:i + 1].min())
+            else:
+                lowest_low = price
+            cover_level = lowest_low + entry_atr * self.params.trail_atr_mult
+            if price >= cover_level:
+                return True, "移动止损(空)"
+        else:
+            # Track highest High since entry
+            if position and 'date' in position and position['date'] in df.index:
+                pos_idx = df.index.get_loc(position['date'])
+                highest_high = float(df["High"].iloc[pos_idx:i + 1].max())
+            else:
+                highest_high = price
+            stop_level = highest_high - entry_atr * self.params.trail_atr_mult
+            if price <= stop_level:
+                return True, "移动止损"
 
         return False, ""

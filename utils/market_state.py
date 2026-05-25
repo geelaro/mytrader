@@ -10,7 +10,7 @@ Usage:
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,17 +40,19 @@ class MarketState:
     bb_width_pct: float
 
 
-from strategy import STRATEGY_MAP
+def is_trend_strategy(name: str, regime_map: Dict[str, Optional[str]]) -> bool:
+    """Return True if *name* is a trend-following strategy.
+
+    *regime_map* is ``{strategy_name: regime | None}``, typically built from
+    ``STRATEGY_MAP`` by the caller to avoid a circular import from
+    ``utils.market_state`` → ``strategy``.
+    """
+    return regime_map.get(name) == "trend"
 
 
-def is_trend_strategy(name: str) -> bool:
-    cls = STRATEGY_MAP.get(name)
-    return getattr(cls, "regime", None) == "trend" if cls else False
-
-
-def is_mean_reversion_strategy(name: str) -> bool:
-    cls = STRATEGY_MAP.get(name)
-    return getattr(cls, "regime", None) == "mean_reversion" if cls else False
+def is_mean_reversion_strategy(name: str, regime_map: Dict[str, Optional[str]]) -> bool:
+    """Return True if *name* is a mean-reversion strategy."""
+    return regime_map.get(name) == "mean_reversion"
 
 
 class MarketStateClassifier:

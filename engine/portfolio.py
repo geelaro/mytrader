@@ -241,153 +241,29 @@ class PortfolioBacktest:
 
                 row = df_sig.iloc[idx_pos]
                 price = float(row["Close"])
-                open_price = float(row["Open"]) if "Open" in row.index else price
                 atr = float(row["ATR"]) if "ATR" in row.index else 0
                 st["last_price"] = price
 
-                pending = st.get("pending_order")
-                if pending is not None:
-                    fill = self.execution_model.execute_bar(
-                        pending,
-                        row,
-                        date_idx,
-                        idx_pos,
-                        available_qty=st["position"] if pending.side == OrderSide.SELL else None,
+                # --- pending order fill ---
+                if st.get("pending_order") is not None:
+                    handled, cash, skip_leg = self._handle_pending_order(
+                        st, row, date_idx, idx_pos, open_trade_idx, trades, i, cash,
                     )
-                    if pending.side == OrderSide.SELL and st["position"] > 0:
-                        if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                            cash = self._apply_close_fill(
-                                st, fill, pending.reason,
-                                open_trade_idx, trades, i, cash,
-                            )
-                            pending.quantity -= fill.filled_qty
-                        if (fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED)
-                                or st["position"] == 0):
-                            st["pending_order"] = None
-                        continue
-                    if pending.side == OrderSide.BUY:
-                        if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                            if self._apply_open_fill(st, fill, trades, open_trade_idx, i, cash):
-                                cash += fill.net_cash_delta
-                                pending.quantity -= fill.filled_qty
-                        if (fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED)
-                                or pending.quantity <= 0):
-                            st["pending_order"] = None
+                    if skip_leg:
                         total_equity += st["position"] * price
                         continue
-                    elif fill.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
-                        st["pending_order"] = None
+                    if handled:
                         total_equity += st["position"] * price
                         continue
 
-                # Exit check
+                # --- exit / entry signal ---
                 if st["position"] > 0:
-                    if price > st["highest"]:
-                        st["highest"] = price
-
-                    exit_now, reason = st["strategy"].check_exit(
-                        df_sig, idx_pos,
-                        entry_price=st["entry_price"],
-                        highest_since_entry=st["highest"],
+                    self._check_leg_exit(st, df_sig, idx_pos, price)
+                else:
+                    daily_new_count = self._check_leg_entry(
+                        st, df_sig, idx_pos, row, price, atr,
+                        leg_state, date_idx, cash, daily_new_count,
                     )
-                    if exit_now:
-                        st["pending_order"] = self.execution_model.make_plan(
-                            symbol=st["leg"].symbol,
-                            side=OrderSide.SELL,
-                            quantity=st["position"],
-                            created_index=idx_pos,
-                            reason=reason,
-                        )
-
-                # Entry check
-                elif (st["position"] == 0
-                      and st.get("pending_order") is None
-                      and idx_pos < len(df_sig) - 1
-                      and st["strategy"].entry_signal(df_sig, idx_pos)):
-                    active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
-                    if active_positions >= self.max_positions:
-                        self._reject(date_idx, st["leg"].symbol, "仓位上限",
-                                     f"活跃仓位{active_positions}≥{self.max_positions}")
-                        continue
-
-                    # Compute current equity for dynamic allocation & risk checks
-                    current_equity = cash + sum(
-                        s["position"] * s.get("last_price", 0) for s in leg_state.values()
-                    )
-
-                    # --- risk: cooldown after stop ---
-                    sym = st["leg"].symbol
-                    if self.cooldown_after_stop_days > 0 and sym in self._stop_dates:
-                        last_stop = self._stop_dates[sym]
-                        if last_stop is not None:
-                            days_since = (date_idx - last_stop).days
-                            if days_since < self.cooldown_after_stop_days:
-                                self._reject(date_idx, sym, "冷却期",
-                                             f"距止损{days_since}天 (<{self.cooldown_after_stop_days})")
-                                continue
-
-                    # --- risk: sector weight ---
-                    if self.max_sector_weight > 0:
-                        sector = self.sector_map.get(sym, "Unknown")
-                        sector_exposure = sum(
-                            s["position"] * s.get("last_price", 0)
-                            for j, s in leg_state.items()
-                            if self.sector_map.get(s["leg"].symbol, "Unknown") == sector
-                        )
-                        alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
-                        entry_cost = price * (1 + self.slippage_pct) * (1 + self.commission_rate)
-                        new_exposure = (sector_exposure + (alloc if alloc > 0 else 0)) / max(current_equity, 1)
-                        if new_exposure > self.max_sector_weight:
-                            self._reject(date_idx, sym, "行业权重",
-                                         f"{sector}敞口{new_exposure*100:.0f}% > {self.max_sector_weight*100:.0f}%")
-                            continue
-
-                    # Portfolio risk: max_daily_new_positions
-                    if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
-                        self._reject(date_idx, sym, "日开仓上限",
-                                     f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})")
-                        continue
-
-                    alloc = self._allocate(st["leg"], cash, len(leg_data), current_equity)
-                    if alloc > 0:
-                        if self.sizing_mode == "risk_budget":
-                            qty = self._calc_risk_budget_qty(alloc, price, atr)
-                        else:
-                            qty = st["strategy"].position_size(alloc, price, atr)
-
-                        # Execution constraints
-                        qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
-                        if qty <= 0:
-                            continue
-
-                        actual_price = price * (1 + self.slippage_pct)
-                        cost = actual_price * qty * (1 + self.commission_rate)
-
-                        # Portfolio risk: max_symbol_weight
-                        if self.max_symbol_weight > 0 and current_equity > 0:
-                            if cost / current_equity > self.max_symbol_weight:
-                                self._reject(date_idx, sym, "标的上限",
-                                             f"{sym}占比{cost/current_equity*100:.0f}% > {self.max_symbol_weight*100:.0f}%")
-                                continue
-
-                        # Portfolio risk: max_gross_exposure
-                        if self.max_gross_exposure > 0 and current_equity > 0:
-                            existing_exposure = sum(
-                                s["position"] * s.get("last_price", 0) for s in leg_state.values()
-                            )
-                            if (existing_exposure + cost) / current_equity > self.max_gross_exposure:
-                                self._reject(date_idx, sym, "总敞口上限",
-                                             f"总敞口{(existing_exposure+cost)/current_equity*100:.0f}% > {self.max_gross_exposure*100:.0f}%")
-                                continue
-
-                        if cost <= cash and qty > 0:
-                            st["pending_order"] = self.execution_model.make_plan(
-                                symbol=sym,
-                                side=OrderSide.BUY,
-                                quantity=qty,
-                                created_index=idx_pos,
-                            )
-                            daily_new_count += 1
 
                 total_equity += st["position"] * price
 
@@ -418,6 +294,152 @@ class PortfolioBacktest:
             trades=trades,
             rejections=self._rejections,
         )
+
+    # -- run() sub-methods ----------------------------------------------------
+
+    def _handle_pending_order(
+        self, st, row, date_idx, idx_pos, open_trade_idx, trades, leg_i, cash,
+    ):
+        """Execute a pending order fill for one leg. Returns (handled, cash, skip)."""
+        pending = st["pending_order"]
+        fill = self.execution_model.execute_bar(
+            pending, row, date_idx, idx_pos,
+            available_qty=st["position"] if pending.side == OrderSide.SELL else None,
+        )
+        if pending.side == OrderSide.SELL and st["position"] > 0:
+            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                cash = self._apply_close_fill(
+                    st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
+                )
+                pending.quantity -= fill.filled_qty
+            if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] == 0:
+                st["pending_order"] = None
+            return True, cash, True
+        if pending.side == OrderSide.BUY:
+            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, cash):
+                    cash += fill.net_cash_delta
+                    pending.quantity -= fill.filled_qty
+            if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
+                st["pending_order"] = None
+            return True, cash, False
+        if fill.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
+            st["pending_order"] = None
+            return True, cash, False
+        return False, cash, False
+
+    def _check_leg_exit(self, st, df_sig, idx_pos, price):
+        """Check exit signal for a held position."""
+        if price > st["highest"]:
+            st["highest"] = price
+        exit_now, reason = st["strategy"].check_exit(
+            df_sig, idx_pos,
+            entry_price=st["entry_price"],
+            highest_since_entry=st["highest"],
+        )
+        if exit_now:
+            st["pending_order"] = self.execution_model.make_plan(
+                symbol=st["leg"].symbol,
+                side=OrderSide.SELL,
+                quantity=st["position"],
+                created_index=idx_pos,
+                reason=reason,
+            )
+
+    def _check_leg_entry(
+        self, st, df_sig, idx_pos, row, price, atr,
+        leg_state, date_idx, cash, daily_new_count,
+    ):
+        """Check entry signal for a leg with no position. Returns new daily_new_count."""
+        if (st["position"] != 0
+                or st.get("pending_order") is not None
+                or idx_pos >= len(df_sig) - 1
+                or not st["strategy"].entry_signal(df_sig, idx_pos)):
+            return daily_new_count
+
+        sym = st["leg"].symbol
+
+        active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) > 0)
+        if active_positions >= self.max_positions:
+            self._reject(date_idx, sym, "仓位上限",
+                         f"活跃仓位{active_positions}≥{self.max_positions}")
+            return daily_new_count
+
+        current_equity = cash + sum(
+            s["position"] * s.get("last_price", 0) for s in leg_state.values()
+        )
+
+        # Cooldown after stop
+        if self.cooldown_after_stop_days > 0 and sym in self._stop_dates:
+            last_stop = self._stop_dates[sym]
+            if last_stop is not None:
+                days_since = (date_idx - last_stop).days
+                if days_since < self.cooldown_after_stop_days:
+                    self._reject(date_idx, sym, "冷却期",
+                                 f"距止损{days_since}天 (<{self.cooldown_after_stop_days})")
+                    return daily_new_count
+
+        # Sector weight
+        if self.max_sector_weight > 0:
+            sector = self.sector_map.get(sym, "Unknown")
+            sector_exposure = sum(
+                s["position"] * s.get("last_price", 0)
+                for s in leg_state.values()
+                if self.sector_map.get(s["leg"].symbol, "Unknown") == sector
+            )
+            alloc = self._allocate(st["leg"], cash, len(leg_state), current_equity)
+            entry_cost = price * (1 + self.slippage_pct) * (1 + self.commission_rate)
+            if (sector_exposure + (alloc if alloc > 0 else 0)) / max(current_equity, 1) > self.max_sector_weight:
+                self._reject(date_idx, sym, "行业权重",
+                             f"{sector}敞口{(sector_exposure + (alloc if alloc > 0 else 0)) / max(current_equity, 1) * 100:.0f}% > {self.max_sector_weight * 100:.0f}%")
+                return daily_new_count
+
+        # Daily new position cap
+        if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
+            self._reject(date_idx, sym, "日开仓上限",
+                         f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})")
+            return daily_new_count
+
+        alloc = self._allocate(st["leg"], cash, len(leg_state), current_equity)
+        if alloc <= 0:
+            return daily_new_count
+
+        if self.sizing_mode == "risk_budget":
+            qty = self._calc_risk_budget_qty(alloc, price, atr)
+        else:
+            qty = st["strategy"].position_size(alloc, price, atr)
+
+        qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
+        if qty <= 0:
+            return daily_new_count
+
+        actual_price = price * (1 + self.slippage_pct)
+        cost = actual_price * qty * (1 + self.commission_rate)
+
+        if self.max_symbol_weight > 0 and current_equity > 0:
+            if cost / current_equity > self.max_symbol_weight:
+                self._reject(date_idx, sym, "标的上限",
+                             f"{sym}占比{cost / current_equity * 100:.0f}% > {self.max_symbol_weight * 100:.0f}%")
+                return daily_new_count
+
+        if self.max_gross_exposure > 0 and current_equity > 0:
+            existing_exposure = sum(
+                s["position"] * s.get("last_price", 0) for s in leg_state.values()
+            )
+            if (existing_exposure + cost) / current_equity > self.max_gross_exposure:
+                self._reject(date_idx, sym, "总敞口上限",
+                             f"总敞口{(existing_exposure + cost) / current_equity * 100:.0f}% > {self.max_gross_exposure * 100:.0f}%")
+                return daily_new_count
+
+        if cost <= cash and qty > 0:
+            st["pending_order"] = self.execution_model.make_plan(
+                symbol=sym, side=OrderSide.BUY, quantity=qty, created_index=idx_pos,
+            )
+            daily_new_count += 1
+
+        return daily_new_count
+
+    # -- helpers --------------------------------------------------------------
 
     def _close_trade(
         self, st: dict, date_idx: pd.Timestamp, price: float, reason: str,

@@ -206,6 +206,9 @@ def main():
     parser.add_argument("--history", action="store_true", help="Show recent signal history")
     parser.add_argument("--config", type=str, default="watchlist.toml", help="Config file path")
     parser.add_argument("--notify", action="store_true", help="Send signal card via Feishu")
+    parser.add_argument("--optimize", action="store_true", help="Walk-forward re-optimize and update params if OOS degraded")
+    parser.add_argument("--opt-threshold", type=float, default=0.3,
+                        help="Sharpe degradation threshold for auto-update (default 30%%)")
     args = parser.parse_args()
 
     # Ensure we run from the project root
@@ -230,6 +233,67 @@ def main():
         signals_with_signal = [r for r in results if r["signal"] != 0]
         if signals_with_signal:
             notifier.signal_card(signals_with_signal)
+
+    # --- optional: walk-forward re-optimization -------------------------------
+    if args.optimize:
+        _run_optimize_and_update(config, args, target_date)
+
+
+def _run_optimize_and_update(config: dict, args, target_date: str):
+    """Run walk-forward optimization on active strategies and auto-update
+    watchlist.toml if OOS Sharpe has degraded beyond *opt_threshold*."""
+    from engine.optimize import walk_forward
+    from utils import save_toml
+
+    watchlist = config.get("watchlist", [])
+    strategy_params = config.get("strategy", {})
+    updated = False
+
+    for item in watchlist:
+        active = item.get("active", "")
+        if not active or active == "enhanced_macd":  # skip deprecated
+            continue
+        sym = item["symbol"]
+        current_params = strategy_params.get(active, {})
+
+        print(f"\n  滚动优化: {active} @ {sym}")
+        try:
+            result = walk_forward(active, sym, metric="sharpe")
+        except Exception as e:
+            logger.warning("优化失败 %s/%s: %s", active, sym, e)
+            continue
+
+        if not result.get("windows"):
+            continue
+
+        # Aggregate OOS performance
+        oos_sharpe = result.get("sharpe", 0)
+        # Best params from last window
+        last_window = result["windows"][-1]
+        new_params = last_window.get("best_params", {})
+
+        if not new_params or new_params == current_params:
+            continue
+
+        # Compare: if last window's OOS sharpe < threshold relative to
+        # historic average, the params have degraded.
+        window_sharpes = [w.get("test_sharpe", 0) for w in result["windows"]]
+        avg_sharpe = sum(window_sharpes) / len(window_sharpes) if window_sharpes else 0
+        last_sharpe = window_sharpes[-1] if window_sharpes else 0
+
+        if avg_sharpe > 0 and last_sharpe < avg_sharpe * (1 - args.opt_threshold):
+            logger.info("参数退化: %s Sharpe %.2f → %.2f (最新), 自动更新", active, avg_sharpe, last_sharpe)
+            print(f"  ! {active} 参数退化 (Sharpe {avg_sharpe:.2f} → {last_sharpe:.2f}), 更新为: {new_params}")
+            strategy_params[active] = new_params
+            updated = True
+        else:
+            print(f"  {active} OOS Sharpe {oos_sharpe:.2f}, 参数稳定, 无需更新")
+
+    if updated:
+        config["strategy"] = strategy_params
+        save_toml(args.config, config)
+        print(f"\n  已更新 {args.config}")
+        logger.info("watchlist.toml 参数已自动更新")
 
 
 if __name__ == "__main__":

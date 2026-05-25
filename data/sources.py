@@ -76,15 +76,17 @@ _TENCENT_CODE_MAP = {
 
 # Manual split adjustments — Tencent qfq parameter does NOT adjust US stocks.
 # Prices before split_date are DIVIDED by ratio.
-# Source: CRSP / EOD
-_US_SPLITS: dict[str, list[tuple[str, int]]] = {
-    "AAPL":  [("2020-08-31", 4)],
-    "NVDA":  [("2021-07-20", 4), ("2024-06-10", 10)],
-    "TSLA":  [("2020-08-31", 5), ("2022-08-25", 3)],
-    "AMZN":  [("2022-06-06", 20)],
-    "GOOGL": [("2022-07-18", 20)],
-    "GOOG":  [("2022-07-18", 20)],
-}
+# Edit data/splits.json to add/correct entries.
+def _load_splits() -> dict[str, list[tuple[str, int]]]:
+    import json
+    from pathlib import Path
+    path = Path(__file__).parent / "splits.json"
+    if path.is_file():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return {sym: [(d, int(r)) for d, r in entries] for sym, entries in raw.items()}
+    return {}
+
+_US_SPLITS: dict[str, list[tuple[str, int]]] = _load_splits()
 
 
 class TencentSource(DataSource):

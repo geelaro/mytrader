@@ -5,10 +5,13 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock
 
+from strategy import STRATEGY_MAP
 from utils.market_state import (
     MarketStateClassifier, MarketRegime, Volatility, MarketState,
     is_trend_strategy, is_mean_reversion_strategy,
 )
+
+_regime_map = {name: getattr(cls, "regime", None) for name, cls in STRATEGY_MAP.items()}
 
 
 def make_trend_up(n_bars=500) -> pd.DataFrame:
@@ -110,15 +113,15 @@ class TestVolatility:
 
 class TestStrategyTypeChecks:
     def test_trend_strategies(self):
-        assert is_trend_strategy("turtle_trading") is True
-        assert is_trend_strategy("trend_follower") is True
-        assert is_trend_strategy("weekly_macd_kdj") is True
-        assert is_trend_strategy("daily_macd_kdj") is False
+        assert is_trend_strategy("turtle_trading", _regime_map) is True
+        assert is_trend_strategy("trend_follower", _regime_map) is True
+        assert is_trend_strategy("weekly_macd_kdj", _regime_map) is True
+        assert is_trend_strategy("daily_macd_kdj", _regime_map) is False
 
     def test_mean_reversion_strategies(self):
-        assert is_mean_reversion_strategy("bollinger_mean_reversion") is False  # removed from active map
-        assert is_mean_reversion_strategy("turtle_trading") is False
-        assert is_mean_reversion_strategy("daily_macd_kdj") is False
+        assert is_mean_reversion_strategy("bollinger_mean_reversion", _regime_map) is False  # removed from active map
+        assert is_mean_reversion_strategy("turtle_trading", _regime_map) is False
+        assert is_mean_reversion_strategy("daily_macd_kdj", _regime_map) is False
 
 
 class TestSignalGate:

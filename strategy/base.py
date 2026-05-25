@@ -63,6 +63,7 @@ class BaseStrategy(ABC):
 
     params: StrategyParams  # set by __init_subclass__ or constructor
     regime: Optional[str] = None  # "trend", "mean_reversion", or None for mixed
+    long_only: bool = True  # set False to enable short entries
 
     def __init__(self, params: Optional[StrategyParams] = None):
         if params is not None:
@@ -71,14 +72,16 @@ class BaseStrategy(ABC):
     # -- mandatory -----------------------------------------------------------
 
     @abstractmethod
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def calculate_indicators(self, df: pd.DataFrame, df_weekly: pd.DataFrame = None) -> pd.DataFrame:
         """Return *df* with indicator columns and a `'Signal'` column added.
 
         Signal semantics
         ----------------
-          1  = open / hold long
-         -1  = close / exit
-          0  = hold current state
+          1  = long entry   -1  = short entry   0  = neutral
+
+        *df_weekly* (optional) — pre-resampled weekly OHLCV for multi-timeframe
+        strategies.  When provided the strategy can compute weekly indicators
+        and map them back to the daily index for precise entry timing.
 
         The returned DataFrame may have a different index (e.g. weekly) from
         the input — the engine handles alignment.
@@ -125,9 +128,12 @@ class BaseStrategy(ABC):
         max_shares = int(capital * max_pct / price)
         return max(0, min(shares, max_shares))
 
-    def entry_signal(self, df: pd.DataFrame, i: int) -> bool:
-        """Return True if bar *i* triggers a long entry."""
-        return int(df["Signal"].iloc[i]) == 1
+    def entry_signal(self, df: pd.DataFrame, i: int) -> int:
+        """Return direction signal at bar *i*: 1=long, -1=short, 0=neutral.
+
+        Default: read from ``Signal`` column. Override for custom logic.
+        """
+        return int(df["Signal"].iloc[i])
 
     def check_exit(
         self,
@@ -135,15 +141,61 @@ class BaseStrategy(ABC):
         i: int,
         entry_price: float,
         highest_since_entry: float,
+        lowest_since_entry: Optional[float] = None,
         position: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
         """Return (exit_now, reason).
 
-        Override to add stop-loss / take-profit / trailing-stop logic.
-        Default: exit when Signal == -1.
+        *lowest_since_entry* is used by short positions (cover when price
+        rises above the trailing cover level).  The engine passes it together
+        with *highest_since_entry* — strategies can ignore one depending on
+        the position direction in ``position.get('direction')``.
         """
         if int(df["Signal"].iloc[i]) == -1:
             return True, "卖出信号"
+        return False, ""
+
+
+# ---------------------------------------------------------------------------
+# Chandelier trailing stop Mixin
+# ---------------------------------------------------------------------------
+
+
+class ChandelierTrailingExit:
+    """Mixin providing Chandelier trailing-stop exit for long & short positions.
+
+    The host strategy must declare ``params.trail_atr_mult``.
+    Use by inheriting *before* ``BaseStrategy``.
+
+    Call ``self._chandelier_exit(df, i, highest, lowest, position)``
+    in ``check_exit()`` — it auto-picks the correct stop direction.
+    """
+
+    def _chandelier_exit(self, df, i, highest_since_entry,
+                         lowest_since_entry=None, position=None):
+        """Return (exit_now, reason). Direction-aware: chooses long or short stop."""
+        if position and position.get('direction') == 'SHORT':
+            return self._chandelier_cover(df, i, lowest_since_entry)
+        return self._chandelier_stop(df, i, highest_since_entry)
+
+    def _chandelier_stop(self, df, i, highest_since_entry):
+        """Long exit: price <= highest - trail_atr_mult × ATR."""
+        price = float(df["Close"].iloc[i])
+        atr = float(df["ATR"].iloc[i])
+        stop = highest_since_entry - self.params.trail_atr_mult * atr
+        if price <= stop:
+            return True, "移动止损"
+        return False, ""
+
+    def _chandelier_cover(self, df, i, lowest_since_entry):
+        """Short cover: price >= lowest + trail_atr_mult × ATR."""
+        if lowest_since_entry is None:
+            return False, ""
+        price = float(df["Close"].iloc[i])
+        atr = float(df["ATR"].iloc[i])
+        cover = lowest_since_entry + self.params.trail_atr_mult * atr
+        if price >= cover:
+            return True, "移动止损(空)"
         return False, ""
 
 
@@ -228,6 +280,18 @@ def resample_weekly(df: pd.DataFrame, weekday: str = "FRI") -> pd.DataFrame:
         )
         .dropna()
     )
+
+
+def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Add RSI column to *df* using Wilder EMA smoothing."""
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df["RSI"] = 100 - (100 / (1 + rs))
+    return df
 
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:

@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr, compute_bollinger
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr, compute_bollinger
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class BollingerSqueezeParams(StrategyParams):
             raise ValueError("risk_per_trade must be in (0, 1]")
 
 
-class BollingerSqueeze(BaseStrategy):
+class BollingerSqueeze(ChandelierTrailingExit, BaseStrategy):
     """Wait for volatility contraction (squeeze), then enter on upward breakout."""
 
     regime = "trend"
@@ -111,12 +111,9 @@ class BollingerSqueeze(BaseStrategy):
         highest_since_entry: float,
         position: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
-        price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
-
-        chandelier_stop = highest_since_entry - self.params.trail_atr_mult * atr
-        if price <= chandelier_stop:
-            return True, "移动止损"
+        exit_flag, reason = self._chandelier_exit(df, i, highest_since_entry)
+        if exit_flag:
+            return True, reason
 
         if int(df["Signal"].iloc[i]) == -1:
             return True, "回归中轨"

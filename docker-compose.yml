@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  mytrader:
+    build: .
+    image: mytrader:latest
+    container_name: mytrader
+    restart: unless-stopped
+    environment:
+      - MYTRADER_DB=/data/trading_data.db
+      - FEISHU_WEBHOOK=${FEISHU_WEBHOOK:-}
+      - FUTU_HOST=${FUTU_HOST:-127.0.0.1}
+      - FUTU_PORT=${FUTU_PORT:-11111}
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./watchlist.toml:/app/watchlist.toml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    ports:
+      - "8080:8080"
+    networks:
+      - mytrader-net
+
+  futu-opend:
+    image: futu-opend:latest
+    container_name: futu-opend
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "11111:11111"
+    networks:
+      - mytrader-net
+
+networks:
+  mytrader-net:
+    driver: bridge

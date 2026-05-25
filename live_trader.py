@@ -225,10 +225,9 @@ class LiveTrader:
             # Track risk state
             if order.status == OrderStatus.FILLED:
                 self.risk_ctrl.on_trade_filled(order)
-                if order.side == OrderSide.SELL:
-                    account = self.broker.get_account()
-                    positions_dict = {p.symbol: p for p in self.broker.get_positions()}
-                    self.risk_ctrl.check_global(account, positions_dict)
+                account = self.broker.get_account()
+                positions_dict = {p.symbol: p for p in self.broker.get_positions()}
+                self.risk_ctrl.check_global(account, positions_dict)
 
         if not orders:
             print("\n  无新订单 — 信号与持仓一致")
@@ -512,6 +511,45 @@ def main():
                   f"@ ${o.avg_fill_price:.2f}  [{o.status.value}]")
     else:
         print("无订单")
+
+
+# ---------------------------------------------------------------------------
+# Health-check HTTP server (for Docker HEALTHCHECK / monitoring)
+# ---------------------------------------------------------------------------
+
+_health_state = {
+    "status": "ok",
+    "last_tick": None,
+    "paused": False,
+}
+
+
+def start_health_server(port: int = 8080):
+    """Start a minimal HTTP health endpoint in a daemon thread."""
+    import json as _json
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                payload = _json.dumps(_health_state, default=str).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            pass  # suppress access logs
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    import threading
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return server
 
 
 if __name__ == "__main__":

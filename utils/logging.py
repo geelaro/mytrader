@@ -1,4 +1,4 @@
-"""Unified logging — console, rotating file, structured format.
+"""Unified logging — console (human-readable), file (structured JSON).
 
 Usage:
     from utils.logging import get_logger
@@ -7,9 +7,10 @@ Usage:
     logger.warning("something", extra={"symbol": "AAPL"})
 
 Named loggers ("live", "daily") → logs/{name}.log + console, isolated.
-All other loggers → logs/mytrader.log + console (shared).
+All other loggers → logs/mytrader.log (JSON) + console (text).
 """
 
+import json
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -21,6 +22,31 @@ CONSOLE_FORMAT = (
 FILE_FORMAT = (
     "%(asctime)s  %(levelname)-7s  %(name)-18s  %(message)s"
 )
+
+
+class JsonFormatter(logging.Formatter):
+    """JSON-line formatter for ingest by Loki / ELK / Datadog.
+
+    Emits one JSON object per line with standard ECS-like fields.
+    Extra fields passed via ``logger.info("msg", extra={"symbol": "AAPL"})``
+    are merged into the JSON object.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        obj = {
+            "ts": f"{self.formatTime(record, '%Y-%m-%dT%H:%M:%S')}.{int(record.msecs):03d}000Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        # Merge extra fields (symbol, event, duration_ms, …)
+        for key in ("symbol", "event", "detail", "value", "duration_ms"):
+            val = getattr(record, key, None)
+            if val is not None and val != "":
+                obj[key] = val
+        if record.exc_info and record.exc_info[1]:
+            obj["exception"] = str(record.exc_info[1])
+        return json.dumps(obj, ensure_ascii=False, default=str)
 
 _log_initialized = False
 
@@ -91,7 +117,7 @@ def setup_logging(
         encoding="utf-8",
     )
     shared_file.setLevel(logging.DEBUG)
-    shared_file.setFormatter(logging.Formatter(FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    shared_file.setFormatter(JsonFormatter())
     root.addHandler(shared_file)
 
     # Suppress noisy libraries
@@ -115,7 +141,7 @@ def _setup_named_logger(logger: logging.Logger, name: str):
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    file_handler.setFormatter(JsonFormatter())
     logger.addHandler(file_handler)
     logger.setLevel(logging.DEBUG)
     logger.propagate = False

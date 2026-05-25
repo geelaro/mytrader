@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_adx
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_adx
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,11 @@ class TrendFollowerParams(StrategyParams):
         if not (self.trail_atr_mult > 0): raise ValueError("validation failed")
 
 
-class TrendFollower(BaseStrategy):
+class TrendFollower(ChandelierTrailingExit, BaseStrategy):
     """Breakout trend-follower with Chandelier trailing stop.
 
     Entry: MA uptrend + ADX confirms trend + +DI above -DI.
-    Exit:  Chandelier trailing stop only — prices close below
-           (highest_since_entry − trail_atr_mult × ATR).
+    Exit:  Chandelier trailing stop only.
     """
 
     regime = "trend"
@@ -91,10 +90,4 @@ class TrendFollower(BaseStrategy):
         highest_since_entry: float,
         position: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
-        price = float(df["Close"].iloc[i])
-        atr = float(df["ATR"].iloc[i])
-        chandelier_stop = highest_since_entry - self.params.trail_atr_mult * atr
-
-        if price <= chandelier_stop:
-            return True, "移动止损"
-        return False, ""
+        return self._chandelier_exit(df, i, highest_since_entry)

@@ -131,6 +131,48 @@ class DataProvider:
 
         return self._load_from_cache(sym, start, end)
 
+    def get_data(
+        self,
+        symbol: str,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        freqs: Optional[List[str]] = None,
+        force_refresh: bool = False,
+    ) -> dict:
+        """Return OHLCV for *symbol* at requested frequencies.
+
+        Parameters
+        ----------
+        freqs : list
+            e.g. ``["D"]`` or ``["D", "W"]``.  Defaults to ``["D"]``.
+
+        Returns
+        -------
+        dict[str, pd.DataFrame]
+            ``{"D": df_daily, "W": df_weekly}`` — weekly is resampled from
+            daily (Friday close, cached internally).
+        """
+        if freqs is None:
+            freqs = ["D"]
+        result = {}
+        if "D" in freqs or "W" in freqs:
+            df_daily = self.get_daily(symbol, start=start, end=end, force_refresh=force_refresh)
+            result["D"] = df_daily
+        if "W" in freqs:
+            result["W"] = self._resample_weekly(df_daily) if "D" in result and not result["D"].empty else pd.DataFrame()
+        return result
+
+    @staticmethod
+    def _resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
+        """Resample daily OHLCV to weekly (Friday close)."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return (
+            df.resample("W-FRI")
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+            .dropna()
+        )
+
     def cached_range(self, symbol: str) -> Tuple[Optional[str], Optional[str]]:
         """Return (earliest, latest) cached dates for *symbol*."""
         return self.cache.date_range(symbol.upper())

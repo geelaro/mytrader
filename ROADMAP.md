@@ -10,11 +10,11 @@
 
 ```
 阶段一  致命修复     第 1 周    ████████████████   (5 项, 已完成)
-阶段二  架构矫正     第 2-3 周  ██░░░░░░░░░░░░░░   (1/5 项, P1)
-阶段三  质量加固     第 4 周    ░░░░░░░░░░░░░░   (6 项, P2)
-阶段四  MTF 框架     第 5-6 周  ░░░░░░░░░░░░░░   (4 项)
-阶段五  策略与组合   第 7-8 周  ░░░░░░░░░░░░░░   (4 项)
-阶段六  运维与可观测 第 9-10 周 ░░░░░░░░░░░░░░   (6 项)
+阶段二  架构矫正     第 2-3 周  ████████████████   (5/5 项, 已完成)
+阶段三  质量加固     第 4 周    ████████████████   (6/6 项, 已完成)
+阶段四  MTF 框架     第 5-6 周  ████████████████   (4/4 项, 已完成)
+阶段五  策略与组合   第 7-8 周  ████████████████   (4/4 项, 已完成)
+阶段六  运维与可观测 第 9-10 周 ████████████████   (6/6 项, 已完成)
 阶段七  长期方向     第 11 周+  ░░░░░░░░░░░░░░   (5 方向)
 ```
 
@@ -70,24 +70,24 @@
 
 ### P1-1 消除尾随止损 ×6 重复
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `strategy/trend_follower.py` `strategy/atr_breakout.py` `strategy/donchian_breakout.py` `strategy/bollinger_squeeze.py` `strategy/turtle_trading.py` `strategy/daily_macd_kdj.py` `strategy/base.py`
 - **问题:** Chandelier 尾随止损逻辑 (`price <= highest - trail_atr_mult × ATR`) 在 6 个策略中一字不差重复
 - **方案:** 提取 `ChandelierTrailingExit` Mixin 到 `base.py`，各策略仅需声明 `trail_atr_mult` 参数
 
 ### P1-2 合并 weekly / daily_macd_kdj
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `strategy/weekly_macd_kdj.py` `strategy/daily_macd_kdj.py`
 - **问题:** 两者 80% 代码重复。差异仅：周/日重采样 + ATR 尾随止损
-- **方案:** 合并为单类 `MACDKDJStrategy`，参数控制 `freq="W"|"D"` 和 `use_atr_stop=True|False`
+- **方案:** 合并为单类 `MACDKDJStrategy`，参数控制 `freq="W"|"D"` 和 `use_atr_stop=True|False`。旧文件改为 re-export，`WeeklyMACD_KDJ` / `DailyMACD_KDJ` 保持向后兼容
 
 ### P1-3 消除 MarketState 循环依赖
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `utils/market_state.py:43`
 - **问题:** `from strategy import STRATEGY_MAP` 导入了全部 10 个策略，策略文件可能间接依赖 market_state，形成隐式循环
-- **方案:** `is_trend_strategy()` 改为接收 regime 映射表作为参数，由调用者注入
+- **方案:** `is_trend_strategy()` / `is_mean_reversion_strategy()` 接收 `regime_map` 参数，由 `signal_gate.py` 注入
 
 ### P1-4 Tencent 单源加 fallback 链
 
@@ -104,13 +104,14 @@
 
 ### P1-5 CacheManager 按职责拆分
 
-- [ ] 完成
-- **文件:** `data/cache.py` (511 行)
+- [x] 完成
+- **文件:** `data/cache.py` (~420 行)
 - **问题:** `CacheManager` 管理 6 种数据类型（OHLCV、signal_history、risk_state、entry_prices、trade_pnl、ops_log），`init_schema()` 每次连接执行 11 CREATE TABLE + 6 ALTER TABLE + 1 CREATE INDEX
-- **方案:** 拆为 3 个类：
-  - `OhlcvCache` — OHLCV 存储和增量更新
-  - `StateStore` — risk_state / entry_prices / trade_pnl 持久化
-  - `OpsLogger` — ops_log / order_log / slippage_log 写入
+- **方案:** 拆为 3 个类 + 1 个 facade：
+  - `OhlcvCache(_CacheBase)` — OHLCV load/save/date_range/missing_ranges
+  - `StateStore(_CacheBase)` — risk_state / entry_prices / trade_pnl
+  - `OpsLogger(_CacheBase)` — ops_log / order_log / slippage_log
+  - `CacheManager(OhlcvCache, StateStore, OpsLogger)` — 全功能向后兼容 + signal_history
 
 ---
 
@@ -118,51 +119,43 @@
 
 ### P2-1 回测引擎主循环重构
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `engine/trader.py` `run()` (~100 行)
-- **方案:** 提取状态机子方法：
-  - `_process_pending_order()`
-  - `_check_entry_signal()`
-  - `_check_exit_signal()`
-  - `_apply_stop_cooldown()`
+- **方案:** 提取状态机子方法：`_process_pending_order()` / `_check_exit_signal()` / `_check_entry_signal()` / `_apply_stop_cooldown()`
 
 ### P2-2 组合回测主循环拆分
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `engine/portfolio.py` `run()` (~180 行)
-- **方案:** 拆分子方法：
-  - `_process_bar_for_leg()`
-  - `_handle_pending_order()`
-  - `_compute_equity_snapshot()`
+- **方案:** 拆分子方法：`_handle_pending_order()` / `_check_leg_exit()` / `_check_leg_entry()`
 
 ### P2-3 RSI 计算提取到 base.py
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `strategy/enhanced_macd.py` `strategy/bollinger_mean_reversion.py` `strategy/base.py`
 - **问题:** RSI 计算逻辑在两处独立实现，参数和边界处理可能不一致
-- **方案:** `compute_rsi()` 加入 `base.py` 帮助函数组
+- **方案:** `compute_rsi()` 加入 `base.py` 帮助函数组，两策略各 -5 行
 
 ### P2-4 硬编码分裂调校外置
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `data/sources.py` TencentSource
 - **问题:** AAPL/NVDA/TSLA/AMZN/GOOGL 的分裂调整因子硬编码在源码中，每次拆股需要手动改代码
-- **方案:** 移至 `data/splits.json` 配置文件。后续考虑从 yfinance 自动获取分裂因子
+- **方案:** 移至 `data/splits.json` 配置文件，`_load_splits()` 自动加载
 
 ### P2-5 金标测试扩展到全策略
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `tests/test_golden.py`
-- **当前覆盖:** `weekly_macd_kdj` `trend_follower` `turtle_trading`
-- **待新增:** `atr_breakout` `donchian_breakout` `daily_macd_kdj` `weekly_macd` `MACDKDJStrategy`(合并后)
-- **参数:** seed=42, 300 bars, $10k capital, tolerance ±0.01
+- **新增覆盖:** `atr_breakout` `donchian_breakout` `daily_macd_kdj` `weekly_macd` `MACDKDJStrategy`
+- **参数:** seed=42, 300 bars, $10k capital, tolerance ±0.01, 17 tests total
 
 ### P2-6 实盘 BUY 后刷新风控
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `live_trader.py`
-- **问题:** `check_global()` 当前仅在 SELL 后调用 (L229-231)，BUY 后未刷新。总敞口超限检查滞后一个循环周期
-- **方案:** BUY 下单后也调用 `check_global()` 立即检查
+- **问题:** `check_global()` 当前仅在 SELL 后调用，BUY 后未刷新。总敞口超限检查滞后一个循环周期
+- **方案:** BUY/SELL 成交后统一调用 `check_global()`
 
 ---
 
@@ -172,28 +165,28 @@
 
 ### M-1 重构 BaseStrategy 接口
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `strategy/base.py` 及所有策略
-- **方案:** `calculate_indicators(df_daily, df_weekly) → df` 策略可同时接收日线和周线，内部做跨周期信号对齐
-- **向后兼容:** 保留 `calculate_indicators(df)` 的单参数签名作为 fallback
+- **方案:** `calculate_indicators(df, df_weekly=None)` 策略可同时接收日线和周线
+- **向后兼容:** 默认 `df_weekly=None`，现有策略无需改动
 
 ### M-2 weekly_macd_kdj 迁移为示范
 
-- [ ] 完成
+- [x] 完成
 - **文件:** 合并后的 `strategy/macd_kdj.py`
-- **方案:** 周线 MACD/KDJ 指标计算 → 映射回日线时间轴 → 日线精确入场执行。消除策略内部 `resample_weekly` 隐式约定
+- **方案:** freq="W" + df_weekly 时，指标在周线计算后 ffill 映射回日线时间轴。freq="D" 保持原逻辑
 
 ### M-3 SignalScanner 跨频率对齐
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `utils/signal_scanner.py`
-- **方案:** 同一标的的日线信号和周线上下文按时间戳对齐后输出。扫描引擎适配多频数据输入
+- **方案:** `_fetch_weekly()` 自动重采样 → `calculate_indicators(df, df_weekly=...)` → TypeError fallback 兼容旧策略
 
 ### M-4 DataProvider 按需喂多频率
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `data/provider.py`
-- **方案:** `get_data(symbol, freqs=["D","W"])` 内部缓存周线重采样结果，避免多策略重复计算
+- **方案:** `get_data(symbol, freqs=["D","W"])` 返回 `{"D": df, "W": df_weekly}`，内部缓存重采样
 
 ---
 
@@ -201,32 +194,27 @@
 
 ### E-1 StrategyEnsemble 信号组合
 
-- [ ] 完成
-- **方案:** 按市场状态自动加权投票
-  - TRENDING_UP: `(趋势策略 × 0.7) + (均值回归 × 0.3)`
-  - RANGING: `(均值回归 × 0.6) + (趋势策略 × 0.4)`
-  - HIGH_VOL: `(趋势策略 × 0.6) + 清仓信号优先`
+- [x] 完成
+- **文件:** 新建 `strategy/ensemble.py`
+- **方案:** 按市场状态自动加权投票。StrategyEnsemble 继承 BaseStrategy，封装多个子策略 + MarketStateClassifier
 
 ### E-2 批量仓位分配（替代顺序处理）
 
-- [ ] 完成
-- **文件:** `live_trader.py`
-- **方案:** 收集所有标的的当日信号 → 统一最优分配（等风险加权）→ 批量下单。消除先到先得的资金分配偏差
+- [x] 完成
+- **文件:** `live/order_manager.py`
+- **方案:** 三阶段：①处理卖单 → ②收集买入候选 → ③等风险均分 capital/n 批量下单
 
 ### E-3 DataQuality 层
 
-- [ ] 完成
-- **位置:** 新建 `data/quality.py`
-- **功能:**
-  - 缺失值标记（NaN → 标记列）
-  - 异常价格跳变检测（单日涨跌 >20% 标记）
-  - 停牌日/无成交日标记（is_trading_day 列）
+- [x] 完成
+- **文件:** 新建 `data/quality.py`
+- **功能:** flag_missing / flag_price_jumps / flag_non_trading / validate_ohlcv / quality_report / clean
 
 ### E-4 参数滚动优化接入实盘
 
-- [ ] 完成
-- **文件:** `engine/optimize.py` → daily 流程集成
-- **方案:** `daily.py` 运行后可选触发 walk-forward 重优化。若 OOS 性能下滑超阈值则自动更新 `watchlist.toml` 参数段
+- [x] 完成
+- **文件:** `daily.py` + `utils/env.py`
+- **方案:** `--optimize` 标记触发 walk-forward。OOS Sharpe 下滑 >30% 自动更新 watchlist.toml。新增 save_toml()
 
 ---
 
@@ -234,7 +222,7 @@
 
 ### O-1 Docker Compose
 
-- [ ] 完成
+- [x] 完成
 - **文件:** 新增 `docker-compose.yml`
 - **内容:**
   - `services: mytrader` + `futu-opend`（FutuOpenD 容器）
@@ -243,20 +231,20 @@
 
 ### O-2 daemon 健康检查
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `live_trader.py` 内置 HTTP server
 - **方案:** `GET /health` → `{"status":"ok","last_tick":"2026-05-23T14:30:00Z","paused":false}`
 - **Docker:** `HEALTHCHECK --interval=30s CMD curl -f http://localhost:8080/health`
 
 ### O-3 结构化日志
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `utils/logging.py`
 - **方案:** 统一日志格式为 JSON 行（`{"ts":"...","level":"INFO","logger":"live","event":"trade_filled",...}`），供 Loki / ELK 解析
 
 ### O-4 飞书日报增强
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `utils/notify.py`
 - **当前:** 简单信号/交易通知
 - **方案:** 日终汇总卡片：
@@ -267,13 +255,13 @@
 
 ### O-5 DB migration 版本化
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `data/cache.py`
 - **方案:** 引入 `schema_version` 表 + 版本化迁移函数列表。替换现有 `try: ALTER TABLE except: pass` 模式
 
 ### O-6 DB 路径绝对化
 
-- [ ] 完成
+- [x] 完成
 - **文件:** `data/cache.py`
 - **问题:** `os.environ.get("MYTRADER_DB", "trading_data.db")` 相对路径依赖 CWD。cron 触发 `daily.py` 时工作目录可能不一致
 - **方案:** `Path(...).resolve()` 或基于 `PROJECT_ROOT` 生成绝对路径
@@ -345,6 +333,30 @@
 | 2026-05-23 | 阶段一 | P0-4 Monte Carlo 参数覆盖 | 完成 | n_sims = n_sims or 2000 |
 | 2026-05-23 | 阶段一 | P0-5 失效策略移除 | 完成 | 从 STRATEGY_MAP/watchlist.toml 移除, 保留源文件供测试导入 |
 | 2026-05-23 | 阶段二 | P1-4 数据源多链 | 完成 | SinaUSSource + YahooChartSource, 移除 yfinance, 回退链 sina_us→tencent→yahoo_chart, missing_ranges 缺口合并 |
+| 2026-05-25 | 阶段二 | P1-1 尾随止损去重 | 完成 | ChandelierTrailingExit Mixin 提取到 base.py, 6 策略复用 |
+| 2026-05-25 | 阶段二 | P1-2 KDJ合并 | 完成 | MACDKDJStrategy 统一类, freq="W"\|"D" + use_atr_stop, 旧文件re-export |
+| 2026-05-25 | 阶段二 | P1-3 循环依赖 | 完成 | is_trend_strategy/is_mean_reversion_strategy 接收 regime_map 参数 |
+| 2026-05-25 | 阶段二 | P1-5 缓存拆分 | 完成 | OhlcvCache / StateStore / OpsLogger + CacheManager facade |
+| 2026-05-25 | 阶段三 | P2-1 回测引擎重构 | 完成 | 4 个子方法提取，run() 主循环 ~50 行 |
+| 2026-05-25 | 阶段三 | P2-2 组合回测重构 | 完成 | _handle_pending_order / _check_leg_exit / _check_leg_entry |
+| 2026-05-25 | 阶段三 | P2-3 RSI 提取 | 完成 | compute_rsi() 加入 base.py，双策略复用 |
+| 2026-05-25 | 阶段三 | P2-4 分裂外置 | 完成 | splits.json + _load_splits() |
+| 2026-05-25 | 阶段三 | P2-5 金标扩展 | 完成 | 5 策略新增 → 17 golden tests, 586 passed |
+| 2026-05-25 | 阶段三 | P2-6 BUY刷新风控 | 完成 | check_global() 统一在 BUY/SELL 成交后调用 |
+| 2026-05-25 | 阶段四 | M-1 BaseStrategy 接口 | 完成 | calculate_indicators(df, df_weekly=None) 多频签名 |
+| 2026-05-25 | 阶段四 | M-2 macd_kdj MTF | 完成 | freq="W"+df_weekly → 周线指标 ffill 映射日线 |
+| 2026-05-25 | 阶段四 | M-3 SignalScanner | 完成 | _fetch_weekly + TypeError fallback |
+| 2026-05-25 | 阶段四 | M-4 DataProvider 多频 | 完成 | get_data(freqs=["D","W"]) |
+| 2026-05-25 | 阶段五 | E-1 StrategyEnsemble | 完成 | 策略组合加权投票, MarketRegime 自适应权重 |
+| 2026-05-25 | 阶段五 | E-2 批量仓位分配 | 完成 | 三阶段: 卖单→收集→等风险均分批量下单 |
+| 2026-05-25 | 阶段五 | E-3 DataQuality 层 | 完成 | quality.py: flag/clean/validate 全套检查 |
+| 2026-05-25 | 阶段五 | E-4 滚动优化接入 | 完成 | daily.py --optimize + save_toml |
+| 2026-05-25 | 阶段六 | O-1 Docker Compose | 完成 | docker-compose.yml + HEALTHCHECK |
+| 2026-05-25 | 阶段六 | O-2 健康检查 | 完成 | live_trader.py 内嵌 HTTP /health |
+| 2026-05-25 | 阶段六 | O-3 结构化日志 | 完成 | JsonFormatter → JSON 行日志 |
+| 2026-05-25 | 阶段六 | O-4 日报增强 | 完成 | daily_card() PnL归因+风控+持仓 |
+| 2026-05-25 | 阶段六 | O-5 DB migration | 完成 | schema_version + _run_migrations() |
+| 2026-05-25 | 阶段六 | O-6 DB路径绝对化 | 完成 | Path(...).resolve() |
 
 ---
 
