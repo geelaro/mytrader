@@ -47,10 +47,48 @@ def load_toml(path: str) -> dict:
 
 
 def save_toml(path: str, data: dict):
-    """Write a dict as TOML. Requires ``tomli-w`` (dev dependency)."""
-    import tomli_w
-    with open(path, "wb") as f:
-        tomli_w.dump(data, f)
+    """Write a dict as TOML (hand-rolled, no external dependency)."""
+    lines = []
+    # Sections that use [[array]] syntax
+    array_sections = {"watchlist"}
+
+    for section, content in data.items():
+        if isinstance(content, list):
+            for item in content:
+                lines.append(f"\n[[{section}]]")
+                for k, v in item.items():
+                    lines.append(f"{k} = {_toml_value(v)}")
+        elif isinstance(content, dict):
+            first = True
+            for k, v in content.items():
+                if isinstance(v, dict):
+                    lines.append(f"\n[{section}.{k}]")
+                    for sk, sv in v.items():
+                        lines.append(f"{sk} = {_toml_value(sv)}")
+                else:
+                    if first:
+                        lines.append(f"\n[{section}]")
+                        first = False
+                    lines.append(f"{k} = {_toml_value(v)}")
+        else:
+            lines.append(f"{section} = {_toml_value(content)}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).lstrip() + "\n")
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        return str(v)
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, list):
+        items = ", ".join(_toml_value(i) for i in v)
+        return f"[{items}]"
+    return f'"{v}"'
 
 
 # Run on import

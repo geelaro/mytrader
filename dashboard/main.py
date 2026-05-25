@@ -17,6 +17,7 @@ from dashboard.signals import render_market_state, render_todays_signals
 from dashboard.single_backtest import render_single_backtest
 from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
 from dashboard.ops import render_ops
+from dashboard.config_editor import render_config_editor
 
 logger = get_logger("dashboard.main")
 
@@ -74,7 +75,7 @@ def main():
     # Tabs: single backtest | portfolio backtest
     # -------------------------------------------------------------------
 
-    tab_single, tab_portfolio = st.tabs(["单标的回测", "组合回测"])
+    tab_single, tab_portfolio, tab_config = st.tabs(["单标的回测", "组合回测", "配置管理"])
 
     with tab_single:
         render_single_backtest(
@@ -88,6 +89,9 @@ def main():
             allocation_mode, pf_strategy,
             strategy_options, symbols,
         )
+
+    with tab_config:
+        render_config_editor(config)
 
     # -------------------------------------------------------------------
     # Monte Carlo expander

@@ -306,23 +306,47 @@ class PortfolioBacktest:
             pending, row, date_idx, idx_pos,
             available_qty=st["position"] if pending.side == OrderSide.SELL else None,
         )
-        if pending.side == OrderSide.SELL and st["position"] > 0:
-            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                cash = self._apply_close_fill(
-                    st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
-                )
-                pending.quantity -= fill.filled_qty
-            if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] == 0:
-                st["pending_order"] = None
-            return True, cash, True
-        if pending.side == OrderSide.BUY:
-            if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, cash):
-                    cash += fill.net_cash_delta
+        if pending.side == OrderSide.SELL:
+            if st["position"] > 0:
+                # Close / reduce long
+                if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                    cash = self._apply_close_fill(
+                        st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
+                    )
                     pending.quantity -= fill.filled_qty
-            if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
-                st["pending_order"] = None
-            return True, cash, False
+                if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] == 0:
+                    st["pending_order"] = None
+                return True, cash, True
+            else:
+                # Open / add to short
+                if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                    self._apply_short_entry_fill(st, fill, trades, open_trade_idx, leg_i, cash)
+                    pending.quantity -= fill.filled_qty
+                if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
+                    st["pending_order"] = None
+                return True, cash, True
+
+        if pending.side == OrderSide.BUY:
+            if st["position"] < 0:
+                # Cover short
+                if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                    cash = self._apply_cover_fill(
+                        st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
+                    )
+                    pending.quantity -= fill.filled_qty
+                if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] >= 0:
+                    st["pending_order"] = None
+                return True, cash, False
+            else:
+                # Open / add to long
+                if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
+                    if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, cash):
+                        cash += fill.net_cash_delta
+                        pending.quantity -= fill.filled_qty
+                if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
+                    st["pending_order"] = None
+                return True, cash, False
+
         if fill.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
             st["pending_order"] = None
             return True, cash, False
@@ -516,6 +540,64 @@ class PortfolioBacktest:
             trades.append(trade)
             open_trade_idx[leg_index] = len(trades) - 1
         return True
+
+    def _apply_short_entry_fill(
+        self, st, fill, trades, open_trade_idx, leg_index, cash,
+    ):
+        """SELL fill for opening or adding to a short position."""
+        if fill.filled_qty <= 0:
+            return
+        proceeds = fill.fill_price * fill.filled_qty - fill.fill_price * fill.filled_qty * self.commission_rate
+        old_qty = st["position"]
+        st["position"] -= fill.filled_qty  # short: position goes negative
+        if old_qty < 0:
+            # Adding to existing short — update avg entry price
+            old_shares = abs(old_qty)
+            st["entry_price"] = (
+                st["entry_price"] * old_shares + fill.fill_price * fill.filled_qty
+            ) / (old_shares + fill.filled_qty)
+            if leg_index in open_trade_idx:
+                t = trades[open_trade_idx[leg_index]]
+                t.qty = abs(st["position"])
+                t.entry_price = st["entry_price"]
+        else:
+            # New short position
+            st["entry_price"] = fill.fill_price
+            trade = PortfolioTrade(
+                symbol=st["leg"].symbol,
+                entry_time=fill.date,
+                qty=fill.filled_qty,
+                entry_price=fill.fill_price,
+            )
+            trades.append(trade)
+            open_trade_idx[leg_index] = len(trades) - 1
+
+    def _apply_cover_fill(
+        self, st, fill, reason, open_trade_idx, trades, leg_index, cash,
+    ) -> float:
+        """BUY fill for covering a short position."""
+        qty = min(fill.filled_qty, abs(st["position"]))
+        if qty <= 0:
+            return cash
+        cost = fill.fill_price * qty + fill.fill_price * qty * self.commission_rate
+        cash -= cost
+        st["position"] += qty  # negative towards zero
+
+        if leg_index in open_trade_idx:
+            t = trades[open_trade_idx[leg_index]]
+            if st["position"] == 0:
+                # Fully covered — record trade (PnL: entry - exit for shorts)
+                t.exit_time = fill.date
+                t.exit_price = fill.fill_price
+                t.pnl = (t.entry_price - fill.fill_price) * qty
+                t.pnl_pct = (t.pnl / (t.entry_price * qty) * 100) if t.entry_price > 0 else 0
+                t.reason = reason
+                t.hold_days = (fill.date - t.entry_time).days
+                del open_trade_idx[leg_index]
+            else:
+                # Partial cover — update remaining quantity
+                t.qty = abs(st["position"])
+        return cash
 
     def _apply_close_fill(
         self,

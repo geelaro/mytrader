@@ -36,8 +36,8 @@ def render_portfolio_backtest(config, target_date, backtest_years,
     start = (pd.Timestamp(target_date) - pd.DateOffset(years=backtest_years)).strftime("%Y-%m-%d")
     end = target_date.isoformat()
 
-    @st.cache_data(ttl=3600, show_spinner="运行组合回测...")
-    def _cached_portfolio_bt(s_start, s_end, alloc, strategy):
+    @st.cache_data(ttl=600)
+    def _cached_portfolio_bt(s_start, s_end, alloc, strategy, _cache_buster):
         legs = [Leg(item["symbol"], strategy) for item in config.get("watchlist", [])]
         bt = PortfolioBacktest(
             legs=legs,
@@ -46,7 +46,9 @@ def render_portfolio_backtest(config, target_date, backtest_years,
         )
         return bt.run(start=s_start, end=s_end)
 
-    pf_result = _cached_portfolio_bt(start, end, allocation_mode, pf_strategy)
+    # cache_buster = current timestamp to force refresh on strategy switch
+    cache_buster = hash((allocation_mode, pf_strategy, start, end))
+    pf_result = _cached_portfolio_bt(start, end, allocation_mode, pf_strategy, cache_buster)
 
     # --- Metrics row ---
     m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -91,13 +93,16 @@ def render_portfolio_backtest(config, target_date, backtest_years,
 
     # --- Trade statistics cards ---
     st.subheader("交易统计")
-    s1, s2, s3, s4, s5, s6 = st.columns(6)
-    s1.metric("总笔数", pf_result.total_trades)
-    s2.metric("胜率", f"{pf_result.win_rate_pct:.1f}%")
-    s3.metric("盈亏比", f"{pf_result.profit_factor:.2f}")
-    s4.metric("平均盈利", f"${pf_result.avg_win:,.0f}")
-    s5.metric("平均亏损", f"${pf_result.avg_loss:,.0f}")
-    s6.metric("平均持仓天", f"{pf_result.avg_hold_days:.1f}")
+    if pf_result.total_trades == 0:
+        st.info(f"无已完成交易（{len(pf_result.trades)} 笔未平仓）。尝试扩大回测年数或更换策略。")
+    else:
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
+        s1.metric("总笔数", pf_result.total_trades)
+        s2.metric("胜率", f"{pf_result.win_rate_pct:.1f}%")
+        s3.metric("盈亏比", f"{pf_result.profit_factor:.2f}")
+        s4.metric("平均盈利", f"${pf_result.avg_win:,.0f}")
+        s5.metric("平均亏损", f"${pf_result.avg_loss:,.0f}")
+        s6.metric("平均持仓天", f"{pf_result.avg_hold_days:.1f}")
 
     # --- PnL Attribution ---
     _render_pnl_attribution(pf_result, pf_strategy)
@@ -138,7 +143,7 @@ def _render_pnl_attribution(pf_result, pf_strategy):
     st.subheader("收益归因")
 
     if not pf_result.closed_trades:
-        st.info("无交易记录")
+        st.info(f"无已完成交易（共 {len(pf_result.trades)} 笔开仓记录，0 笔已平仓）")
         return
 
     attr_rows = []
@@ -247,27 +252,35 @@ def _render_trade_details(pf_result, pf_strategy):
     st.subheader("交易明细")
 
     if not pf_result.closed_trades:
-        st.info("无交易记录")
+        st.info(f"无已平仓交易（共 {len(pf_result.trades)} 笔开仓，0 笔已平仓）。低频策略在短回测期内可能尚未平仓，尝试扩大回测年数。")
         return
 
-    trade_rows = []
-    for t in pf_result.closed_trades:
-        entry_str = t.entry_time.strftime("%Y-%m-%d") if hasattr(t.entry_time, "strftime") else str(t.entry_time)[:10]
-        exit_str = t.exit_time.strftime("%Y-%m-%d") if t.exit_time and hasattr(t.exit_time, "strftime") else (str(t.exit_time)[:10] if t.exit_time else "")
-        trade_rows.append({
-            "标的": t.symbol,
-            "入场日": entry_str,
-            "出场日": exit_str,
-            "数量": t.qty,
-            "入场价": round(t.entry_price, 2),
-            "出场价": round(t.exit_price, 2) if t.exit_price else None,
-            "PnL": round(t.pnl, 0) if t.pnl else 0,
-            "PnL%": round(t.pnl_pct, 2) if t.pnl_pct else 0,
-            "原因": t.reason,
-            "持仓天": t.hold_days,
-            "入场": pd.Timestamp(entry_str),
-            "出场": pd.Timestamp(exit_str) if exit_str else pd.NaT,
-        })
+    try:
+        trade_rows = []
+        for t in pf_result.closed_trades:
+            try:
+                entry_str = str(t.entry_time)[:10] if t.entry_time else ""
+                exit_str = str(t.exit_time)[:10] if t.exit_time else ""
+            except Exception:
+                entry_str = str(t.entry_time)[:10] if t.entry_time else ""
+                exit_str = ""
+            trade_rows.append({
+                "标的": str(t.symbol),
+                "入场日": entry_str,
+                "出场日": exit_str,
+                "数量": int(t.qty) if t.qty else 0,
+                "入场价": round(float(t.entry_price or 0), 2),
+                "出场价": round(float(t.exit_price or 0), 2) if t.exit_price else 0,
+                "PnL": int(round(t.pnl or 0)),
+                "PnL%": round(float(t.pnl_pct or 0), 2),
+                "原因": str(t.reason or ""),
+                "持仓天": int(t.hold_days or 0),
+            })
+    except Exception as e:
+        st.error(f"交易明细解析错误: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        return
     df_trades = pd.DataFrame(trade_rows)
 
     fr1, fr2, fr3, fr4 = st.columns(4)
@@ -287,50 +300,22 @@ def _render_trade_details(pf_result, pf_strategy):
         filter_hold = st.slider("持仓天数", 0, max(1, max_hold),
                                 (0, max_hold), step=1, key="pf_filter_hold")
 
-    filter_dates = None
-    fr5, fr6, fr7, fr8 = st.columns(4)
-    with fr5:
-        if not df_trades["入场"].isna().all():
-            min_date = df_trades["入场"].min().date()
-            max_date = df_trades["出场"].max().date() if not df_trades["出场"].isna().all() else pd.Timestamp.today().date()
-            filter_dates = st.date_input("日期区间", value=(min_date, max_date), key="pf_filter_date")
-
     df_filtered = df_trades[df_trades["标的"].isin(filter_sym)]
     df_filtered = df_filtered[df_filtered["原因"].isin(filter_reason)]
     df_filtered = df_filtered[(df_filtered["PnL"] >= filter_pnl_range[0]) &
                                (df_filtered["PnL"] <= filter_pnl_range[1])]
     df_filtered = df_filtered[(df_filtered["持仓天"] >= filter_hold[0]) &
                                (df_filtered["持仓天"] <= filter_hold[1])]
-    if isinstance(filter_dates, tuple) and len(filter_dates) == 2:
-        d1, d2 = pd.Timestamp(filter_dates[0]), pd.Timestamp(filter_dates[1])
-        df_filtered = df_filtered[(df_filtered["入场"] >= d1) & (df_filtered["入场"] <= d2)]
 
-    ec1, ec2, ec3, ec4 = st.columns(4)
+    ec1, ec2 = st.columns(2)
     with ec1:
         st.caption(f"共 {len(df_filtered)} 笔（筛选自 {len(df_trades)} 笔）")
     with ec2:
         filtered_pnl = df_filtered["PnL"].sum()
         st.metric("筛选PnL合计", f"${filtered_pnl:+,.0f}")
-    with ec3:
-        display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
-        csv_buffer = io.StringIO()
-        df_filtered[display_cols].to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-        csv_date_tag = ""
-        if isinstance(filter_dates, tuple) and len(filter_dates) == 2:
-            csv_date_tag = f"_{filter_dates[0]}_{filter_dates[1]}"
-        st.download_button("⬇ CSV", csv_buffer.getvalue(),
-                           f"trades_{pf_strategy}{csv_date_tag}.csv",
-                           "text/csv", key="dl_csv")
-    with ec4:
-        xlsx_buffer = io.BytesIO()
-        with pd.ExcelWriter(xlsx_buffer, engine="openpyxl") as writer:
-            df_filtered[display_cols].to_excel(writer, index=False, sheet_name="交易明细")
-        st.download_button("⬇ Excel", xlsx_buffer.getvalue(),
-                           f"trades_{pf_strategy}{csv_date_tag}.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           key="dl_xlsx")
 
-    st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True)
+    display_cols = ["标的", "入场日", "出场日", "数量", "入场价", "出场价", "PnL", "PnL%", "原因", "持仓天"]
+    st.dataframe(df_filtered[display_cols], use_container_width=True, hide_index=True, height=400)
 
 
 def render_monte_carlo(strategy_options, symbols, target_date):
