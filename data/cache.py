@@ -29,6 +29,92 @@ OPS_SRC_BROKER = "broker"
 
 
 # ======================================================================
+# Schema DDL — individual statements for safe execution
+# ======================================================================
+
+_SCHEMA_DDL = [
+    """CREATE TABLE IF NOT EXISTS ohlcv_daily (
+        symbol   TEXT    NOT NULL,
+        date     TEXT    NOT NULL,
+        open     REAL,
+        high     REAL,
+        low      REAL,
+        close    REAL,
+        volume   INTEGER,
+        source   TEXT,
+        PRIMARY KEY (symbol, date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol ON ohlcv_daily(symbol)",
+    "CREATE INDEX IF NOT EXISTS idx_ohlcv_date  ON ohlcv_daily(date)",
+    """CREATE TABLE IF NOT EXISTS signal_history (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_date TEXT    NOT NULL,
+        symbol    TEXT    NOT NULL,
+        strategy  TEXT    NOT NULL,
+        bar_date  TEXT    NOT NULL,
+        signal    INTEGER NOT NULL,
+        price     REAL,
+        atr       REAL,
+        indicators TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_signal_scan ON signal_history(scan_date)",
+    "CREATE INDEX IF NOT EXISTS idx_signal_sym  ON signal_history(symbol)",
+    """CREATE TABLE IF NOT EXISTS risk_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS entry_prices (
+        symbol     TEXT PRIMARY KEY,
+        price      REAL NOT NULL,
+        entry_date TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS order_log (
+        order_id   TEXT,
+        symbol     TEXT,
+        side       TEXT,
+        qty        INTEGER,
+        price      REAL,
+        status     TEXT,
+        created_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS slippage_log (
+        order_id      TEXT,
+        symbol        TEXT,
+        side          TEXT,
+        signal_price  REAL,
+        fill_price    REAL,
+        slippage_pct  REAL,
+        created_at    TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS trade_pnl (
+        symbol      TEXT,
+        side        TEXT,
+        qty         INTEGER,
+        entry_price REAL,
+        exit_price  REAL,
+        pnl         REAL,
+        pnl_pct     REAL,
+        exit_date   TEXT,
+        order_id    TEXT PRIMARY KEY
+    )""",
+    """CREATE TABLE IF NOT EXISTS ops_log (
+        ts         TEXT DEFAULT (datetime('now','localtime')),
+        source     TEXT DEFAULT 'live_trader',
+        level      TEXT DEFAULT 'INFO',
+        event      TEXT,
+        symbol     TEXT,
+        detail     TEXT,
+        value      REAL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_ops_event    ON ops_log(event)",
+    "CREATE INDEX IF NOT EXISTS idx_ops_ts       ON ops_log(ts)",
+    """CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER PRIMARY KEY
+    )""",
+]
+
+
+# ======================================================================
 # Shared base
 # ======================================================================
 
@@ -83,104 +169,28 @@ class _CacheBase:
     def init_schema(self):
         """Create all tables, indexes, and run migrations."""
         with self._lock:
-            self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS ohlcv_daily (
-                symbol   TEXT    NOT NULL,
-                date     TEXT    NOT NULL,
-                open     REAL,
-                high     REAL,
-                low      REAL,
-                close    REAL,
-                volume   INTEGER,
-                source   TEXT,
-                PRIMARY KEY (symbol, date)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol ON ohlcv_daily(symbol);
-            CREATE INDEX IF NOT EXISTS idx_ohlcv_date  ON ohlcv_daily(date);
-
-            CREATE TABLE IF NOT EXISTS signal_history (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_date TEXT    NOT NULL,
-                symbol    TEXT    NOT NULL,
-                strategy  TEXT    NOT NULL,
-                bar_date  TEXT    NOT NULL,
-                signal    INTEGER NOT NULL,
-                price     REAL,
-                atr       REAL,
-                indicators TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_signal_scan ON signal_history(scan_date);
-            CREATE INDEX IF NOT EXISTS idx_signal_sym  ON signal_history(symbol);
-
-            CREATE TABLE IF NOT EXISTS risk_state (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS entry_prices (
-                symbol     TEXT PRIMARY KEY,
-                price      REAL NOT NULL,
-                entry_date TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS order_log (
-                order_id   TEXT,
-                symbol     TEXT,
-                side       TEXT,
-                qty        INTEGER,
-                price      REAL,
-                status     TEXT,
-                created_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS slippage_log (
-                order_id      TEXT,
-                symbol        TEXT,
-                side          TEXT,
-                signal_price  REAL,
-                fill_price    REAL,
-                slippage_pct  REAL,
-                created_at    TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS trade_pnl (
-                symbol      TEXT,
-                side        TEXT,
-                qty         INTEGER,
-                entry_price REAL,
-                exit_price  REAL,
-                pnl         REAL,
-                pnl_pct     REAL,
-                exit_date   TEXT,
-                order_id    TEXT PRIMARY KEY
-            );
-
-            CREATE TABLE IF NOT EXISTS ops_log (
-                ts         TEXT DEFAULT (datetime('now','localtime')),
-                source     TEXT DEFAULT 'live_trader',
-                level      TEXT DEFAULT 'INFO',
-                event      TEXT,
-                symbol     TEXT,
-                detail     TEXT,
-                value      REAL
-            );
-            CREATE INDEX IF NOT EXISTS idx_ops_event    ON ops_log(event);
-            CREATE INDEX IF NOT EXISTS idx_ops_ts       ON ops_log(ts);
-
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous  = NORMAL;
-        """)
+            # PRAGMAs must run before any table DDL
+            try:
+                self.conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self.conn.execute("PRAGMA synchronous = NORMAL")
+            except sqlite3.OperationalError:
+                pass
+            for stmt in _SCHEMA_DDL:
+                self.conn.execute(stmt)
         self._run_migrations()
         self._commit()
 
     def _run_migrations(self):
-        """Versioned schema migrations — safer than ad-hoc ALTER TABLE."""
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)"
+        """Versioned schema migrations. Called from init_schema (lock held)."""
+        cur = self.conn.execute(
+            "SELECT MAX(version) FROM (SELECT 0 AS version UNION ALL SELECT MAX(version) FROM schema_version)"
         )
-        cur = self.conn.execute("SELECT MAX(version) FROM schema_version")
         row = cur.fetchone()
-        current = row[0] if row and row[0] is not None else 0
+        cur.close()
+        current = row[0] if row else 0
 
         migrations = [
             (1, [
@@ -200,11 +210,12 @@ class _CacheBase:
                 try:
                     self.conn.execute(stmt)
                 except sqlite3.OperationalError:
-                    pass  # column/index already exists
+                    pass
             self.conn.execute(
                 "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                 [version],
             )
+
 
 
 # ======================================================================

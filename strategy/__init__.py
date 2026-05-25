@@ -8,6 +8,7 @@ from .donchian_breakout import DonchianBreakout, DonchianBreakoutParams
 from .atr_breakout import ATRBreakout, ATRBreakoutParams
 from .bollinger_squeeze import BollingerSqueeze, BollingerSqueezeParams  # deprecated — kept for test imports
 from .turtle_trading import TurtleTrading, TurtleTradingParams
+from .spy_ma_breakout import SPYMABreakout, SPYMABreakoutParams
 
 STRATEGY_MAP = {
     "trend_follower": TrendFollower,
@@ -18,6 +19,7 @@ STRATEGY_MAP = {
     "atr_breakout": ATRBreakout,
     "turtle_trading": TurtleTrading,
     "daily_macd_kdj": DailyMACD_KDJ,
+    "spy_ma_breakout": SPYMABreakout,
 }
 
 SIGNAL_LABEL = {1: "买入", -1: "卖出", 0: "—"}
@@ -48,6 +50,8 @@ __all__ = [
     "TurtleTradingParams",
     "DailyMACD_KDJ",
     "DailyMACDKDJParams",
+    "SPYMABreakout",
+    "SPYMABreakoutParams",
     "STRATEGY_MAP",
     "SIGNAL_LABEL",
 ]

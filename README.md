@@ -9,47 +9,64 @@
 | 模块 | 说明 |
 |------|------|
 | 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare/YFinance 四源，SQLite 本地缓存 + 增量更新 |
-| 策略库 | 7 个活跃策略（趋势/动量突破/波动率），BaseStrategy 统一接口 |
-| 策略选择层 | SignalGate 门控层：`active`（实盘执行）+ `monitor`（观察对比），市场状态感知 + 风控暂停 + 敞口检查 |
-| 回测引擎 | 含滑点佣金，退出逻辑收归策略，支持单标 + 组合回测 |
-| 仓位管理 | `fixed_capital`（策略自定）/ `risk_budget`（ATR 风险预算）双模式，回测实盘共用 `utils/sizing.py` |
-| 参数优化 | 网格搜索 + Walk-forward 样本外验证（资金连续传递）+ 热力图 |
+| 策略库 | 9 个活跃策略（趋势/动量/波动率/宏观过滤/多空），BaseStrategy 统一接口 |
+| 多空支持 | 有符号持仓引擎，做空/平空完整链路，mock/live broker 全面适配 |
+| MTF 框架 | 多时间框架接口 `calculate_indicators(df, df_weekly)`，周线指标映射日线执行 |
+| 策略组合 | StrategyEnsemble 加权投票，MarketRegime 自适应权重分配 |
+| 策略门控 | SignalGate：市场状态感知 + 风控暂停 + 敞口检查，`active`/`monitor` 双轨 |
+| 回测引擎 | 含滑点佣金，有符号持仓，单标 + 组合回测 |
+| 仓位管理 | `fixed_capital` / `risk_budget` 双模式，回测实盘共用 `utils/sizing.py` |
+| 参数优化 | 网格搜索 + Walk-forward 样本外验证 + 滚动优化自动更新 watchlist.toml |
 | 分析工具 | 成本敏感性 + 参数鲁棒性 + Monte Carlo 模拟 + 滚动窗口 α 衰减 + 压力测试 |
 | 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 + 每日报告 |
-| 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD），CLI 切换券商 |
-| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查、日内亏损上限、超阈值暂停开仓 + 飞书告警 |
+| 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
+| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查 |
 | 风控持久化 | risk_state + entry_prices 表，守护进程重启后恢复熔断/日内计数/入场价 |
-| 订单管理 | 部分成交轮询（市价60s/限价5min）、限价单超时自动撤单、滑点统计 |
-| 组合回测 | 多标的共享资金池，支持 equal/dynamic_equal 分配，组合级风控（集中度/敞口/行业/日开仓上限） |
-| 运维可观测 | ops_log 统一运维表（source/level/event 维度），trade_pnl 买卖自动配对，24h 拒单率指标 |
-| Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 → 实盘记录 → 运行健康面板 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（571 测试 + 黄金样本回归）|
+| 订单管理 | 部分成交轮询、限价单超时撤单、滑点统计、批量等风险分配 |
+| 组合回测 | 多标的共享资金池，组合级风控（集中度/敞口/行业/日开仓上限） |
+| 运维可观测 | ops_log 统一运维表，schema_version 版本化迁移，结构化 JSON 日志，/health HTTP 端点 |
+| 数据质量 | quality.py — 缺失值/异常跳变/停牌标记 + validate_ohlcv 前置检查 |
+| Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 |
+| CI | GitHub Actions — push/PR 自动跑 pytest（637 测试 + 黄金样本回归）|
+| Docker | docker-compose.yml 一键部署 mytrader + futu-opend + HEALTHCHECK |
 
 ## 策略
 
-| 策略 | 类型 | 推荐度 | 描述 |
-|------|------|:---:|------|
-| `weekly_macd_kdj` | 周线趋势 | ★★★ | KDJ 金叉买入 + MACD 死叉卖出（主力）|
-| `daily_macd_kdj` | 日线KDJ | ★★★ | 日线 KDJ 金叉 + MACD 死叉 + ATR 止损 |
-| `atr_breakout` | 波动率突破 | ★★ | MA + N×ATR 突破 + 移动止损 |
-| `turtle_trading` | 趋势 | ★★ | 双SMA + 唐奇安通道 + ATR 止损 |
-| `donchian_breakout` | 动量突破 | ★★ | 唐奇安通道突破 + 移动止损 |
-| `trend_follower` | 趋势 | ★ | MA + ADX + Chandelier 移动止损 |
-| `weekly_macd` | 周线趋势 | ★ | MACD 金叉死叉 |
+| 策略 | 类型 | 方向 | 推荐度 | 描述 |
+|------|------|:---:|:---:|------|
+| `spy_ma_breakout` | 宏观 + 突破 | 纯多 | ★★★ | SPY MA200 宏观过滤 + MA200 趋势 + 20日新高突破 + ATR 动态止盈 + MA 止损（长线） |
+| `weekly_macd_kdj` | 周线趋势 | 纯多 | ★★★ | KDJ 金叉买入 + MACD 死叉卖出（主力）|
+| `trend_follower` | 短线趋势 | 纯多 | ★★★ | SMA5/20 + ADX + Chandelier 尾随止损（短线优化版）|
+| `turtle_trading` | 趋势 | 多空 | ★★☆ | 大哥2.2 递归 SMA + 唐奇安通道 + ATR 固定止损 + 趋势过滤 |
+| `donchian_breakout` | 动量突破 | 多空 | ★★ | 唐奇安通道突破 + 移动止损 |
+| `daily_macd_kdj` | 日线 KDJ | 纯多 | ★★ | 日线 KDJ 金叉 + MACD 死叉 + ATR 止损 |
+| `atr_breakout` | 波动率突破 | 纯多 | ★★ | MA + N×ATR 突破 + 移动止损 |
+| `weekly_macd` | 周线趋势 | 纯多 | ★ | MACD 金叉死叉 |
+| `macd_kdj` | 日/周 KDJ | 纯多 | ★ | 统一 MACDKDJStrategy，freq="W"/"D" + use_atr_stop |
 
-> 推荐度基于 2026-05 全策略鲁棒性扫描（AAPL / risk_budget 2% / IS 2019-2024 / OOS 2024-2026）
+> 推荐度基于 2026-05 全策略鲁棒性扫描 + 多标的 6 年回测
 >
 > ~~`enhanced_macd` `bollinger_mean_reversion` `bollinger_squeeze`~~ — 已从活跃策略移除（过拟合/零交易），源文件保留于 `strategy/` 供测试兼容
+
+### 策略参数速查
+
+| 策略 | 关键参数 | 入场条件 | 出场条件 |
+|------|---------|---------|---------|
+| `spy_ma_breakout` | ma=200, high=20, tp_ATR=4.0 | SPY>MA200 + Close>MA200 + 20日新高 | 止盈: entry+ATR×4 / 止损: Close<MA |
+| `trend_follower` | short=5, long=20, ADX_th=15, trail=2.5 | SMA5>SMA20 + ADX>15 + +DI>-DI | 尾随止损: Close<=最高价-ATR×2.5 |
+| `turtle_trading` | short=20, long=50, channel=20, trail=3.0 | 递归SMA交叉 + 通道突破(前根) + 趋势过滤 | 入场ATR固定: Close<=最高High-ATR_entry×3.0 |
+| `weekly_macd_kdj` | n=9, k=3, d=3 | KDJ金叉(周线) | MACD死叉(周线) |
+| `daily_macd_kdj` | n=9, k=3, d=3, trail=3.0 | KDJ金叉(日线) | MACD死叉 + ATR尾随止损 |
 
 ## 项目结构
 
 ```
 mytrader/
-  data/              # 数据管线 (protocol/cache/provider/sources)
-  strategy/          # 策略库 (base + 7 个活跃策略 + 3 个已弃用)
+  data/              # 数据管线 (protocol/cache/provider/sources/quality/splits.json)
+  strategy/          # 策略库 (base + 9 个活跃策略 + 3 个已弃用 + ensemble)
   broker/            # 券商接口 (base + mock + futu)
   engine/            # 回测引擎
-  ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult)
+  ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult) — 有符号持仓
   ├─ portfolio.py    #   组合回测 (PortfolioBacktest/PortfolioTrade)
   ├─ execution.py    #   执行模型 (回测/实盘共用的订单执行语义)
   └─ optimize.py     #   参数优化 (grid_search/walk_forward)
@@ -61,24 +78,25 @@ mytrader/
   └─ stress_test.py         #   极端行情压力测试 (2008/2020/2022)
   live/              # 实盘交易组件
   ├─ risk_controller.py     #   风控检查、仓位计算、熔断持久化
-  └─ order_manager.py       #   信号→订单生成、提交、轮询、滑点记录
+  └─ order_manager.py       #   信号→订单生成（4路多空矩阵）、批量等风险分配
   utils/             # 工具
   ├─ signal_gate.py         #   策略门控层（市场状态+风控+敞口+孤儿守卫）
-  ├─ market_state.py        #   四象限市场状态分类器
-  ├─ notify.py              #   飞书通知 (Webhook/App 双模式)
-  ├─ signal_scanner.py      #   共享信号扫描引擎
+  ├─ market_state.py        #   四象限市场状态分类器（SPY MA20/50/200 + ADX25）
+  ├─ notify.py              #   飞书通知 (Webhook/App + daily_card PnL归因)
+  ├─ signal_scanner.py      #   共享信号扫描引擎（MTF 跨频率）
+  ├─ logging.py             #   结构化 JSON 日志 (JsonFormatter)
   ├─ sizing.py              #   统一仓位计算（回测实盘共用）
   ├─ sectors.py             #   行业分类映射
   ├─ risk.py                #   RiskLimits 数据类
   └─ metrics.py             #   回撤统计、敞口重构
-  tests/             # 571 个测试 (含黄金样本回归 test_golden.py)
+  tests/             # 637 个测试 (含黄金样本回归 test_golden.py)
   reports/           # 自动生成的 CSV + PNG 报告
-  live_trader.py     # 实盘信号执行 + 风控 (入口脚本)
-  daily.py           # 每日回溯扫描 (入口脚本)
+  live_trader.py     # 实盘信号执行 + 风控 + HTTP /health (入口脚本)
+  daily.py           # 每日回溯扫描 + --optimize 滚动优化 (入口脚本)
   dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
   config.py          # 统一运行时配置
-  watchlist.toml     # 标的 + 策略 + 风控 + 日志 + 孤儿持仓配置
-  Dockerfile         # Docker 一键部署
+  watchlist.toml     # 标的 + 策略 + 风控 + 市场状态 + 孤儿持仓配置
+  docker-compose.yml # Docker Compose 一键部署 (mytrader + futu-opend)
 ```
 
 ## 快速开始
@@ -87,7 +105,7 @@ mytrader/
 # Python 3.10+
 pip install pipenv
 pipenv install --dev
-pipenv run pytest tests/ -v   # 571 tests, verify env
+pipenv run pytest tests/ -v   # 637 tests, verify env
 ```
 
 ## 核心流程（30 分钟上手）
@@ -134,55 +152,59 @@ pipenv run python analysis/param_robustness.py -s weekly_macd_kdj --symbol AAPL 
 ```bash
 pipenv run python daily.py              # 今日信号
 pipenv run python daily.py --history    # 近 7 天历史
+pipenv run python daily.py --optimize   # 扫描 + 滚动优化
 ```
 
 ## 推荐参数模板
 
-基于 2026-05 全策略鲁棒性扫描，以下为已验证的推荐配置：
-
-### 主力：weekly_macd_kdj + risk_budget 2%
+### 主力：spy_ma_breakout（长线）
 
 ```python
 from engine.trader import run_backtest
-from strategy import WeeklyMACD_KDJ
+from strategy.spy_ma_breakout import SPYMABreakout
 
 result, df = run_backtest(
-    "AAPL", "2020-01-01",
-    strategy_cls=WeeklyMACD_KDJ,
+    "QQQ", "2020-01-01",
+    strategy_cls=SPYMABreakout,
     sizing_mode="risk_budget",
-    risk_per_trade=0.02,       # 单笔风险 2%
-    risk_atr_mult=2.0,         # 止损 = 2×ATR
-    kdj_n=7, kdj_k=2, kdj_d=2,  # AAPL 最优参数
+    risk_per_trade=0.02,
+    ma_period=200, high_period=20, take_profit_atr_mult=4.0,
 )
 ```
-| 标的 | 最优参数 | OOS 收益 | Sharpe | 评级 |
-|------|---------|--------:|------:|:---:|
-| AAPL | n=7 k=2 d=2 | +26% | 1.53 | STABLE |
-| NVDA | n=7 k=2 d=2 | +34% | 1.48 | STABLE |
-| TSLA | n=14 k=3 d=3 | +92% | 2.61 | ROBUST |
-| GOOGL | n=7 k=2 d=2 | +150% | 5.09 | STABLE |
-| AMD | n=9 k=2 d=5 | +198% | 3.34 | ROBUST |
+| 标的 | MA | OOS 收益 | Sharpe | 评级 |
+|------|-----|--------:|------:|:---:|
+| NVDA | 200 | +66% | 1.37 | STABLE |
+| QQQ | 200 | +37% | 0.74 | STABLE |
+| SPY | 200 | +25% | 0.60 | STABLE |
 
-> ⚠ `kdj_d=1` 是全局禁区——降到 1 会导致零交易
+### 短线：trend_follower
+
+```python
+from strategy import TrendFollower
+
+result, df = run_backtest(
+    "QQQ", "2020-01-01",
+    strategy_cls=TrendFollower,
+    sizing_mode="risk_budget",
+    risk_per_trade=0.02,
+    short_ma=5, long_ma=20,
+    adx_threshold=15.0, trail_atr_mult=2.5,
+)
+```
+| 标的 | OOS 收益 | Sharpe | 交易 |
+|------|--------:|------:|:---:|
+| NVDA | +53% | 1.26 | 32 |
+| TSLA | +33% | 1.01 | 30 |
+| QQQ | +27% | 1.08 | 27 |
 
 ### 备选策略
 
-```python
-# daily_macd_kdj — 日线交易笔数多，适合分散
-from strategy import DailyMACD_KDJ
-result, _ = run_backtest("AAPL", start="2020-01-01",
-    strategy_cls=DailyMACD_KDJ,
-    sizing_mode="risk_budget", risk_per_trade=0.02,
-    macd_fast=12, macd_slow=21, macd_signal=7,
-    kdj_n=14, kdj_k=2, kdj_d=5)
-```
-
 | 策略 | 适用场景 | 推荐标的 |
 |------|------|------|
-| `daily_macd_kdj` | 日线交易笔数多（26笔），分散风险 | AAPL / TSLA |
-| `turtle_trading` | 中长线趋势，ETF 优先 | SPY / 510300 |
-| `atr_breakout` | 均衡，收益/回撤都不错 | AAPL / NVDA |
-| `donchian_breakout` | 波动率敏感，牛市趋势 | QQQ |
+| `turtle_trading` | 多空双向，趋势+震荡 | SPY / QQQ / PFE |
+| `weekly_macd_kdj` | 周线低频，低回撤 | AAPL / NVDA |
+| `daily_macd_kdj` | 日线高频，分散风险 | AAPL / TSLA |
+| `donchian_breakout` | 多空双向，波动率敏感 | QQQ |
 
 ## 仓位管理
 
@@ -204,7 +226,7 @@ result, _ = run_backtest("AAPL", "2020-01-01", strategy_cls=WeeklyMACD_KDJ)
 qty = capital × risk_pct / (ATR × stop_atr_mult) × vol_scalar
 ```
 
-其中 `vol_scalar` 实盘启用（根据 `vol_sensitivity` 自适应缩放），回测默认关闭（`vol_sensitivity=0`）。
+其中 `vol_scalar` 实盘启用（根据 `vol_sensitivity` 自适应缩放），回测默认关闭。
 
 ```python
 result, _ = run_backtest(
@@ -217,7 +239,7 @@ result, _ = run_backtest(
 
 | 模式 | 收益特征 | 回撤特征 | 适用场景 |
 |------|:---:|:---:|------|
-| fixed_capital | 高（满仓复利） | 高（TSLA -56%） | 回测研究，了解策略上限 |
+| fixed_capital | 高（满仓复利） | 高 | 回测研究，了解策略上限 |
 | risk_budget 2% | 中 | 可控（<10%） | 实盘稳健执行 |
 
 ## 风控
@@ -247,69 +269,11 @@ result = bt.run(start="2020-01-01")
 result.summary()
 ```
 
-风控拦截日志示例：
-```
---- 风控拦截 (12 次) ---
-  行业权重: 9次  AAPL, GOOGL, NVDA
-  冷却期: 1次  AAPL
-  最近拦截:
-    2024-04-12 AAPL   行业权重: Technology敞口32% > 30%
-```
-
-## 分析工具
-
-### 成本敏感性
-
-扫描佣金 × 滑点网格，输出热力图 + 实盘可行性评级（A+ ~ D-）：
-
-```bash
-pipenv run python analysis/cost_sensitivity.py -s weekly_macd_kdj --symbol AAPL
-pipenv run python analysis/cost_sensitivity.py --sizing-mode risk_budget --risk-per-trade 0.01
-```
-
-### 参数鲁棒性（核心诊断工具）
-
-IS 寻优 → 邻域 ±10%/±20% 扰动 → OOS 分布 → ROBUST~OVERFIT + VIABLE~NEGATIVE 双评级：
-
-```bash
-pipenv run python analysis/param_robustness.py -s weekly_macd_kdj --symbol AAPL
-pipenv run python analysis/param_robustness.py -s turtle_trading --sizing-mode risk_budget
-```
-
-输出解读：
-- `✓ 可纳入实盘候选` — ROBUST + VIABLE，放心用
-- `△ 参数稳定但策略乏力` — ROBUST + WEAK，换策略优先于调参数
-- `✗ 不建议使用` — OVERFIT + NEGATIVE，策略本身不可用
-
-### Monte Carlo 模拟
-
-随机打乱交易顺序 N 次，评估策略对交易序列的敏感性：
-
-```bash
-pipenv run python analysis/monte_carlo.py -s weekly_macd_kdj --symbol AAPL --runs 1000
-```
-
-### 滚动窗口 α 衰减
-
-检测策略绩效是否随时间退化：
-
-```bash
-pipenv run python analysis/rolling_alpha.py -s weekly_macd_kdj --symbol AAPL
-```
-
-### 压力测试
-
-用历史极端行情验证策略抗压能力：
-
-```bash
-pipenv run python analysis/stress_test.py -s weekly_macd_kdj --symbol AAPL
-```
-
 ## 实盘前检查清单
 
 在启动 `live_trader.py` 实盘前，逐项确认：
 
-- [ ] **571 测试全部通过** `pytest tests/ -q`
+- [ ] **637 测试全部通过** `pytest tests/ -q`
 - [ ] **黄金样本无漂移** — CI 绿标
 - [ ] `param_robustness` 评级 ROBUST 或 STABLE，非 OVERFIT
 - [ ] `cost_sensitivity` 评级 A 或 B（10bp/3bp 佣金下仍盈利）
@@ -322,64 +286,30 @@ pipenv run python analysis/stress_test.py -s weekly_macd_kdj --symbol AAPL
 
 ## 运维特性
 
-### 日志分家
+### 日志
 
-三类日志隔离输出，方便排查：
+三类日志隔离 + 文件 JSON 格式输出：
 
-| 日志文件 | 写入者 | 内容 |
+| 日志文件 | 写入者 | 格式 |
 |---------|--------|------|
-| `logs/live.log` | live_trader.py | 实盘交易、风控触发、订单状态 |
-| `logs/daily.log` | daily.py | 每日扫描、信号输出 |
-| `logs/mytrader.log` | 全部模块 | 共享通用日志 |
-
-### 孤儿持仓处理
-
-非 watchlist 标的的持仓自动纳入扫描（只卖不买）。在 `watchlist.toml` 配置兜底策略：
-
-```toml
-[orphan]
-strategy = "daily_macd_kdj"
-```
+| `logs/live.log` | live_trader.py | JSON 行（Loki/ELK 可解析） |
+| `logs/daily.log` | daily.py | JSON 行 |
+| `logs/mytrader.log` | 全部模块 | JSON 行 |
 
 ### Docker 部署
 
 ```bash
-docker build -t mytrader .
-docker run -d --name mytrader \
-  -e FEISHU_WEBHOOK=xxx \
-  -v $(pwd)/trading_data.db:/app/trading_data.db \
-  mytrader
+docker compose up -d
 ```
 
-## 飞书通知
+### 市场状态配置
 
-支持两种模式：
-
-- **Webhook** — `export FEISHU_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/xxx"`
-- **App** — 在 `.env` 中配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID`
-
-配置后 `--notify` 即可推送信号卡片和成交通知。
-
-## 配置系统
-
-`config.py` 提供统一的运行时配置，支持层级覆盖：
-
-```
-默认值 (DEFAULT_CONFIG) → config.yaml (可选) → 环境变量 (.env)
-```
-
-配置异常时输出 warning 日志并回退到默认值，不会静默失败。
-
-## 添加新标的
-
-编辑 `watchlist.toml`：
+`watchlist.toml`:
 
 ```toml
-[[watchlist]]
-symbol = "META"
-name = "Meta"
-active = "trend_follower"
-monitor = ["weekly_macd_kdj"]
+[market_state]
+enabled = true
+proxy_symbol = "SPY"
 ```
 
 ## 添加新策略

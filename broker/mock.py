@@ -160,7 +160,7 @@ class MockBroker(Broker):
         return 0
 
     def _execute_fill(self, order: Order, fill_price: float):
-        """Update cash + positions after a fill."""
+        """Update cash + positions after a fill (long, short, cover)."""
         commission = fill_price * order.quantity * self._commission_rate
 
         if order.side == OrderSide.BUY:
@@ -170,11 +170,14 @@ class MockBroker(Broker):
                 return
             self._cash -= total_cost
             self._update_position(order.symbol, order.quantity, fill_price)
-        else:
+        else:  # SELL
             pos = self._positions.get(order.symbol)
-            if pos is None or pos.quantity < order.quantity:
-                order.status = OrderStatus.REJECTED
-                return
+            if pos is not None and pos.quantity > 0:
+                # Close/reduce long — must have enough shares
+                if pos.quantity < order.quantity:
+                    order.status = OrderStatus.REJECTED
+                    return
+            # else: no position or short position → open/add to short (allowed)
             proceeds = fill_price * order.quantity - commission
             self._cash += proceeds
             self._update_position(order.symbol, -order.quantity, fill_price)

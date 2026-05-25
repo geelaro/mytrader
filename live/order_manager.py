@@ -38,12 +38,22 @@ class OrderManager:
     def generate_orders(
         self, signals: List[dict], positions: Dict[str, any], account
     ) -> List[Order]:
-        """Generate orders from signals with batch equal-risk allocation.
+        """Generate orders from signals — long, short, cover, all supported.
 
-        Sell orders are always generated first.  Buy orders are collected,
-        gated, and then allocated equal-risk shares of available capital
-        so that no single signal greedily consumes the budget (fixes the
-        first-come-first-served bias in the original sequential loop).
+        Four-way signal/position matrix:
+
+        ======= ============ ==========================
+        Signal   Position      Action
+        ======= ============ ==========================
+         1       flat          BUY → open long
+         1       short (<0)    BUY → cover short
+        -1       flat          SELL → open short
+        -1       long (>0)     SELL → close long
+        ======= ============ ==========================
+
+        Close orders (SELL for long exit / BUY for short cover) are
+        generated first.  Open orders (BUY for long / SELL for short)
+        are then batch-allocated with equal-risk capital split.
         """
         orders = []
 
@@ -55,11 +65,20 @@ class OrderManager:
             if s["signal"] != 0 and symbol_signals[sym]["signal"] == 0:
                 symbol_signals[sym] = s
 
-        # ---- Phase 1: sell orders (always process first) -------------------
+        # ---- Phase 1: close orders (do these first) -------------------------
         for sym, sig in symbol_signals.items():
             pos = positions.get(sym)
-            has_position = pos is not None and abs(pos.quantity) > 0
-            if sig["signal"] == -1 and has_position:
+            if pos is None:
+                continue
+            qty = abs(pos.quantity) if hasattr(pos, 'quantity') else 0
+            if qty <= 0:
+                continue
+
+            is_long = getattr(pos, 'quantity', 0) > 0
+            is_short = getattr(pos, 'quantity', 0) < 0
+
+            # Signal=-1 and long position → SELL to close
+            if sig["signal"] == -1 and is_long:
                 ok, reason = self.gate.allow_sell(sig)
                 if not ok:
                     print(f"  ! {sym} {reason}，跳过")
@@ -67,43 +86,55 @@ class OrderManager:
                     continue
                 plan = self.execution_model.make_plan(
                     symbol=sym, side=OrderSide.SELL,
-                    quantity=abs(pos.quantity), created_index=0,
+                    quantity=qty, created_index=0,
                     reason=sig.get("strategy", "signal"),
                 )
                 orders.append(self.execution_model.to_broker_order(plan))
 
-        # ---- Phase 2: collect buy candidates --------------------------------
-        candidates = []
+            # Signal=1 and short position → BUY to cover
+            elif sig["signal"] == 1 and is_short:
+                plan = self.execution_model.make_plan(
+                    symbol=sym, side=OrderSide.BUY,
+                    quantity=qty, created_index=0,
+                    reason=sig.get("strategy", "cover"),
+                )
+                orders.append(self.execution_model.to_broker_order(plan))
+
+        # ---- Phase 2: collect open candidates (long + short) ------------------
+        candidates_long = []
+        candidates_short = []
         for sym, sig in symbol_signals.items():
+            if sig.get("orphan"):
+                continue
             pos = positions.get(sym)
-            has_position = pos is not None and abs(pos.quantity) > 0
-            if sig["signal"] == 1 and not has_position and not sig.get("orphan"):
+            has_position = pos is not None and abs(getattr(pos, 'quantity', 0)) > 0
+
+            if sig["signal"] == 1 and not has_position:
                 ok, reason = self.gate.allow_buy(sig, positions, account)
                 if not ok:
                     print(f"  ! {sym} {reason}，跳过")
                     self.cache.log_ops("gate_reject", symbol=sym, detail=reason, level="WARN")
                     continue
-                candidates.append((sym, sig))
+                candidates_long.append((sym, sig))
 
-        # ---- Phase 3: batch equal-risk allocation ---------------------------
-        if candidates:
-            n = len(candidates)
+            elif sig["signal"] == -1 and not has_position:
+                candidates_short.append((sym, sig))
+
+        # ---- Phase 3: batch equal-risk allocation for all open orders --------
+        total_candidates = len(candidates_long) + len(candidates_short)
+        if total_candidates > 0:
             avail = getattr(account, "available_cash", account.total_equity)
-            # Each candidate gets an equal-risk slice of available capital
-            capital_per = avail / n
+            capital_per = avail / total_candidates
 
-            for sym, sig in candidates:
+            for sym, sig in candidates_long:
                 sig["_qty"] = self.risk_ctrl.calc_position_size(
-                    capital=capital_per,
-                    price=sig.get("price", 0),
-                    atr=sig.get("atr", 0),
-                    last_price=sig.get("price", 0),
+                    capital=capital_per, price=sig.get("price", 0),
+                    atr=sig.get("atr", 0), last_price=sig.get("price", 0),
                     total_equity=account.total_equity,
                 )
                 if sig["_qty"] <= 0:
-                    print(f"  ! {sym} 买入信号但仓位计算为0，跳过")
+                    print(f"  ! {sym} 买入信号仓位为0，跳过")
                     continue
-
                 qty = self.gate.vol_scaled_qty(sig["_qty"])
                 if self.risk_ctrl.passes_risk(sig, qty, account):
                     plan = self.execution_model.make_plan(
@@ -112,7 +143,27 @@ class OrderManager:
                     )
                     orders.append(self.execution_model.to_broker_order(plan))
                 else:
-                    print(f"  ! {sym} 风控检查未通过，跳过")
+                    print(f"  ! {sym} 风控未通过，跳过")
+
+            for sym, sig in candidates_short:
+                sig["_qty"] = self.risk_ctrl.calc_position_size(
+                    capital=capital_per, price=sig.get("price", 0),
+                    atr=sig.get("atr", 0), last_price=sig.get("price", 0),
+                    total_equity=account.total_equity,
+                )
+                if sig["_qty"] <= 0:
+                    print(f"  ! {sym} 做空信号仓位为0，跳过")
+                    continue
+                qty = self.gate.vol_scaled_qty(sig["_qty"])
+                if self.risk_ctrl.passes_risk(sig, qty, account):
+                    plan = self.execution_model.make_plan(
+                        symbol=sym, side=OrderSide.SELL,
+                        quantity=qty, created_index=0,
+                        reason="short_entry",
+                    )
+                    orders.append(self.execution_model.to_broker_order(plan))
+                else:
+                    print(f"  ! {sym} 风控未通过，跳过")
 
         return orders
 

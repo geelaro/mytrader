@@ -149,10 +149,20 @@ class TestGenerateOrders:
         orders = order_mgr.generate_orders(signals, positions, account)
         assert len(orders) == 0
 
-    def test_no_sell_when_no_position(self, order_mgr, account):
-        signals = [{"symbol": "AAPL", "signal": -1, "price": 195.0, "atr": 5.0, "strategy": "weekly_macd"}]
+    def test_short_entry_when_no_position(self, order_mgr, account):
+        """Signal=-1 with flat position → open short (SELL)."""
+        signals = [{"symbol": "AAPL", "signal": -1, "price": 195.0, "atr": 5.0, "strategy": "turtle_trading"}]
         orders = order_mgr.generate_orders(signals, {}, account)
-        assert len(orders) == 0
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.SELL
+
+    def test_no_sell_when_long_only_strategy(self, order_mgr, account):
+        """Long-only strategy with signal=-1 on long position → close long."""
+        pos = FakePosition("AAPL", 100, 190.0)
+        signals = [{"symbol": "AAPL", "signal": -1, "price": 195.0, "atr": 5.0, "strategy": "weekly_macd"}]
+        orders = order_mgr.generate_orders(signals, {"AAPL": pos}, account)
+        assert len(orders) == 1
+        assert orders[0].side == OrderSide.SELL  # close long
 
     def test_zero_qty_signal_skipped(self, order_mgr, account):
         order_mgr.risk_ctrl.calc_position_size.return_value = 0

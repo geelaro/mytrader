@@ -11,12 +11,12 @@ from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_
 
 @dataclass(frozen=True)
 class TrendFollowerParams(StrategyParams):
-    short_ma: int = 20
-    long_ma: int = 50
+    short_ma: int = 5
+    long_ma: int = 20
     adx_period: int = 14
-    adx_threshold: float = 20.0
+    adx_threshold: float = 15.0
     atr_period: int = 14
-    trail_atr_mult: float = 3.0
+    trail_atr_mult: float = 2.5
     risk_per_trade: float = 0.02
     max_position_pct: float = 0.95
 

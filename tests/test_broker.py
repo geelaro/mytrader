@@ -70,10 +70,21 @@ class TestMarketOrder:
         acct = mock_broker.get_account()
         assert acct.available_cash < 100_000
 
-    def test_sell_rejected_without_position(self, mock_broker):
+    def test_sell_short_opened(self, mock_broker):
+        """SELL without position → open short (fills)."""
         order = Order(symbol="AAPL", side=OrderSide.SELL,
                       order_type=OrderType.MARKET, quantity=10)
         result = mock_broker.submit_order(order)
+        assert result.status == OrderStatus.FILLED
+
+    def test_sell_exceeds_long_rejected(self, mock_broker):
+        """SELL more shares than long position → rejected."""
+        buy = Order(symbol="AAPL", side=OrderSide.BUY,
+                    order_type=OrderType.MARKET, quantity=10)
+        mock_broker.submit_order(buy)
+        sell = Order(symbol="AAPL", side=OrderSide.SELL,
+                     order_type=OrderType.MARKET, quantity=20)
+        result = mock_broker.submit_order(sell)
         assert result.status == OrderStatus.REJECTED
 
     def test_sell_reduces_position(self, mock_broker):
