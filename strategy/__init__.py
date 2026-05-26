@@ -10,6 +10,7 @@ from .bollinger_squeeze import BollingerSqueeze, BollingerSqueezeParams  # depre
 from .turtle_trading import TurtleTrading, TurtleTradingParams
 from .spy_ma_breakout import SPYMABreakout, SPYMABreakoutParams
 from .ensemble import StrategyEnsemble, EnsembleParams
+from .rsi2_mean_reversion import RSI2MeanReversion, RSI2MeanReversionParams
 
 STRATEGY_MAP = {
     "trend_follower": TrendFollower,
@@ -21,6 +22,7 @@ STRATEGY_MAP = {
     "turtle_trading": TurtleTrading,
     "daily_macd_kdj": DailyMACD_KDJ,
     "spy_ma_breakout": SPYMABreakout,
+    "rsi2_mean_reversion": RSI2MeanReversion,
 }
 
 SIGNAL_LABEL = {1: "买入", -1: "卖出", 0: "—"}
@@ -55,6 +57,8 @@ __all__ = [
     "SPYMABreakoutParams",
     "StrategyEnsemble",
     "EnsembleParams",
+    "RSI2MeanReversion",
+    "RSI2MeanReversionParams",
     "STRATEGY_MAP",
     "SIGNAL_LABEL",
 ]

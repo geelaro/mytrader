@@ -20,6 +20,7 @@ class BollingerMeanReversionParams(StrategyParams):
     rsi_period: int = 14
     rsi_oversold: float = 30.0
     rsi_turnup: float = 3.0
+    oversold_window: int = 5
     atr_period: int = 14
     trail_atr_mult: float = 2.0
     risk_per_trade: float = 0.02
@@ -29,6 +30,8 @@ class BollingerMeanReversionParams(StrategyParams):
         "bb_period": [15, 20, 25],
         "bb_std": [1.5, 2.0, 2.5],
         "rsi_oversold": [25, 30, 35],
+        "rsi_turnup": [2.0, 3.0, 5.0],
+        "oversold_window": [3, 5, 7],
         "trail_atr_mult": [1.5, 2.0, 3.0],
     }
 
@@ -67,16 +70,22 @@ class BollingerMeanReversion(BaseStrategy):
         # RSI
         df = compute_rsi(df, p.rsi_period)
 
-        # RSI minimum over last 5 bars — used to detect turn-up
-        df["RSI_low5"] = df["RSI"].rolling(5).min()
+        # RSI minimum over lookback window — used to detect turn-up
+        df["RSI_low5"] = df["RSI"].rolling(p.oversold_window).min()
+
+        # Oversold zone: price at/under lower BB AND RSI oversold
+        df["Oversold_zone"] = (
+            (df["Close"] <= df["BB_lower"]) & (df["RSI"] < p.rsi_oversold)
+        )
 
         # ---- Signals ----
         df["Signal"] = 0
 
+        # Buy: RSI confirmed turning up AND oversold zone was active
+        # within the last *oversold_window* bars (decoupled from current bar).
         buy = (
-            (df["Close"] <= df["BB_lower"])
-            & (df["RSI"] < p.rsi_oversold)
-            & ((df["RSI"] - df["RSI_low5"]) >= p.rsi_turnup)
+            ((df["RSI"] - df["RSI_low5"]) >= p.rsi_turnup)
+            & (df["Oversold_zone"].rolling(p.oversold_window).max() > 0)
         )
         df.loc[buy, "Signal"] = 1
 

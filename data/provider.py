@@ -112,8 +112,16 @@ class DataProvider:
             df = self._load_from_cache(sym, start, end)
             if self._is_complete(df, start, end):
                 return df
+            # Tail-incomplete but no internal gaps → incremental fetch only
+            if not df.empty and not self._has_internal_gaps(df):
+                tail_start = (df.index[-1] + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                if tail_start <= end:
+                    fetched, src = self._fetch_from_sources(sym, tail_start, end)
+                    if fetched is not None and not fetched.empty:
+                        self.cache.save(sym, fetched, source=src or "unknown")
+                return self._load_from_cache(sym, start, end)
 
-        # Identify gaps and fetch (skip symbols that failed before)
+        # Full gap scan (force_refresh, internal gaps, or first fetch)
         if force_refresh and sym in self._fetch_failures:
             self._fetch_failures.discard(sym)
         if sym in self._fetch_failures:
@@ -230,13 +238,20 @@ class DataProvider:
         return None
 
     @staticmethod
+    def _has_internal_gaps(df: pd.DataFrame) -> bool:
+        """Check for gaps > 7 days between consecutive cached bars."""
+        if df is None or df.empty or len(df) < 2:
+            return False
+        dates = pd.DatetimeIndex(df.index).sort_values().normalize()
+        max_gap = dates.to_series().diff().dt.days.max()
+        return pd.notna(max_gap) and max_gap > 7
+
+    @staticmethod
     def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
         """Heuristic: does *df* cover up to the requested end date?
 
         Tail recency: last cached bar within 3 days of *end* (covers weekends).
-        Internal holes: gaps > 7 calendar days trigger re-fetch.  A 7-day
-        threshold lets normal exchange holidays pass (Fri→Tue = 4 days) while
-        catching genuine missing months of data.
+        Internal holes: gaps > 7 calendar days trigger re-fetch.
         """
         if df is None or df.empty:
             return False
