@@ -68,7 +68,8 @@ class DataProvider:
             AKShareSource(),
         ]
         self._fetch_failures: set = set()  # symbols that failed this session entirely
-        self._failed_sources: Set[str] = set()  # sources that failed this session (skip for all symbols)
+        self._failed_sources: set = set()  # stale sources — skip for all symbols
+        self._tail_attempted: set = set()  # (symbol, end) pairs already attempted
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,7 +116,9 @@ class DataProvider:
             # Tail-incomplete but no internal gaps → incremental fetch only
             if not df.empty and not self._has_internal_gaps(df):
                 tail_start = (df.index[-1] + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-                if tail_start <= end:
+                dedup_key = (sym, end)
+                if tail_start <= end and dedup_key not in self._tail_attempted:
+                    self._tail_attempted.add(dedup_key)
                     fetched, src = self._fetch_from_sources(sym, tail_start, end)
                     if fetched is not None and not fetched.empty:
                         self.cache.save(sym, fetched, source=src or "unknown")
@@ -211,11 +214,18 @@ class DataProvider:
     def _fetch_from_sources(
         self, symbol: str, start: str, end: str
     ) -> Tuple[pd.DataFrame, Optional[str]]:
-        """Try sources in priority order; return (df, actual_source_name)."""
+        """Try sources in priority order; return (df, actual_source_name).
+
+        Sources that returned empty for recent-date fetches are marked stale
+        for the remainder of the session, avoiding repeated log spam.
+        """
         market = classify_symbol(symbol)
         priorities = SOURCE_PRIORITY.get(market, SOURCE_PRIORITY["default"])
+        is_recent = (pd.Timestamp(end) - pd.Timestamp.now().normalize()).days >= -3
 
         for source_name in priorities:
+            if source_name in self._failed_sources:
+                continue
             src = self._find_source_by_name(source_name)
             if src is None or not src.supports(symbol):
                 continue
@@ -225,6 +235,9 @@ class DataProvider:
                 if df is not None and not df.empty:
                     logger.info("  → got %d bars from %s", len(df), source_name)
                     return df, source_name
+                # Source returned empty for recent data → stale for this session
+                if is_recent:
+                    self._failed_sources.add(source_name)
             except (ConnectionError, TimeoutError, OSError, ValueError, KeyError):
                 logger.warning("Source %s failed for %s", source_name, symbol)
             except Exception:
