@@ -138,10 +138,12 @@ class SignalScanner:
 
         df_weekly = self._fetch_weekly(symbol, start, target_date)
 
-        bar_date = (
-            target_date if target_date in df.index.strftime("%Y-%m-%d")
-            else df.index[-1].strftime("%Y-%m-%d")
-        )
+        if target_date not in df.index.strftime("%Y-%m-%d"):
+            logger.warning("[%s] %s 无 K 线数据, 使用最新 bar %s",
+                           symbol, target_date, df.index[-1].strftime("%Y-%m-%d"))
+            bar_date = df.index[-1].strftime("%Y-%m-%d")
+        else:
+            bar_date = target_date
 
         results: List[dict] = []
         for strat_name in strategy_names:

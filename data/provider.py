@@ -37,6 +37,31 @@ logger = logging.getLogger(__name__)
 # Trading-calendar helpers (used for gap detection)
 # ---------------------------------------------------------------------------
 
+try:
+    import exchange_calendars as xcals
+    _HAS_XCALS = True
+except ImportError:
+    xcals = None  # type: ignore[assignment]
+    _HAS_XCALS = False
+
+_CALENDARS: dict = {}
+
+def _get_calendar(market: str):
+    """Lazy-load exchange calendar by market tag ('us'|'cn'|'hk').
+
+    Falls back to None quietly — callers use weekday heuristic instead.
+    """
+    if not _HAS_XCALS:
+        return None
+    if market not in _CALENDARS:
+        code = {"us": "XNYS", "cn": "XSHG", "hk": "XHKG"}.get(market, "XNYS")
+        try:
+            _CALENDARS[market] = xcals.get_calendar(code)
+        except Exception:
+            logger.debug("Could not load calendar %s for market %s", code, market)
+            _CALENDARS[market] = None
+    return _CALENDARS[market]
+
 # ---------------------------------------------------------------------------
 # DataProvider
 # ---------------------------------------------------------------------------
@@ -100,6 +125,7 @@ class DataProvider:
         # Resolve CN aliases
         if sym in CN_SYMBOLS:
             sym = CN_SYMBOLS[sym].upper()
+        market = classify_symbol(sym)
 
         if end is None:
             end = datetime.now().strftime("%Y-%m-%d")
@@ -111,7 +137,7 @@ class DataProvider:
 
         if not force_refresh:
             df = self._load_from_cache(sym, start, end)
-            if self._is_complete(df, start, end):
+            if self._is_complete(df, start, end, market):
                 return df
             # Tail-incomplete but no internal gaps → incremental fetch only
             if not df.empty and not self._has_internal_gaps(df):
@@ -260,19 +286,46 @@ class DataProvider:
         return pd.notna(max_gap) and max_gap > 7
 
     @staticmethod
-    def _is_complete(df: pd.DataFrame, start: str, end: str) -> bool:
-        """Heuristic: does *df* cover up to the requested end date?
+    def _is_complete(df: pd.DataFrame, start: str, end: str, market: str = "us") -> bool:
+        """Check if cached data is complete up to *end*.
 
-        Tail recency: last cached bar within 3 days of *end* (covers weekends).
-        Internal holes: gaps > 7 calendar days trigger re-fetch.
+        Uses real exchange calendar when available (NYSE for US, SSE for CN):
+          - counts un-cached trading sessions between last bar and *end*
+          - if any → incomplete, triggers tail fetch
+
+        Falls back to weekday heuristic when ``exchange-calendars`` is not installed:
+          - Monday:      3-day buffer (covers weekends)
+          - Sat/Sun:     2-day buffer
+          - Tue–Fri:     1-day buffer
+
+        Internal holes > 7 calendar days also trigger re-fetch.
         """
         if df is None or df.empty:
             return False
-        last = df.index[-1]
-        expected_last = pd.Timestamp(end)
-        if last < expected_last - pd.Timedelta(days=3):
-            return False
 
+        last = pd.Timestamp(df.index[-1]).normalize()
+        expected_last = pd.Timestamp(end).normalize()
+
+        # ── Real trading calendar ─────────────────────────────────────
+        cal = _get_calendar(market)
+        if cal is not None:
+            sessions = cal.sessions_in_range(last + pd.Timedelta(days=1), expected_last)
+            if len(sessions) > 0:
+                return False
+        else:
+            # ── Fallback: weekday heuristic ───────────────────────────
+            gap = (expected_last - last).days
+            weekday = expected_last.weekday()
+            if weekday == 0:          # Monday
+                allowed = 3
+            elif weekday in (5, 6):   # Sat / Sun
+                allowed = 2
+            else:                     # Tue – Fri
+                allowed = 1
+            if gap > allowed:
+                return False
+
+        # Internal data quality check — suspicious gaps > 7 days
         dates = pd.DatetimeIndex(df.index).sort_values().normalize()
         if len(dates) > 1:
             max_gap_days = dates.to_series().diff().dt.days.max()
