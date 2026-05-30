@@ -17,6 +17,7 @@ tomli = "*"
 python-dotenv = "*"
 futu-api = "*"
 streamlit = "*"
+exchange-calendars = "*"
 
 [dev-packages]
 pytest = "*"

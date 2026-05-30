@@ -112,6 +112,39 @@ class TestSignalScannerScan:
         assert len(results) > 0
 
 
+# ---------------------------------------------------------------------------
+# Missing target date — falls back to latest bar, never skips
+# ---------------------------------------------------------------------------
+
+
+class TestSignalScannerMissingData:
+    """SignalScanner._scan_symbol — target_date not in cached data."""
+
+    def test_missing_target_date_uses_latest_bar(self, scanner, minimal_config):
+        """target_date beyond synthetic data range → fall back to last bar."""
+        results = scanner.scan(minimal_config, target_date="2025-01-01")
+        assert len(results) > 0
+        for r in results:
+            assert r["symbol"] == "AAPL"
+            assert "bar_date" in r
+            # bar_date should be the last available date, not 2025-01-01
+            assert r["bar_date"] != "2025-01-01"
+
+    def test_missing_target_date_multiple_strategies(self, scanner, multi_config):
+        results = scanner.scan(multi_config, target_date="2025-01-01")
+        assert len(results) == 3  # AAPL: weekly_macd+turtle, NVDA: weekly_macd
+        for r in results:
+            assert r["bar_date"] != "2025-01-01"
+
+    def test_missing_target_date_still_generates_valid_signals(self, scanner, minimal_config):
+        results = scanner.scan(minimal_config, target_date="2025-01-01")
+        for r in results:
+            assert "signal" in r
+            assert r["signal"] in (0, 1)
+            assert r["price"] > 0
+            assert r["atr"] >= 0
+
+
 class TestSignalScannerMulti:
     def test_multi_symbol_scan(self, scanner, multi_config):
         results = scanner.scan(multi_config, target_date="2021-01-04")

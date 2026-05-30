@@ -160,6 +160,114 @@ class TestSinaNormalise:
 
 
 # ===================================================================
+# _is_complete with exchange calendar
+# ===================================================================
+
+
+class TestIsComplete:
+    """DataProvider._is_complete — exchange calendar + fallback heuristic."""
+
+    def _df(self, dates: list[str]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"Open": 100, "High": 101, "Low": 99, "Close": 100.5, "Volume": 1000},
+            index=pd.DatetimeIndex(dates),
+        )
+
+    # -- empty / None -------------------------------------------------------
+
+    def test_empty_df_returns_false(self):
+        df = pd.DataFrame()
+        assert DataProvider._is_complete(df, "2026-01-01", "2026-01-10", "us") is False
+
+    def test_none_df_returns_false(self):
+        assert DataProvider._is_complete(None, "2026-01-01", "2026-01-10", "us") is False
+
+    # -- exchange calendar (XNYS installed) ---------------------------------
+
+    def test_calendar_detects_missing_trading_day(self):
+        """Cache ends Tue 5/26, end=Thu 5/28 → 5/27 + 5/28 are open → incomplete."""
+        df = self._df(["2026-05-26"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-28", "us") is False
+
+    def test_calendar_complete_no_missing_sessions(self):
+        """Cache ends Fri 5/29, end=Sat 5/30 → no open sessions → complete."""
+        df = self._df(["2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-30", "us") is True
+
+    def test_calendar_complete_weekend_gap(self):
+        """Cache ends Fri 5/29, end=Sun 5/31 → Sat+Sun no sessions → complete."""
+        df = self._df(["2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-31", "us") is True
+
+    def test_calendar_incomplete_monday_missing(self):
+        """Cache ends Fri 5/29, end=Mon 6/1 → Mon is a trading day → incomplete."""
+        df = self._df(["2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-06-01", "us") is False
+
+    def test_calendar_detects_holiday(self):
+        """Memorial Day 5/25 — cache ends Fri 5/22, end=Tue 5/26.
+        Only Mon 5/25 is Memorial Day (closed), next open is Tue 5/26.
+        Since cache only has up to 5/22, sessions 5/26 is missing → incomplete."""
+        df = self._df(["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"])
+        # 5/25 is Memorial Day, 5/26 is a trading day — not cached → incomplete
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-26", "us") is False
+
+    def test_calendar_internal_gap_returns_false(self):
+        """Gap > 7 calendar days between bars → incomplete regardless of tail."""
+        df = self._df(["2026-05-01", "2026-05-20", "2026-05-21"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-21", "us") is False
+
+    # -- CN market (XSHG) ---------------------------------------------------
+
+    def test_calendar_cn_market(self):
+        """CN market uses XSHG calendar. Cache ends Fri 5/29, end=Sun 5/31."""
+        df = self._df(["2026-05-28", "2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-31", "cn") is True
+
+    def test_calendar_cn_incomplete_monday(self):
+        """Cache ends Fri 5/29, end=Mon 6/1 → Mon trading day → incomplete."""
+        df = self._df(["2026-05-28", "2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-06-01", "cn") is False
+
+    # -- fallback weekday heuristic -----------------------------------------
+
+    def test_fallback_monday_allows_3_days(self, monkeypatch):
+        import data.provider as dp
+        monkeypatch.setattr(dp, "_HAS_XCALS", False)
+        # cache ends Fri, end=Mon → gap=3 → allowed=3 → complete
+        df = self._df(["2026-05-29"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-06-01", "us") is True
+
+    def test_fallback_monday_rejects_4_days(self, monkeypatch):
+        import data.provider as dp
+        monkeypatch.setattr(dp, "_HAS_XCALS", False)
+        # cache ends Thu, end=Mon → gap=4 → allowed=3 → incomplete
+        df = self._df(["2026-05-28"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-06-01", "us") is False
+
+    def test_fallback_tue_fri_allows_1_day(self, monkeypatch):
+        import data.provider as dp
+        monkeypatch.setattr(dp, "_HAS_XCALS", False)
+        # cache ends Tue, end=Wed → gap=1 → allowed=1 → complete
+        df = self._df(["2026-05-26"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-27", "us") is True
+
+    def test_fallback_tue_fri_rejects_2_days(self, monkeypatch):
+        import data.provider as dp
+        monkeypatch.setattr(dp, "_HAS_XCALS", False)
+        # cache ends Tue, end=Thu → gap=2 → allowed=1 → incomplete
+        df = self._df(["2026-05-26"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-28", "us") is False
+
+    def test_fallback_weekend_allows_2_days(self, monkeypatch):
+        import data.provider as dp
+        monkeypatch.setattr(dp, "_HAS_XCALS", False)
+        # cache ends Thu, end=Sat → gap=2 → allowed=2 → complete
+        df = self._df(["2026-05-28"])
+        assert DataProvider._is_complete(df, "2020-01-01", "2026-05-30", "us") is True
+
+
+# ===================================================================
 # DataProvider with mock source
 # ===================================================================
 
