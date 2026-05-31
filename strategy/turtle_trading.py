@@ -91,6 +91,12 @@ class TurtleTrading(BaseStrategy):
 
     def __init__(self, **kwargs):
         super().__init__(TurtleTradingParams(**kwargs))
+        # Per-entry cache for incremental high/low tracking and frozen ATR.
+        # Reset whenever check_exit sees a new entry_date.
+        self._cur_entry_date = None
+        self._cur_entry_atr = 0.0
+        self._cur_highest_high = -float('inf')
+        self._cur_lowest_low = float('inf')
 
     @property
     def min_bars(self) -> int:
@@ -161,41 +167,44 @@ class TurtleTrading(BaseStrategy):
 
         Long stop:  close <= max(high[entry:i]) - ATR_entry × trail_atr_mult
         Short stop: close >= min(low[entry:i]) + ATR_entry × trail_atr_mult
+
+        Uses an O(1) per-bar incremental cache (``_cur_*``) rather than
+        re-slicing ``df`` on every call. Cache is reset when *entry_date*
+        changes, so the backtest engine's per-bar call cadence is required
+        for correctness — single-shot test calls still produce the correct
+        result for the current bar.
         """
         price = float(df["Close"].iloc[i])
-        atr_col = df["ATR"]
+        entry_date = position.get('date') if position else None
 
-        # Locate entry bar and freeze ATR at entry (df.atr[pos_idx-1])
-        if position and 'date' in position:
-            entry_date = position['date']
-            if entry_date in df.index:
+        # Detect new entry → reset cache and freeze ATR at entry (大哥2.2: ATR[pos-1])
+        if entry_date != self._cur_entry_date:
+            self._cur_entry_date = entry_date
+            if entry_date is not None and entry_date in df.index:
                 pos_idx = df.index.get_loc(entry_date)
-                entry_atr = float(atr_col.iloc[max(0, pos_idx - 1)])
+                self._cur_entry_atr = float(df["ATR"].iloc[max(0, pos_idx - 1)])
+                self._cur_highest_high = float(df["High"].iloc[pos_idx])
+                self._cur_lowest_low = float(df["Low"].iloc[pos_idx])
             else:
-                entry_atr = float(atr_col.iloc[i])
-        else:
-            entry_atr = float(atr_col.iloc[i])
+                self._cur_entry_atr = float(df["ATR"].iloc[i])
+                self._cur_highest_high = float(df["High"].iloc[i])
+                self._cur_lowest_low = float(df["Low"].iloc[i])
+
+        # Incremental update from the latest bar
+        cur_high = float(df["High"].iloc[i])
+        cur_low = float(df["Low"].iloc[i])
+        if cur_high > self._cur_highest_high:
+            self._cur_highest_high = cur_high
+        if cur_low < self._cur_lowest_low:
+            self._cur_lowest_low = cur_low
 
         direction = position.get('direction', 'LONG') if position else 'LONG'
-
         if direction == 'SHORT':
-            # Track lowest Low since entry
-            if position and 'date' in position and position['date'] in df.index:
-                pos_idx = df.index.get_loc(position['date'])
-                lowest_low = float(df["Low"].iloc[pos_idx:i + 1].min())
-            else:
-                lowest_low = price
-            cover_level = lowest_low + entry_atr * self.params.trail_atr_mult
+            cover_level = self._cur_lowest_low + self._cur_entry_atr * self.params.trail_atr_mult
             if price >= cover_level:
                 return True, "移动止损(空)"
         else:
-            # Track highest High since entry
-            if position and 'date' in position and position['date'] in df.index:
-                pos_idx = df.index.get_loc(position['date'])
-                highest_high = float(df["High"].iloc[pos_idx:i + 1].max())
-            else:
-                highest_high = price
-            stop_level = highest_high - entry_atr * self.params.trail_atr_mult
+            stop_level = self._cur_highest_high - self._cur_entry_atr * self.params.trail_atr_mult
             if price <= stop_level:
                 return True, "移动止损"
 

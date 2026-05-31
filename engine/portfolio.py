@@ -170,6 +170,8 @@ class PortfolioBacktest:
         max_sector_weight: float = 0.0,
         sector_map: Optional[dict] = None,
         cooldown_after_stop_days: int = 0,
+        # --- short selling ---
+        short_margin_ratio: float = 1.5,
     ):
         self.legs = legs
         self.initial_capital = initial_capital
@@ -197,7 +199,24 @@ class PortfolioBacktest:
         self.max_sector_weight = max_sector_weight
         self.sector_map = sector_map or {}
         self.cooldown_after_stop_days = cooldown_after_stop_days
+        # Short proceeds inflate ``cash``; this ratio (Reg-T style) is the
+        # maintenance margin locked per dollar of short notional, deducted
+        # from available_cash so it cannot fund new long entries.
+        self.short_margin_ratio = short_margin_ratio
         self._stop_dates: dict[str, Optional[pd.Timestamp]] = {}
+
+    def _available_cash(self, cash: float, leg_state: dict) -> float:
+        """Cash available for opening new LONG positions across the portfolio.
+
+        Deducts margin locked by current short legs. Short proceeds were
+        booked into ``cash`` at fill time but cannot be re-used to fund longs.
+        """
+        short_margin = 0.0
+        for s in leg_state.values():
+            pos = s.get("position", 0)
+            if pos < 0:
+                short_margin += abs(pos) * s.get("last_price", 0) * self.short_margin_ratio
+        return cash - short_margin
 
     def _reject(self, date_idx, symbol: str, reason: str, detail: str = "") -> None:
         """Record a rejection and return — used in risk gate chains."""
@@ -264,6 +283,9 @@ class PortfolioBacktest:
         leg_state: dict[int, LegState] = {}
         for i, (leg, strategy, df_sig) in enumerate(leg_data):
             leg_state[i] = LegState(leg=leg, strategy=strategy, df=df_sig)
+        # Expose for _handle_pending_order so it can compute available_cash
+        # without rewiring every helper's signature.
+        self._leg_state_ref = leg_state
 
         cash = self.initial_capital
         trades: List[PortfolioTrade] = []
@@ -403,11 +425,18 @@ class PortfolioBacktest:
                     st["pending_order"] = None
                 return True, cash, False
             else:
-                # Open / add to long
+                # Open / add to long — must respect available_cash so short
+                # margin already locked elsewhere in the portfolio is not
+                # double-spent.
                 if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                    if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, cash):
+                    portfolio_state = getattr(self, "_leg_state_ref", {})
+                    spendable = self._available_cash(cash, portfolio_state)
+                    if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, spendable):
                         cash += fill.net_cash_delta
                         pending.quantity -= fill.filled_qty
+                    else:
+                        self._reject(date_idx, st["leg"].symbol, "成交时现金不足",
+                                     f"需${fill.gross_value + fill.commission:,.0f} > 可用${spendable:,.0f}")
                 if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
                     st["pending_order"] = None
                 return True, cash, False
@@ -525,7 +554,11 @@ class PortfolioBacktest:
                          f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})")
             return daily_new_count
 
-        alloc = self._allocate(st["leg"], cash, len(leg_state), current_equity)
+        # LONG entries must size against available_cash so locked short margin
+        # is respected. SHORT entries can size against the full cash pool —
+        # margin lockup is enforced on subsequent long entries.
+        avail_cash = self._available_cash(cash, leg_state) if direction == "LONG" else cash
+        alloc = self._allocate(st["leg"], avail_cash, len(leg_state), current_equity)
         if alloc <= 0:
             return daily_new_count
 
@@ -570,11 +603,14 @@ class PortfolioBacktest:
         if direction == "LONG":
             actual_price = price * (1 + self.slippage_pct)
             cost = actual_price * qty * (1 + self.commission_rate)
-            if cost <= cash and qty > 0:
+            if cost <= avail_cash and qty > 0:
                 st["pending_order"] = self.execution_model.make_plan(
                     symbol=sym, side=OrderSide.BUY, quantity=qty, created_index=idx_pos,
                 )
                 daily_new_count += 1
+            elif qty > 0:
+                self._reject(date_idx, sym, "可用现金不足",
+                             f"需${cost:,.0f} > 可用${avail_cash:,.0f}")
         else:  # SHORT
             if qty > 0:
                 st["pending_order"] = self.execution_model.make_plan(

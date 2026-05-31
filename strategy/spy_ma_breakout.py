@@ -1,12 +1,12 @@
-"""SPY MA filter + N-day high/low breakout + ATR take-profit + MA stop-loss.
+"""SPY MA filter + N-day high breakout + ATR take-profit + MA stop-loss.
 
-- Macro gate:      SPY > SPY_MA (block all trades when SPY is below MA)
-- Entry:
-    Long:  Close > MA  AND  Close == N-day high
-    Short: Close < MA  AND  Close == N-day low
+Long-only by design.
+
+- Macro gate:  SPY > SPY_MA (block all trades when SPY is below MA)
+- Entry:       Close > MA  AND  Close == N-day high
 - Exit:
-    Take-profit:  Long: Close >= entry + ATR × N   Short: Close <= entry - ATR × N
-    Stop-loss:    Close crosses back across MA (trend invalidated)
+    Take-profit:  Close >= entry + ATR × N
+    Stop-loss:    Close < MA (trend invalidated)
 """
 
 from dataclasses import dataclass
@@ -49,19 +49,17 @@ class SPYMABreakoutParams(StrategyParams):
 
 
 class SPYMABreakout(BaseStrategy):
-    """SPY macro filter + MA trend + N-day breakout + stop-loss + take-profit.
+    """SPY macro filter + MA trend + N-day breakout + stop-loss + take-profit (long-only).
 
     Entry
     -----
     SPY filter:   SPY > SPY_MA            (broad market uptrend gate)
     Long:         Close > MA  AND  Close == N-day high
-    Short:        Close < MA  AND  Close == N-day low
 
     Exit
     ----
-    Take-profit:  Long: Close >= entry + ATR × N
-                  Short: Close <= entry - ATR × N
-    Stop-loss:    Close crosses MA (trend broken) — works for both directions
+    Take-profit:  Close >= entry + ATR × N
+    Stop-loss:    Close < MA (trend broken)
     """
 
     regime = "trend"
@@ -102,14 +100,11 @@ class SPYMABreakout(BaseStrategy):
 
         df["MA"] = df["Close"].rolling(p.ma_period).mean()
         df["N_day_high"] = df["Close"].rolling(p.high_period).max()
-        df["N_day_low"] = df["Close"].rolling(p.high_period).min()
         df["ATR"] = compute_atr(df, p.atr_period)
 
         df["Signal"] = 0
         buy = (df["Close"] > df["MA"]) & (df["Close"] == df["N_day_high"])
-        short = (df["Close"] < df["MA"]) & (df["Close"] == df["N_day_low"])
         df.loc[buy, "Signal"] = 1
-        df.loc[short, "Signal"] = -1
 
         # SPY macro filter — suppress all when SPY is below MA
         if self._spy_filter is not None:
@@ -139,21 +134,9 @@ class SPYMABreakout(BaseStrategy):
         price = float(df["Close"].iloc[i])
         atr = float(df["ATR"].iloc[i])
         ma = float(df["MA"].iloc[i])
-        direction = position.get("direction", "LONG") if position else "LONG"
 
-        if direction == "SHORT":
-            # Take-profit
-            if price <= entry_price - atr * self.params.take_profit_atr_mult:
-                return True, "动态止盈(空)"
-            # MA stop-loss — trend reversed upward
-            if price > ma:
-                return True, "MA止损(空)"
-        else:
-            # Take-profit
-            if price >= entry_price + atr * self.params.take_profit_atr_mult:
-                return True, "动态止盈"
-            # MA stop-loss — trend reversed downward
-            if price < ma:
-                return True, "MA止损"
-
+        if price >= entry_price + atr * self.params.take_profit_atr_mult:
+            return True, "动态止盈"
+        if price < ma:
+            return True, "MA止损"
         return False, ""

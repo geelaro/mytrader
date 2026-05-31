@@ -104,32 +104,41 @@ class StrategyEnsemble(BaseStrategy):
             member_regimes.append(regime_label)
             member_dfs.append(df_sig)
 
-        # Weighted score (regime weight × optional per-member weight)
-        score = pd.Series(0.0, index=df.index[:len(member_signals[0])])
-        n = len(member_signals)
-        for idx, (sig_series, regime_label) in enumerate(zip(member_signals, member_regimes)):
-            w = weights.get(regime_label, 0.33)
-            if self._member_weights and idx < len(self._member_weights):
-                w *= self._member_weights[idx] * n  # normalize: sum(mw)=1 keeps total equal
-            w += (vol_bonus if regime_label == "trend" else 0)
+        # Align every member's Signal series to the primary daily index.
+        # MTF members (e.g. macd_kdj freq="W") return a weekly index that
+        # would otherwise misalign with df.index when summed/compared.
+        aligned_signals = [s.reindex(df.index).fillna(0) for s in member_signals]
+        n = len(aligned_signals)
+
+        # Per-member weight normalisation: divide by mean so the total
+        # regime weight is preserved across members.
+        if self._member_weights and len(self._member_weights) >= n and n > 0:
+            mw_slice = list(self._member_weights[:n])
+            mw_mean = sum(mw_slice) / n
+            mw_factor = [m / mw_mean if mw_mean > 0 else 1.0 for m in mw_slice]
+        else:
+            mw_factor = [1.0] * n
+
+        score = pd.Series(0.0, index=df.index)
+        for idx, (sig_series, regime_label) in enumerate(zip(aligned_signals, member_regimes)):
+            w = weights.get(regime_label, 0.33) * mw_factor[idx]
+            if regime_label == "trend":
+                w += vol_bonus
             score = score + sig_series.astype(float) * w
 
-        # Consensus count (how many members agree on direction)
-        long_votes = sum((s > 0).astype(int) for s in member_signals)
-        short_votes = sum((s < 0).astype(int) for s in member_signals)
+        # Consensus count — how many members agree on direction
+        long_votes = sum((s > 0).astype(int) for s in aligned_signals)
+        short_votes = sum((s < 0).astype(int) for s in aligned_signals)
 
-        # Build output DataFrame on the primary daily index
+        long_mask = (long_votes >= self.params.min_agreement) & (score >= self.params.long_bias_threshold)
+        short_mask = (short_votes >= self.params.min_agreement) & (score <= -self.params.short_bias_threshold)
+
         result = df.copy()
         result["Signal"] = 0
-        result.loc[long_votes >= self.params.min_agreement, "Signal"] = (
-            (score >= self.params.long_bias_threshold).astype(int)
-        )
-        result.loc[short_votes >= self.params.min_agreement, "Signal"] = (
-            (-1 * (score <= -self.params.short_bias_threshold)).astype(int)
-        )
-        # Resolve conflict: if both long and short signals on same bar, pick
-        # the one with higher absolute score
-        conflict = (result["Signal"] > 0) & (result["Signal"] < 0)  # never true, guard
+        result.loc[long_mask & ~short_mask, "Signal"] = 1
+        result.loc[short_mask & ~long_mask, "Signal"] = -1
+        # True conflict — both masks true: arbitrate by score sign
+        conflict = long_mask & short_mask
         if conflict.any():
             result.loc[conflict, "Signal"] = np.sign(score[conflict]).astype(int)
 

@@ -41,12 +41,16 @@ class MockBroker(Broker):
         initial_cash: float = 100000,
         commission_rate: float = 0.0003,
         slippage_pct: float = 0.0005,
+        short_margin_ratio: float = 1.5,
     ):
         super().__init__()
         self._cash = initial_cash
         self._initial_cash = initial_cash
         self._commission_rate = commission_rate
         self._slippage_pct = slippage_pct
+        # Reg-T style maintenance margin — short proceeds inflate _cash but
+        # are locked at this ratio of notional and not part of available_cash.
+        self._short_margin_ratio = short_margin_ratio
         self._positions: Dict[str, Position] = {}
         self._orders: Dict[str, Order] = {}
         self._realized_pnl = 0.0
@@ -68,12 +72,19 @@ class MockBroker(Broker):
 
     def get_account(self) -> Account:
         positions = self.get_positions()
-        frozen = sum(abs(p.market_value) for p in positions)  # simple: market value as margin proxy
+        # Short proceeds inflate _cash; deduct the maintenance margin so
+        # callers cannot re-spend them on long entries.
+        short_margin = sum(
+            abs(p.market_value) * self._short_margin_ratio
+            for p in positions if p.quantity < 0
+        )
+        avail = max(0.0, self._cash - short_margin)
+        # Equity = cash + signed market value (long positive, short negative).
         total = self._cash + sum(p.market_value for p in positions)
         return Account(
             total_equity=total,
-            available_cash=self._cash,
-            frozen_margin=frozen,
+            available_cash=avail,
+            frozen_margin=short_margin,
             total_pnl=total - self._initial_cash,
         )
 
@@ -165,7 +176,20 @@ class MockBroker(Broker):
 
         if order.side == OrderSide.BUY:
             total_cost = fill_price * order.quantity + commission
-            if total_cost > self._cash:
+            existing = self._positions.get(order.symbol)
+            is_cover = existing is not None and existing.quantity < 0
+            # Cover spends raw cash (releases short margin). New/added long
+            # entries must respect available_cash so locked short margin in
+            # other symbols cannot fund them.
+            if is_cover:
+                spendable = self._cash
+            else:
+                short_margin = sum(
+                    abs(p.quantity) * self.last_prices.get(s, p.avg_price) * self._short_margin_ratio
+                    for s, p in self._positions.items() if p.quantity < 0
+                )
+                spendable = max(0.0, self._cash - short_margin)
+            if total_cost > spendable:
                 order.status = OrderStatus.REJECTED
                 return
             self._cash -= total_cost

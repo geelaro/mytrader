@@ -70,7 +70,7 @@ class BacktestEngine:
     def __init__(self, initial_capital=10000, commission_rate=0.0003, slippage_pct=0.0001,
                  sizing_mode="fixed_capital", risk_per_trade=0.005, risk_atr_mult=2.0,
                  cooldown_after_stop_days: int = 0, execution_model: ExecutionModel | None = None,
-                 execution_timing: str = "next_open"):
+                 execution_timing: str = "next_open", short_margin_ratio: float = 1.5):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.slippage_pct = slippage_pct
@@ -85,6 +85,10 @@ class BacktestEngine:
         self.risk_per_trade = risk_per_trade
         self.risk_atr_mult = risk_atr_mult
         self.cooldown_after_stop_days = cooldown_after_stop_days
+        # Reg-T style maintenance margin for short positions. Short proceeds
+        # inflate ``cash``, but ``available_cash`` deducts the locked margin
+        # so they cannot be re-used to open new long positions.
+        self.short_margin_ratio = short_margin_ratio
         self.reset()
 
     def reset(self):
@@ -102,6 +106,19 @@ class BacktestEngine:
         return self.cash + self.position * self._current_price
 
     @property
+    def available_cash(self) -> float:
+        """Cash available for opening LONG positions.
+
+        Short proceeds are added to ``self.cash`` but locked as maintenance
+        margin (``short_margin_ratio`` × notional) and therefore cannot be
+        spent on new long entries.
+        """
+        if self.position >= 0:
+            return self.cash
+        short_notional = abs(self.position) * self._current_price
+        return self.cash - short_notional * self.short_margin_ratio
+
+    @property
     def _direction(self) -> str:
         """Current position direction: 'LONG', 'SHORT', or 'FLAT'."""
         if self.position > 0:
@@ -111,9 +128,13 @@ class BacktestEngine:
         return "FLAT"
 
     def _calc_risk_budget_qty(self, capital: float, price: float, atr: float) -> int:
-        """Return position size such that stop_distance loss = risk_per_trade % of capital."""
+        """Return position size such that stop_distance loss = risk_per_trade % of capital.
+
+        Callers should pass ``self.available_cash`` (not ``self.cash``) for
+        the LONG entry path so short-side margin lockup is respected.
+        """
         raw_qty = calc_risk_budget_qty(capital, price, atr, self.risk_per_trade, self.risk_atr_mult)
-        if price <= 0:
+        if price <= 0 or capital <= 0:
             return 0
         max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
         return max(0, min(raw_qty, max_shares))
@@ -125,8 +146,11 @@ class BacktestEngine:
         if direction == "LONG":
             actual_price = price * (1 + self.slippage_pct)
             total_cost = actual_price * quantity * (1 + self.commission_rate)
-            if total_cost > self.cash:
-                quantity = int(self.cash / (actual_price * (1 + self.commission_rate)))
+            # Cap by available_cash, not raw cash: short proceeds are locked
+            # as margin and must not fund new long entries.
+            spendable = self.available_cash if self.position < 0 else self.cash
+            if total_cost > spendable:
+                quantity = int(spendable / (actual_price * (1 + self.commission_rate)))
                 if quantity <= 0:
                     return False
                 total_cost = actual_price * quantity * (1 + self.commission_rate)
@@ -148,8 +172,14 @@ class BacktestEngine:
             return False
         is_cover = self.position < 0
         total_cost = fill.gross_value + fill.commission
-        if total_cost > self.cash:
-            affordable = int(self.cash / (fill.fill_price * (1 + self.commission_rate)))
+        # Cover (BUY against short) consumes raw cash — short margin is being
+        # released. Long entry/add must respect available_cash to keep short
+        # proceeds from funding new longs.
+        spendable = self.cash if is_cover else (
+            self.available_cash if self.position < 0 else self.cash
+        )
+        if total_cost > spendable:
+            affordable = int(spendable / (fill.fill_price * (1 + self.commission_rate)))
             if affordable <= 0:
                 return False
             fill.filled_qty = min(fill.filled_qty, affordable)
@@ -513,10 +543,15 @@ class BacktestEngine:
         if not self._apply_stop_cooldown(date_idx):
             return
         atr = float(df["ATR"].iloc[i]) if "ATR" in df.columns else 0.0
+        # LONG entry must use available_cash (short proceeds locked as margin).
+        # SHORT entry sizing uses raw cash as the risk-budget reference — the
+        # actual proceeds inflate cash but margin is enforced via available_cash
+        # on subsequent long entries.
+        capital_ref = self.available_cash if direction == "LONG" else self.cash
         if self.sizing_mode == "risk_budget":
-            qty = self._calc_risk_budget_qty(self.cash, close_price, atr)
+            qty = self._calc_risk_budget_qty(capital_ref, close_price, atr)
         else:
-            qty = strategy.position_size(self.cash, close_price, atr)
+            qty = strategy.position_size(capital_ref, close_price, atr)
         if qty <= 0:
             return
         if direction == "LONG":
@@ -558,7 +593,7 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
     """Run a full backtest and return results + dataframe.
 
     Args:
-        strategy_cls: Strategy class (default: EnhancedMACDStrategy).
+        strategy_cls: Strategy class (default: MACDKDJStrategy, freq="W").
                       Use TrendFollower for Chandelier exit strategy.
         commission_rate: Trading commission rate (default 0.0003 = 3bp).
         slippage_pct: Slippage percentage (default 0.0001 = 1bp).
@@ -568,8 +603,8 @@ def run_backtest(symbol="AAPL", start="2020-01-01", end=None,
         cooldown_after_stop_days: Block re-entry for N days after a stop-loss exit.
     """
     if strategy_cls is None:
-        from strategy.enhanced_macd import EnhancedMACDStrategy
-        strategy_cls = EnhancedMACDStrategy
+        from strategy.macd_kdj import MACDKDJStrategy
+        strategy_cls = MACDKDJStrategy
     if end is None:
         end = datetime.now().strftime("%Y-%m-%d")
 
