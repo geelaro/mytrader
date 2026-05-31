@@ -7,7 +7,6 @@ lookback_years = 3
 #
 #   ✓ 实盘安全 (日内闪烁极低):
 #     - weekly_macd_kdj  (周线信号, 一周 ≤1 次)
-#     - turtle_trading   (突破点附近徘徊时偶尔, 风险中)
 #
 #   ⚠ 实盘敏感 (日内信号易闪烁, 建议先修 P2-1 再设为 active):
 #     - daily_macd_kdj
@@ -18,6 +17,16 @@ lookback_years = 3
 # 设为 monitor (仅扫描看信号) 无影响 — 不下单。
 # 多因子 / 日内策略上线时必须先做 P2-1 (信号-成交时点对齐)。
 # ─────────────────────────────────────────────────────────────────────
+#
+# ── 已下架: turtle_trading (2026-05-31) ──────────────────────────────
+# 因子归因诊断显示 turtle 在当前 watchlist (美股大盘 + 科技股) 上 ALL 11
+# 标平均缺口 -9%/年, 不论参数调整。turtle 设计上适合"突破后趋势能持续
+# 数月"的资产 (商品/加密/外汇/熊股), 而 2018-2024 美股科技股是"持续单
+# 边上涨 + 偶发深度回调"模式, ATR×3 止损总被回调打掉, 卖飞成结构性问题。
+#
+# [strategy.turtle_trading] 参数节点保留 — 未来加入 GLD/SLV/USO/IBIT/ETHE
+# 等商品 / 加密 ETF 时可立即复用。
+# ─────────────────────────────────────────────────────────────────────
 
 [orphan]
 strategy = "daily_macd_kdj"
@@ -26,67 +35,67 @@ strategy = "daily_macd_kdj"
 symbol = "AAPL"
 name = "Apple"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "NVDA"
 name = "NVIDIA"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "TSLA"
 name = "Tesla"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "GOOG"
 name = "Alphabet"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "AMZN"
 name = "Amazon"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "MU"
 name = "Micron"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading", "daily_macd_kdj"]
+monitor = ["daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "INTC"
 name = "Intel"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading", "daily_macd_kdj"]
+monitor = ["daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "ORCL"
 name = "Oracle"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "QQQ"
 name = "Nasdaq ETF"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading", "donchian_breakout", "daily_macd_kdj"]
+monitor = ["donchian_breakout", "daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "SPY"
 name = "S&P 500 ETF"
 active = "weekly_macd_kdj"
-monitor = ["turtle_trading"]
+monitor = ["spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "SMH"
 name = "SMH"
 active = "weekly_macd_kdj"
-monitor = []
+monitor = ["spy_ma_breakout"]
 
 [strategy.weekly_macd]
 macd_fast = 12
@@ -146,6 +155,14 @@ adx_period = 14
 adx_threshold = 20
 atr_period = 14
 trail_atr_mult = 3
+risk_per_trade = 0.02
+max_position_pct = 0.95
+
+[strategy.spy_ma_breakout]
+ma_period = 200
+high_period = 20
+atr_period = 14
+take_profit_atr_mult = 4
 risk_per_trade = 0.02
 max_position_pct = 0.95
 
