@@ -343,6 +343,55 @@ rolling = attr.rolling_alpha(window_days=252)  # 1 年滚动窗口
 
 或运行 `pipenv run python analysis/rolling_alpha.py` 输出到 `reports/rolling_alpha.png`。
 
+## 信号有效性（Forward Return）
+
+回答跟回测**不同的**问题：不是"策略整体能否赚钱"，而是"信号本身有没有预测力"。
+
+策略整体不赚钱有 N 种原因（出场太早、止损太紧、sizing 不当），但**信号本身**可能是真有效的。`analysis/forward_return.py` 把这两件事解耦：对每个 `Signal == 1` 的 bar，计算后 30/90/180 个交易日的实际收益分布。
+
+### 用法
+
+```python
+from analysis.forward_return import compute_forward_returns, summarise
+
+# df 是策略 calculate_indicators 之后的 DataFrame, 含 Signal 列
+fr = compute_forward_returns(df, horizons=[30, 90, 180], direction=1)
+stats = summarise(fr, direction=1)
+print(stats.summary())
+```
+
+或 dashboard 的"信号有效性" tab，选标的 + 策略 + 方向 + horizons → 直接看分布直方图。
+
+### 判读
+
+| Sharpe | win_rate | 含义 |
+|---|---|---|
+| > 0.5 | > 55% | **信号有效** — 入场时机有预测力，若策略不赚钱大概率是出场逻辑问题 |
+| < 0.5 | > 55% | 边际有效 — win_rate 还行但收益分布平 |
+| < 0.5 | < 55% | **信号无预测力** — 改入场逻辑或换标的 |
+| n < 10 | — | 样本不足，结论不可靠 |
+
+### 示例发现
+
+跑 `weekly_macd_kdj` 买入信号在当前 watchlist (2018-2026) 上：
+
+```
+horizon    n   median    win%   sharpe
+  30d    370  +11.05%   70%    +0.43
+  90d    299  +37.44%   77%    +0.41
+ 180d    208  +52.59%   84%    +0.51   ← 信号有效
+```
+
+**Forward return 看上去高（+52.6% median）远超策略整体 CAGR (+19%)**，第一直觉会想"出场逻辑太严苛，吞掉了 alpha"。但用 `scripts/exit_experiment.py` 实验对比四种出场规则（默认 MACD 死叉 / 加 ATR 止损 / 慢 MACD / 完全不出场 / B&H）后真相相反：
+
+| 策略 | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| 默认 (MACD 死叉) | +19.0% | **1.49** | -43% |
+| 不主动出场（alpha 上限）| +32.5% | 1.26 | -72% |
+| 等权 B&H | +54.5% | 0.98 | -47% |
+
+**MACD 死叉出场少赚 13.5%/年但救回 29% 回撤，Sharpe 反而是四个里最高的**。Forward return 信号确实有效，**出场逻辑是把"好信号"转成"好策略"的关键机制，不是 alpha 杀手**。结论：默认参数已是风险调整最优。Forward return 在这里的价值是**验证现状是对的**，不是发现要改什么。
+
 ## Known Issues
 
 ### P2-1：实盘 daemon 用未完成 bar 算信号
