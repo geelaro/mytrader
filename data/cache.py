@@ -319,9 +319,12 @@ class OhlcvCache(_CacheBase):
                 f"DELETE FROM ohlcv_daily WHERE symbol = ? AND date IN ({','.join('?' * len(dates))})",
                 [symbol.upper()] + dates,
             )
+            # SQLite caps a single statement at SQLITE_MAX_VARIABLE_NUMBER
+            # (default 999). With 8 columns, chunksize 100 → 800 vars/INSERT,
+            # comfortably under the limit and fast enough for 10k-row writes.
             db_df.to_sql(
                 "ohlcv_daily", self.conn, if_exists="append", index=False,
-                method="multi",
+                method="multi", chunksize=100,
             )
             if self._batch_mode:
                 self.conn.execute("RELEASE SAVEPOINT save_ohlcv")

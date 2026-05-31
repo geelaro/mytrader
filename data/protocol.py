@@ -17,6 +17,7 @@ OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 SOURCE_PRIORITY = {
     "us": ["sina_us", "tencent", "yahoo_chart"],
     "cn": ["sina", "tencent", "akshare"],
+    "vix": ["cboe"],
     "default": ["tencent"],
 }
 
@@ -128,11 +129,14 @@ CN_SYMBOLS = {
 
 
 def classify_symbol(symbol: str) -> str:
-    """Return market tag: 'us', 'cn', or 'global'."""
+    """Return market tag: 'us', 'cn', 'vix', or 'global'."""
     s = symbol.upper().strip()
     # Resolve CN_SYMBOLS alias first
     if s in CN_SYMBOLS:
         s = CN_SYMBOLS[s].upper()
+    # VIX index — routes to CBOE official source
+    if s.lstrip("^") == "VIX":
+        return "vix"
     # Chinese A-share symbols are 6 digits or start with sh/sz
     if s.isdigit() and len(s) == 6:
         return "cn"

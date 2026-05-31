@@ -28,6 +28,7 @@ from .sources import (
     SinaUSSource,
     YahooChartSource,
     AKShareSource,
+    CBOEVixSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class DataProvider:
     ):
         self.cache = cache or CacheManager()
         self._sources: List[DataSource] = sources or [
+            CBOEVixSource(),  # ^VIX / VIX only
             SinaUSSource(),
             TencentSource(),
             SinaSource(),

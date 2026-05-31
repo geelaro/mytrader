@@ -481,3 +481,59 @@ class YahooChartSource(DataSource):
 
         df = pd.DataFrame(rows).set_index("date").sort_index()
         return self.validate(df, symbol)
+
+
+# ---------------------------------------------------------------------------
+# CBOE — official VIX daily history (free, public, no auth, no API key)
+# ---------------------------------------------------------------------------
+
+
+class CBOEVixSource(DataSource):
+    """CBOE official VIX daily history.
+
+    Serves a single CSV with full history back to 1990. The whole file is
+    pulled on each fetch (~470 KB / 9000 rows), then clipped to the requested
+    range — slower than incremental APIs but the data source is rock-solid.
+    Since VIX values are slow-moving and the cache layer dedupes, refetching
+    the full CSV every few days is acceptable.
+    """
+
+    URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+
+    @property
+    def name(self) -> str:
+        return "cboe"
+
+    def supports(self, symbol: str) -> bool:
+        # Accept both '^VIX' (standard ticker) and 'VIX'
+        return symbol.upper().lstrip("^") == "VIX"
+
+    def fetch(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+        import io
+        try:
+            s = _make_session()
+            r = s.get(self.URL, timeout=30)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            logger.warning("CBOE fetch error for %s: %s", symbol, e)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        try:
+            df = pd.read_csv(io.StringIO(r.text))
+        except Exception as e:
+            logger.warning("CBOE parse error for %s: %s", symbol, e)
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        if not {"DATE", "OPEN", "HIGH", "LOW", "CLOSE"}.issubset(df.columns):
+            logger.warning("CBOE: unexpected columns %s", list(df.columns))
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        df["date"] = pd.to_datetime(df["DATE"], format="%m/%d/%Y", errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+        df = df.rename(columns={"OPEN": "Open", "HIGH": "High", "LOW": "Low", "CLOSE": "Close"})
+        # VIX is an index, not tradable — no volume. Fill 0 so validate() passes.
+        df["Volume"] = 0
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+
+        df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
+        return self.validate(df, symbol)
