@@ -1,33 +1,6 @@
 [scanner]
 lookback_years = 3
 
-# ── 策略实盘安全等级 (P2-1 已知问题) ─────────────────────────────────
-# 实盘 daemon 5min 轮询会用"未完成的当日 bar"算指标, 部分策略会产生
-# 日内闪烁的假入场单 (盘中触发后盘尾消失, 但订单已成交)。
-#
-#   ✓ 实盘安全 (日内闪烁极低):
-#     - weekly_macd_kdj  (周线信号, 一周 ≤1 次)
-#
-#   ⚠ 实盘敏感 (日内信号易闪烁, 建议先修 P2-1 再设为 active):
-#     - daily_macd_kdj
-#     - rsi2_mean_reversion
-#     - spy_ma_breakout
-#     - bollinger_squeeze / bollinger_mean_reversion (已弃用)
-#
-# 设为 monitor (仅扫描看信号) 无影响 — 不下单。
-# 多因子 / 日内策略上线时必须先做 P2-1 (信号-成交时点对齐)。
-# ─────────────────────────────────────────────────────────────────────
-#
-# ── 已下架: turtle_trading (2026-05-31) ──────────────────────────────
-# 因子归因诊断显示 turtle 在当前 watchlist (美股大盘 + 科技股) 上 ALL 11
-# 标平均缺口 -9%/年, 不论参数调整。turtle 设计上适合"突破后趋势能持续
-# 数月"的资产 (商品/加密/外汇/熊股), 而 2018-2024 美股科技股是"持续单
-# 边上涨 + 偶发深度回调"模式, ATR×3 止损总被回调打掉, 卖飞成结构性问题。
-#
-# [strategy.turtle_trading] 参数节点保留 — 未来加入 GLD/SLV/USO/IBIT/ETHE
-# 等商品 / 加密 ETF 时可立即复用。
-# ─────────────────────────────────────────────────────────────────────
-
 [orphan]
 strategy = "daily_macd_kdj"
 
@@ -96,6 +69,12 @@ symbol = "SMH"
 name = "SMH"
 active = "weekly_macd_kdj"
 monitor = ["spy_ma_breakout"]
+
+[[watchlist]]
+symbol = "MSFT"
+name = "MSFT"
+active = "weekly_macd_kdj"
+monitor = []
 
 [strategy.weekly_macd]
 macd_fast = 12
@@ -176,7 +155,7 @@ max_position_pct = 0.3
 max_total_exposure_pct = 0.8
 max_daily_loss_pct = 0.05
 min_order_value = 500
-max_slippage_pct = 0.005  # 50bp; raise to 0.01 for illiquid names
+max_slippage_pct = 0.005
 max_consecutive_losses = 3
 max_daily_trades = 5
 base_risk_pct = 0.02

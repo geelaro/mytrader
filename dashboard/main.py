@@ -13,7 +13,7 @@ from data import DataProvider
 from data.cache import CacheManager
 from strategy import STRATEGY_MAP
 
-from dashboard.signals import render_market_state, render_todays_signals, render_risk_light
+from dashboard.signals import render_market_state, render_todays_signals, render_risk_light, render_signal_detail, render_position_watch
 from dashboard.single_backtest import render_single_backtest
 from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
 from dashboard.factor_attribution import render_factor_attribution
@@ -69,10 +69,14 @@ def main():
     render_risk_light(config, target_date, provider)
 
     # -------------------------------------------------------------------
-    # Today's signals
+    # Today's signals — summary metrics + per-symbol detail cards
+    # (render_todays_signals is preserved as a public callable for backward
+    #  compatibility but no longer drawn here — render_signal_detail now
+    #  handles both the summary row and the per-symbol expanders.)
     # -------------------------------------------------------------------
 
-    render_todays_signals(config, target_date, provider, cache)
+    render_signal_detail(config, target_date, provider, cache)
+    render_position_watch(config, target_date, provider)
 
     # -------------------------------------------------------------------
     # Tabs: single backtest | portfolio backtest

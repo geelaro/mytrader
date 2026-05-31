@@ -1046,8 +1046,16 @@ class TestScanSignals:
         trader = self._make_trader()
         trader._orphan_strategy = "daily_macd_kdj"
         trader._watchlist_symbols = ["AAPL"]
+        # Override config so the SignalScanner sees only AAPL as watchlist —
+        # decouples the test from whatever symbols watchlist.toml currently
+        # contains. (Previously this used MSFT, which broke once MSFT was
+        # added to the production watchlist.)
+        trader.config = {
+            "watchlist": [{"symbol": "AAPL", "name": "Apple",
+                           "active": "weekly_macd_kdj", "monitor": []}],
+            "scanner": {"lookback_years": 1},
+        }
         trader.provider.get_daily = lambda sym, start, end: ohlcv
-        # MSFT is NOT in watchlist.toml, so it's a pure orphan
         positions = {"MSFT": Position(symbol="MSFT", quantity=100, avg_price=200,
                                        market_value=20000, unrealized_pnl=0)}
         results = trader._scan_signals("2021-03-01", positions)
