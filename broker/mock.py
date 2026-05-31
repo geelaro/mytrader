@@ -9,7 +9,7 @@ Simulates:
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -42,6 +42,8 @@ class MockBroker(Broker):
         commission_rate: float = 0.0003,
         slippage_pct: float = 0.0005,
         short_margin_ratio: float = 1.5,
+        short_borrow_rate: float = 0.08,
+        auto_accrue: bool = True,
     ):
         super().__init__()
         self._cash = initial_cash
@@ -51,9 +53,16 @@ class MockBroker(Broker):
         # Reg-T style maintenance margin — short proceeds inflate _cash but
         # are locked at this ratio of notional and not part of available_cash.
         self._short_margin_ratio = short_margin_ratio
+        # Annualised borrow fee charged on open short positions. Typical US
+        # equity GC rate ≈ 0.25%-2%; hard-to-borrow names can hit 5-30%.
+        # 0.08 is a conservative average for the watchlist universe.
+        self._short_borrow_rate = short_borrow_rate
+        self._auto_accrue = auto_accrue
+        self._last_accrual_date: Optional[date] = None
         self._positions: Dict[str, Position] = {}
         self._orders: Dict[str, Order] = {}
         self._realized_pnl = 0.0
+        self._short_interest_paid = 0.0
 
         # External data — must be set before trading
         self.last_prices: Dict[str, float] = {}
@@ -114,7 +123,40 @@ class MockBroker(Broker):
     # Order lifecycle
     # ------------------------------------------------------------------
 
+    def accrue_short_interest(self, as_of: Optional[date] = None) -> float:
+        """Charge accrued borrow fees on open shorts up to ``as_of``.
+
+        Returns the dollar amount deducted from cash. Days are calendar days
+        between the previous accrual and ``as_of``; if this is the first
+        call, the accrual baseline is set without charging anything.
+        """
+        if as_of is None:
+            as_of = date.today()
+        if self._last_accrual_date is None:
+            self._last_accrual_date = as_of
+            return 0.0
+        days = (as_of - self._last_accrual_date).days
+        if days <= 0:
+            return 0.0
+        interest = 0.0
+        for sym, pos in self._positions.items():
+            if pos.quantity >= 0:
+                continue
+            ref_price = self.last_prices.get(sym, pos.avg_price)
+            short_notional = abs(pos.quantity) * ref_price
+            interest += short_notional * self._short_borrow_rate * days / 365.0
+        if interest > 0:
+            self._cash -= interest
+            self._short_interest_paid += interest
+            logger.info("短头借券利息 %d 天: -$%.2f", days, interest)
+        self._last_accrual_date = as_of
+        return interest
+
     def submit_order(self, order: Order) -> Order:
+        # Charge any pending short-borrow interest before order math so cash
+        # / available_cash reflect today's true buying power.
+        if self._auto_accrue:
+            self.accrue_short_interest()
         order.order_id = str(uuid.uuid4())[:8]
         order.status = OrderStatus.SUBMITTED
         order.updated_at = datetime.now().isoformat()

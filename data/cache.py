@@ -370,7 +370,10 @@ class OhlcvCache(_CacheBase):
 
         prev = first
         for current in cached_dates[1:]:
-            if (current - prev).days > 3:
+            # 7-day threshold tolerates long-weekend / holiday clusters
+            # (Fri → following Wed = 5 days, Christmas-NYE gap = 6 days).
+            # Anything beyond that is a real missing window worth re-fetching.
+            if (current - prev).days > 7:
                 gap_start = prev + pd.Timedelta(days=1)
                 gap_end = current - pd.Timedelta(days=1)
                 if gap_start <= gap_end:

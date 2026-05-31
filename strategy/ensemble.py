@@ -77,7 +77,22 @@ class StrategyEnsemble(BaseStrategy):
 
     @property
     def min_bars(self) -> int:
-        return max(s.min_bars for s, _ in self._members)
+        """Worst-case min_bars across members, normalised to the daily index.
+
+        Members declared on weekly bars (e.g. ``freq="W"``) report
+        ``min_bars`` in weekly counts, but the ensemble runs on the daily
+        index after reindex — convert weekly counts to daily by ×5 so the
+        engine waits for genuinely warmed-up signals.
+        """
+        worst = 0
+        for s, _ in self._members:
+            mb = s.min_bars
+            freq = getattr(getattr(s, "params", None), "freq", "D")
+            if freq == "W":
+                mb *= 5
+            if mb > worst:
+                worst = mb
+        return worst
 
     # -- indicators ---------------------------------------------------------
 

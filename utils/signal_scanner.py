@@ -148,6 +148,17 @@ class SignalScanner:
         results: List[dict] = []
         for strat_name in strategy_names:
             if strat_name not in STRATEGY_MAP:
+                # Common pitfall: user wrote `active = "ensemble"` instead of
+                # `active = ["turtle_trading", "rsi2_mean_reversion"]`.
+                # STRATEGY_MAP has no ensemble entry by design, so this would
+                # silently produce zero signals. Warn loudly.
+                if "ensemble" in str(strat_name).lower():
+                    logger.warning(
+                        "[%s] active=%r is not in STRATEGY_MAP — to use the "
+                        "ensemble strategy set `active = [\"member_a\", \"member_b\"]` "
+                        "(list of member strategy names) in watchlist.toml",
+                        symbol, strat_name,
+                    )
                 continue
             strat_params = item.get("params", {})
             strategy = STRATEGY_MAP[strat_name](**strat_params)

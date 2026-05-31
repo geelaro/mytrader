@@ -31,8 +31,6 @@ __all__ = [
     "BaseStrategy",
     "StrategyParams",
     "ChandelierTrailingExit",
-    "EnhancedMACDStrategy",
-    "EnhancedMACDParams",
     "TrendFollower",
     "TrendFollowerParams",
     "WeeklyMACD",
@@ -41,14 +39,10 @@ __all__ = [
     "MACDKDJParams",
     "WeeklyMACD_KDJ",
     "WeeklyMACDKDJParams",
-    "BollingerMeanReversion",
-    "BollingerMeanReversionParams",
     "DonchianBreakout",
     "DonchianBreakoutParams",
     "ATRBreakout",
     "ATRBreakoutParams",
-    "BollingerSqueeze",
-    "BollingerSqueezeParams",
     "TurtleTrading",
     "TurtleTradingParams",
     "DailyMACD_KDJ",
@@ -62,3 +56,6 @@ __all__ = [
     "STRATEGY_MAP",
     "SIGNAL_LABEL",
 ]
+# Deprecated classes (EnhancedMACDStrategy / BollingerMeanReversion /
+# BollingerSqueeze) remain importable for golden-test regression coverage
+# but are intentionally excluded from __all__ so IDEs no longer suggest them.

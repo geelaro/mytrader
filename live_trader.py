@@ -371,6 +371,18 @@ class LiveTrader:
               f"{'仅交易时段' if market_hours_only else '全天候'}")
         print(f"{'=' * 60}")
 
+        # Boot health endpoint so Docker HEALTHCHECK / external monitors
+        # can observe daemon liveness.
+        health_port = int(os.environ.get("MYTRADER_HEALTH_PORT", "8080"))
+        try:
+            start_health_server(health_port)
+            _health_state["status"] = "ok"
+            _health_state["last_tick"] = datetime.now().isoformat()
+            _health_state["paused"] = False
+            logger.info("健康检查端口: :%d/health", health_port)
+        except OSError as e:
+            logger.warning("健康检查端口启动失败 (port=%d): %s", health_port, e)
+
         cycle = 0
         while not shutdown:
             cycle += 1
@@ -394,6 +406,9 @@ class LiveTrader:
 
                 print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] 第 {cycle} 轮")
                 self.run()
+                _health_state["last_tick"] = datetime.now().isoformat()
+                _health_state["paused"] = self.risk_ctrl.trading_paused
+                _health_state["status"] = "paused" if self.risk_ctrl.trading_paused else "ok"
 
             except KeyboardInterrupt:
                 print("\n  用户中断，退出守护模式")
@@ -410,6 +425,8 @@ class LiveTrader:
                     break
                 _time.sleep(1)
 
+        _health_state["status"] = "stopped"
+        _health_state["last_tick"] = datetime.now().isoformat()
         print(f"\n  LiveTrader 守护进程已退出 (共 {cycle} 轮)\n")
 
     @staticmethod

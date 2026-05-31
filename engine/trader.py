@@ -136,7 +136,10 @@ class BacktestEngine:
         raw_qty = calc_risk_budget_qty(capital, price, atr, self.risk_per_trade, self.risk_atr_mult)
         if price <= 0 or capital <= 0:
             return 0
-        max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
+        # Cost per share = price × (1+slippage) × (1+commission); the
+        # additive (1+s+c) approximation is conservative but mis-models
+        # the multiplicative pipeline at higher fee/slippage values.
+        max_shares = int(capital / (price * (1 + self.slippage_pct) * (1 + self.commission_rate)))
         return max(0, min(raw_qty, max_shares))
 
     def buy(self, date, price, quantity, direction="LONG"):

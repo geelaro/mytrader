@@ -236,7 +236,7 @@ class PortfolioBacktest:
         if stop_distance <= 0:
             return 0
         shares = int(risk_dollar / stop_distance)
-        max_shares = int(capital / (price * (1 + self.slippage_pct + self.commission_rate)))
+        max_shares = int(capital / (price * (1 + self.slippage_pct) * (1 + self.commission_rate)))
         return max(0, min(shares, max_shares))
 
     def run(
