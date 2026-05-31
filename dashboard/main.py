@@ -13,7 +13,7 @@ from data import DataProvider
 from data.cache import CacheManager
 from strategy import STRATEGY_MAP
 
-from dashboard.signals import render_market_state, render_todays_signals
+from dashboard.signals import render_market_state, render_todays_signals, render_risk_light
 from dashboard.single_backtest import render_single_backtest
 from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
 from dashboard.factor_attribution import render_factor_attribution
@@ -61,10 +61,12 @@ def main():
     cache = get_cache()
 
     # -------------------------------------------------------------------
-    # Market state
+    # Market risk light — SPY MA200 + ADX + VIX → 🟢/🟡/🔴 with regime tag
+    # (subsumes the old render_market_state panel; the underlying
+    # MarketStateClassifier still drives SignalGate / StrategyEnsemble.)
     # -------------------------------------------------------------------
 
-    render_market_state(config, target_date, provider)
+    render_risk_light(config, target_date, provider)
 
     # -------------------------------------------------------------------
     # Today's signals
