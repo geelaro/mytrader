@@ -285,6 +285,64 @@ result.summary()
 - [ ] 初始资金 ≤ 可承受全部亏损的金额
 - [ ] **active 策略对 P2-1 不敏感**（见下方 Known Issues）
 
+## 因子归因（解构组合收益）
+
+回测出的 Sharpe / CAGR 不直接说明策略好坏——可能只是市场 Beta + 因子暴露的杠杆叠加。
+`analysis/factor_attribution.py` 用 ETF 代理因子做 OLS 回归（Newey-West HAC 修正），
+告诉你"组合收益里 α 占多少、各因子占多少、α 是否统计显著"。
+
+### 因子集
+
+| 因子 | 代理 ETF | 含义 | 起始 |
+|---|---|---|---|
+| MKT | SPY − SHV | 市场超额 | 2007 |
+| SMB | IWM − SPY | 小盘溢价 | 2000 |
+| HML | IVE − IVW | 价值 vs 成长 | 2000 |
+| MOM | MTUM − SPY | 动量溢价 | **2013-08** |
+| QMJ | QUAL − SPY | 质量溢价 | 2013-07 |
+| BAB | USMV − SPY | 低波动溢价 | 2011-10 |
+
+`mode="full"` 用 6 因子（数据需 ≥ 2013-08）；`mode="ff3"` 用 MKT/SMB/HML 三因子（可回溯到 2000）。
+
+### 用法
+
+```python
+from engine.portfolio import Leg, PortfolioBacktest
+from analysis.factor_returns import FactorReturns
+from analysis.factor_attribution import FactorAttribution
+
+bt = PortfolioBacktest(
+    legs=[Leg("AAPL", "weekly_macd_kdj"), Leg("NVDA", "weekly_macd_kdj"), ...],
+    initial_capital=100000,
+)
+result = bt.run(start="2018-01-01", end="2024-12-31")
+
+factors = FactorReturns(mode="full").load("2018-01-01", "2024-12-31")
+attr = FactorAttribution(result.equity_curve, factors)
+print(attr.regress().summary())
+```
+
+或者直接在 dashboard 里点 "因子归因" tab。
+
+### 判读规则
+
+| α t-stat | R² | 结论 |
+|---|---|---|
+| > 2.0 | < 0.7 | **真 alpha** — 值得放大 / 加杠杆 |
+| > 2.0 | > 0.85 | **可疑** — alpha 显著但 R² 极高，可能是因子组合 |
+| < 1.5 | > 0.85 | **基本无 alpha** — 收益基本被因子暴露解释，简化为 ETF 组合 |
+| < 1.5 | < 0.7 | **信号弱** — alpha 不显著且 R² 偏低，样本不足或策略不稳 |
+
+### 滚动 α — 检查 alpha 是否退化
+
+```python
+rolling = attr.rolling_alpha(window_days=252)  # 1 年滚动窗口
+# rolling['alpha_tstat'] 持续 > 2 → α 稳定
+# 趋势下行 → α 退化中, 策略需要重新拟合或退役
+```
+
+或运行 `pipenv run python analysis/rolling_alpha.py` 输出到 `reports/rolling_alpha.png`。
+
 ## Known Issues
 
 ### P2-1：实盘 daemon 用未完成 bar 算信号

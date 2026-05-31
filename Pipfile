@@ -18,6 +18,7 @@ python-dotenv = "*"
 futu-api = "*"
 streamlit = "*"
 exchange-calendars = "*"
+statsmodels = "*"
 
 [dev-packages]
 pytest = "*"
