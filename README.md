@@ -283,6 +283,37 @@ result.summary()
 - [ ] 飞书 Webhook 已配置（如用通知）— `echo $FEISHU_WEBHOOK`
 - [ ] MockBroker dry-run 先跑一周，确认无异常
 - [ ] 初始资金 ≤ 可承受全部亏损的金额
+- [ ] **active 策略对 P2-1 不敏感**（见下方 Known Issues）
+
+## Known Issues
+
+### P2-1：实盘 daemon 用未完成 bar 算信号
+
+**现状**：`live_trader.py --daemon` 每 5 分钟轮询，扫描时用的是"当日未收盘 bar"
+（Close = 当前 last_price，盘后会被真实收盘价覆盖）。
+
+**影响因策略而异**：
+
+| 策略 | 实盘安全等级 | 原因 |
+|---|---|---|
+| `weekly_macd_kdj` | ✓ 安全 | 周线信号本就稀疏（≤1 次/周），日内闪烁概率极低 |
+| `turtle_trading` | ⚠ 中 | 突破点附近徘徊时偶有日内闪烁 |
+| `daily_macd_kdj` | ⚠ 高 | 日内 close 波动直接驱动 K/D，假入场风险大 |
+| `rsi2_mean_reversion` | ⚠ 高 | 依赖"3 连阴"+当日 close 方向，反复触发 |
+| `spy_ma_breakout` | ⚠ 极高 | `Close == N_day_high` 盘中创新高就触发 |
+
+**当前主力 `weekly_macd_kdj` 实盘行为是安全的**，因此 P2-1 暂时未修。
+
+**触发修复的场景**（任一即应先做 P2-1）：
+- 把任何 ⚠ 标记的策略设为 watchlist 的 `active`
+- 启动多因子模型 / Ensemble 实盘下单
+- 接入日内策略
+- 想让回测优化的参数可严格迁移到实盘
+
+**修复方向**（已立项，不在当前 ROADMAP）：
+- 入场延次日开盘提交（次日 MARKET 单，与回测 `next_open` 对齐）
+- 出场保持即时响应（紧急止损 / 跳空保护）
+- 新增 `pending_orders` 表 + post-close / pre-market 双时点
 
 ## 运维特性
 

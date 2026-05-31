@@ -1,6 +1,24 @@
 [scanner]
 lookback_years = 3
 
+# ── 策略实盘安全等级 (P2-1 已知问题) ─────────────────────────────────
+# 实盘 daemon 5min 轮询会用"未完成的当日 bar"算指标, 部分策略会产生
+# 日内闪烁的假入场单 (盘中触发后盘尾消失, 但订单已成交)。
+#
+#   ✓ 实盘安全 (日内闪烁极低):
+#     - weekly_macd_kdj  (周线信号, 一周 ≤1 次)
+#     - turtle_trading   (突破点附近徘徊时偶尔, 风险中)
+#
+#   ⚠ 实盘敏感 (日内信号易闪烁, 建议先修 P2-1 再设为 active):
+#     - daily_macd_kdj
+#     - rsi2_mean_reversion
+#     - spy_ma_breakout
+#     - bollinger_squeeze / bollinger_mean_reversion (已弃用)
+#
+# 设为 monitor (仅扫描看信号) 无影响 — 不下单。
+# 多因子 / 日内策略上线时必须先做 P2-1 (信号-成交时点对齐)。
+# ─────────────────────────────────────────────────────────────────────
+
 [orphan]
 strategy = "daily_macd_kdj"
 

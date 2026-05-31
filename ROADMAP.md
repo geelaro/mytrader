@@ -373,13 +373,33 @@
 | 2026-05-31 | 复评-P2 | P2-2/3/4/6/7/8/10 | 完成 (`c9f9eff`) | 公式精确化 / 缺口阈值 3→7 / health 刷新 / 融券利息 / ensemble typo warn / MTF min_bars×5 / 废弃清理 |
 | 2026-05-31 | 复评-P3 | P3-1/2/4/5/7 | 完成 | Windows signal 兼容 / sector_map fallback warn / print-logger 约定文档化 / SQLite 读路径加锁 / 本表同步 |
 
-## 复评后剩余待办 (架构性, 单独立项)
+## 复评后剩余待办
 
-| 编号 | 题 | 原因 |
+| 编号 | 题 | 状态 |
 |------|----|------|
-| P2-1 | 回测 vs 实盘信号生成/成交时点对齐 | 回测 bar i Close → i+1 Open; 实盘任意盘中扫描+立即下单, 两套时点 |
-| P2-5 | PortfolioBacktest cash 局部变量 → PortfolioState 重构 | 7+ 方法靠返回值穿透 cash, 改 dataclass 集中管理 |
-| P2-9 | max_position_pct 公式分裂 (与 P0-1 关联) | 策略层 0.95 vs RiskLimits 0.30, 回测→实盘仓位差 3 倍 |
+| P2-5 | PortfolioBacktest → PortfolioState 重构 | ✅ 完成 (`252a5e8`) |
+| P2-9 | max_position_pct 组合回测与实盘对齐 | ✅ 完成 (`0c47f3b`) |
+| P2-1 | 回测 vs 实盘信号时点对齐 | 📌 已立项, 暂不修 |
+
+### P2-1 决策记录 (2026-05-31)
+
+**决策**: 暂不动代码, 仅做文档化标注。
+
+**理由**:
+- 当前 watchlist 主力 `weekly_macd_kdj` 周线信号稀疏, 日内闪烁概率极低,
+  实盘行为实际安全。
+- 出场即时响应 (跳空止损保护) 是用户明确需要的实盘特性, 不能为对齐回测牺牲。
+
+**未来触发修复的场景** (任一即必修):
+1. 把 daily_macd_kdj / rsi2 / spy_ma_breakout 任一设为 active
+2. 启动多因子模型 / Ensemble 实盘下单
+3. 接入日内策略
+4. 想让回测优化的参数可严格迁移到实盘
+
+**修复方向草案**:
+- 入场延次日开盘提交 (MARKET 单, 与回测 next_open 对齐)
+- 出场保持即时响应
+- 新增 pending_orders 表 + post-close / pre-market 双时点 cron / daemon
 
 ---
 
