@@ -24,10 +24,14 @@
 
 ### P0-1 统合回测/实盘仓位公式
 
-- [x] 完成
+- [x] 部分完成 — `calc_risk_budget_qty()` 已统一，**但 max_position_pct 上限仍分裂**
 - **文件:** `engine/trader.py:106` `live/risk_controller.py:163`
 - **问题:** 回测用 `capital × risk_per_trade / (ATR × risk_atr_mult)`，实盘用 `capital × base_risk_pct / (ATR × 2) × vol_scalar`。两者差异 2-5 倍，参数优化结果无法迁移到实盘
 - **方案:** 提取统一函数到 `utils/risk.py` 或新建 `utils/sizing.py`，两端共用
+- **2026-05-31 复评发现遗留问题:** risk-budget 公式已统一为 `utils/sizing.calc_risk_budget_qty()`，
+  但 `max_position_pct` 上限仍分裂：策略层 (`MACDKDJParams.max_position_pct=0.95`) 与
+  RiskLimits (`max_position_pct=0.30`) 同时存在，回测走 95% / 实盘走 30%，仓位差约 3 倍。
+  剩余统一工作记为 **P2-9**（架构性，待单独立项）。
 
 ### P0-2 peak_equity 恢复加日期校验
 
@@ -357,6 +361,25 @@
 | 2026-05-25 | 阶段六 | O-4 日报增强 | 完成 | daily_card() PnL归因+风控+持仓 |
 | 2026-05-25 | 阶段六 | O-5 DB migration | 完成 | schema_version + _run_migrations() |
 | 2026-05-25 | 阶段六 | O-6 DB路径绝对化 | 完成 | Path(...).resolve() |
+| 2026-05-31 | 复评-P0 | S1 做空虚增买入力 | 完成 (`589756a`) | 引入 available_cash + short_margin_ratio=1.5 (Reg-T), 开多检查改用 available_cash |
+| 2026-05-31 | 复评-P0 | S2 ensemble 死代码 + 索引错位 | 完成 (`589756a`) | reindex 到 df.index, long/short_mask 真冲突仲裁, member_weights 归一化除均值 |
+| 2026-05-31 | 复评-P0 | S3 SPYMABreakout 死代码 | 完成 (`589756a`) | 移除 short 信号 + SHORT 出场 + N_day_low |
+| 2026-05-31 | 复评-P0 | S4 默认策略 | 完成 (`589756a`) | run_backtest 默认 enhanced_macd → MACDKDJStrategy |
+| 2026-05-31 | 复评-P0 | S5 turtle O(N²) → O(1) | 完成 (`589756a`) | 实例缓存 _cur_entry_atr/_cur_highest_high/_cur_lowest_low 增量更新 |
+| 2026-05-31 | 复评-P1 | P1-3 peak_equity 跨日 | 完成 (`b5f3165`) | peak_equity + consecutive_losses 从 today 分支移出 |
+| 2026-05-31 | 复评-P1 | P1-5 max_slippage_pct | 完成 (`b5f3165`) | 2% → 0.5% (50bp) |
+| 2026-05-31 | 复评-P1 | P1-6 SignalGate 动态化 | 完成 (`b5f3165`) | 移除模块期固化, dataclass field + 懒加载 _build_regime_map |
+| 2026-05-31 | 复评-P1 | P1-7 跨源校验 | 完成 (`b5f3165`) | _check_cross_source_drift: 重叠 close >1% 或边界 >20% warn |
+| 2026-05-31 | 复评-P2 | P2-2/3/4/6/7/8/10 | 完成 (`c9f9eff`) | 公式精确化 / 缺口阈值 3→7 / health 刷新 / 融券利息 / ensemble typo warn / MTF min_bars×5 / 废弃清理 |
+| 2026-05-31 | 复评-P3 | P3-1/2/4/5/7 | 完成 | Windows signal 兼容 / sector_map fallback warn / print-logger 约定文档化 / SQLite 读路径加锁 / 本表同步 |
+
+## 复评后剩余待办 (架构性, 单独立项)
+
+| 编号 | 题 | 原因 |
+|------|----|------|
+| P2-1 | 回测 vs 实盘信号生成/成交时点对齐 | 回测 bar i Close → i+1 Open; 实盘任意盘中扫描+立即下单, 两套时点 |
+| P2-5 | PortfolioBacktest cash 局部变量 → PortfolioState 重构 | 7+ 方法靠返回值穿透 cash, 改 dataclass 集中管理 |
+| P2-9 | max_position_pct 公式分裂 (与 P0-1 关联) | 策略层 0.95 vs RiskLimits 0.30, 回测→实盘仓位差 3 倍 |
 
 ---
 

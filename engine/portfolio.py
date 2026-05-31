@@ -197,7 +197,22 @@ class PortfolioBacktest:
         self.risk_per_trade = risk_per_trade
         self.risk_atr_mult = risk_atr_mult
         self.max_sector_weight = max_sector_weight
-        self.sector_map = sector_map or {}
+        # Without a sector_map, the gate would lump every symbol into
+        # "Unknown" — silently turning the per-sector cap into a global
+        # exposure cap. Fall back to DEFAULT_SECTORS and warn explicitly so
+        # the user notices that the gate is using a generic mapping.
+        if max_sector_weight > 0 and not sector_map:
+            import logging as _logging
+            from utils.sectors import DEFAULT_SECTORS
+            _logging.getLogger(__name__).warning(
+                "max_sector_weight=%.2f 已启用但未传 sector_map — "
+                "回退到 utils.sectors.DEFAULT_SECTORS。未覆盖的标的将归为 'Unknown' "
+                "并被合并为同一行业, 这可能不是你想要的。",
+                max_sector_weight,
+            )
+            self.sector_map = dict(DEFAULT_SECTORS)
+        else:
+            self.sector_map = sector_map or {}
         self.cooldown_after_stop_days = cooldown_after_stop_days
         # Short proceeds inflate ``cash``; this ratio (Reg-T style) is the
         # maintenance margin locked per dollar of short notional, deducted

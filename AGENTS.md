@@ -100,6 +100,26 @@ git add -A && git commit -m "..."
 This avoids error-prone manual edits across many files. Use `git stash` for
 work-in-progress you want to temporarily set aside.
 
+## Logging conventions — print vs logger
+
+Two channels coexist by design — don't try to "deduplicate" them:
+
+- **`print()`** — operator console UX. Progress bars, position tables, summary
+  cards, trade ticker. Format is human-oriented (emojis, columns, separators).
+  Always goes to stdout. Lost when piped to log aggregators — that's OK,
+  it's not the audit trail.
+- **`logger.<level>(...)`** — structured audit / alerting channel. JSON
+  format (`utils/logging.JsonFormatter`), goes to file + Loki / ELK. Use
+  for: orders, risk events (pause/resume/circuit breaker), rejections,
+  data-source failures, fills. Include structured fields, not pre-formatted
+  strings, when possible.
+
+Some events are written to both intentionally (e.g. order fills — operator
+needs to see them, audit pipeline needs them too). Both writes are fine
+**as long as the logger call carries useful structured fields beyond the
+human-readable string**. If a `logger.info(msg)` literally repeats a
+`print(msg)` with no extra structure, drop it to `logger.debug`.
+
 ## Known traps
 
 - **`kdj_d=1`** — causes zero trades. Documented in README, don't set it.

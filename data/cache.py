@@ -231,21 +231,22 @@ class OhlcvCache(_CacheBase):
         self, symbol: str, start: Optional[str] = None, end: Optional[str] = None
     ) -> pd.DataFrame:
         """Return cached bars for *symbol*, or empty DataFrame."""
-        self.init_schema()
-        query = "SELECT date, open, high, low, close, volume FROM ohlcv_daily WHERE symbol = ?"
-        params = [symbol.upper()]
+        with self._lock:
+            self.init_schema()
+            query = "SELECT date, open, high, low, close, volume FROM ohlcv_daily WHERE symbol = ?"
+            params = [symbol.upper()]
 
-        if start:
-            query += " AND date >= ?"
-            params.append(str(pd.Timestamp(start).date()))
-        if end:
-            query += " AND date <= ?"
-            params.append(str(pd.Timestamp(end).date()))
+            if start:
+                query += " AND date >= ?"
+                params.append(str(pd.Timestamp(start).date()))
+            if end:
+                query += " AND date <= ?"
+                params.append(str(pd.Timestamp(end).date()))
 
-        query += " ORDER BY date ASC"
-        df = pd.read_sql_query(
-            query, self.conn, params=params, index_col="date", parse_dates=["date"]
-        )
+            query += " ORDER BY date ASC"
+            df = pd.read_sql_query(
+                query, self.conn, params=params, index_col="date", parse_dates=["date"]
+            )
         if df.empty:
             return pd.DataFrame(columns=OHLCV_COLUMNS)
 
@@ -261,12 +262,14 @@ class OhlcvCache(_CacheBase):
 
     def date_range(self, symbol: str) -> Tuple[Optional[str], Optional[str]]:
         """Return (earliest_date, latest_date) cached for *symbol*."""
-        self.init_schema()
-        cur = self.conn.execute(
-            "SELECT MIN(date), MAX(date) FROM ohlcv_daily WHERE symbol = ?",
-            [symbol.upper()],
-        )
-        row = cur.fetchone()
+        with self._lock:
+            self.init_schema()
+            cur = self.conn.execute(
+                "SELECT MIN(date), MAX(date) FROM ohlcv_daily WHERE symbol = ?",
+                [symbol.upper()],
+            )
+            row = cur.fetchone()
+            cur.close()
         if row is None or row[0] is None:
             return None, None
         return row[0], row[1]
@@ -347,15 +350,16 @@ class OhlcvCache(_CacheBase):
         req_start = str(req_start_ts.date())
         req_end = str(req_end_ts.date())
 
-        self.init_schema()
-        rows = self.conn.execute(
-            """
-            SELECT date FROM ohlcv_daily
-            WHERE symbol = ? AND date >= ? AND date <= ?
-            ORDER BY date ASC
-            """,
-            [symbol.upper(), req_start, req_end],
-        ).fetchall()
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(
+                """
+                SELECT date FROM ohlcv_daily
+                WHERE symbol = ? AND date >= ? AND date <= ?
+                ORDER BY date ASC
+                """,
+                [symbol.upper(), req_start, req_end],
+            ).fetchall()
         cached_dates = [pd.Timestamp(row[0]).normalize() for row in rows]
 
         if not cached_dates:
@@ -426,10 +430,11 @@ class StateStore(_CacheBase):
         self._commit()
 
     def load_risk_state(self, key: str) -> Optional[str]:
-        self.init_schema()
-        row = self.conn.execute(
-            "SELECT value FROM risk_state WHERE key = ?", [key]
-        ).fetchone()
+        with self._lock:
+            self.init_schema()
+            row = self.conn.execute(
+                "SELECT value FROM risk_state WHERE key = ?", [key]
+            ).fetchone()
         return row[0] if row else None
 
     # -- entry prices -------------------------------------------------------
@@ -447,18 +452,20 @@ class StateStore(_CacheBase):
         self._commit()
 
     def load_entry_price(self, symbol: str) -> Optional[tuple]:
-        self.init_schema()
-        row = self.conn.execute(
-            "SELECT price, entry_date FROM entry_prices WHERE symbol = ?",
-            [symbol.upper()],
-        ).fetchone()
+        with self._lock:
+            self.init_schema()
+            row = self.conn.execute(
+                "SELECT price, entry_date FROM entry_prices WHERE symbol = ?",
+                [symbol.upper()],
+            ).fetchone()
         return (row[0], row[1]) if row else None
 
     def load_all_entry_prices(self) -> dict:
-        self.init_schema()
-        rows = self.conn.execute(
-            "SELECT symbol, price, entry_date FROM entry_prices"
-        ).fetchall()
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(
+                "SELECT symbol, price, entry_date FROM entry_prices"
+            ).fetchall()
         return {row[0]: (row[1], row[2]) for row in rows}
 
     def delete_entry_price(self, symbol: str):
@@ -496,7 +503,6 @@ class StateStore(_CacheBase):
 
     def query_trade_pnl(self, symbol: str = None, limit: int = 50) -> list[dict]:
         """Return recent trade PnL records."""
-        self.init_schema()
         query = "SELECT * FROM trade_pnl"
         params = []
         if symbol:
@@ -504,7 +510,9 @@ class StateStore(_CacheBase):
             params.append(symbol.upper())
         query += " ORDER BY exit_date DESC LIMIT ?"
         params.append(limit)
-        rows = self.conn.execute(query, params).fetchall()
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(query, params).fetchall()
         return [dict(zip(["symbol","side","qty","entry_price","exit_price",
                          "pnl","pnl_pct","exit_date","order_id"], row)) for row in rows]
 
@@ -567,7 +575,6 @@ class CacheManager(OhlcvCache, StateStore, OpsLogger):
         self._commit()
 
     def query_signals(self, scan_date: str | None = None, symbol: str | None = None) -> list[dict]:
-        self.init_schema()
         query = "SELECT * FROM signal_history WHERE 1=1"
         params = []
         if scan_date:
@@ -577,6 +584,8 @@ class CacheManager(OhlcvCache, StateStore, OpsLogger):
             query += " AND symbol = ?"
             params.append(symbol.upper())
         query += " ORDER BY scan_date DESC, symbol ASC"
-        rows = self.conn.execute(query, params).fetchall()
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(query, params).fetchall()
         return [dict(zip(["id", "scan_date", "symbol", "strategy", "bar_date",
                           "signal", "price", "atr", "indicators"], row)) for row in rows]

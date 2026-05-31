@@ -361,8 +361,18 @@ class LiveTrader:
             print(f"\n  收到信号 {sig}，安全退出...")
             shutdown = True
 
-        signal.signal(signal.SIGINT, _handle_signal)
-        signal.signal(signal.SIGTERM, _handle_signal)
+        # SIGINT is available everywhere. SIGTERM is POSIX-only — on Windows
+        # Python it raises ValueError. Wrap each individually so partial
+        # registration succeeds.
+        for sig_name in ("SIGINT", "SIGTERM"):
+            sig_const = getattr(signal, sig_name, None)
+            if sig_const is None:
+                continue
+            try:
+                signal.signal(sig_const, _handle_signal)
+            except (ValueError, OSError) as e:
+                logger.warning("signal %s 不可用 (%s) — 将依赖 KeyboardInterrupt 退出",
+                               sig_name, e)
 
         print(f"\n{'=' * 60}")
         print(f"  LiveTrader 守护进程启动")
