@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from engine.portfolio import Leg, PortfolioTrade, PortfolioResult, PortfolioBacktest
+from engine.portfolio import Leg, PortfolioTrade, PortfolioResult, PortfolioBacktest, PortfolioState
 from strategy import WeeklyMACD_KDJ, TurtleTrading
 
 
@@ -525,13 +525,10 @@ class TestCloseTradeUnit:
             PortfolioTrade(symbol="AAPL", entry_time=pd.Timestamp("2025-01-02"),
                            qty=100, entry_price=50.0),
         ]
-        open_idx = {0: 0}
         cash_before = 94985.0  # 100000 - 5015 entry cost
+        state = PortfolioState(cash=cash_before, trades=trades, open_trade_idx={0: 0})
 
-        cash_after = bt._close_trade(
-            st, pd.Timestamp("2025-01-10"), 55.0, "end_of_period",
-            open_idx, trades, 0, cash_before,
-        )
+        bt._close_trade(state, st, pd.Timestamp("2025-01-10"), 55.0, "end_of_period", 0)
 
         t = trades[0]
         # exit_price = 55 * (1 - 0.0001) = 54.9945
@@ -545,7 +542,7 @@ class TestCloseTradeUnit:
         assert t.pnl_pct == pytest.approx(expected_pnl / 5015.0 * 100, abs=0.01)
         assert t.reason == "end_of_period"
         assert t.hold_days == 8
-        assert cash_after == pytest.approx(cash_before + expected_proceeds, abs=0.01)
+        assert state.cash == pytest.approx(cash_before + expected_proceeds, abs=0.01)
         assert st["position"] == 0
 
     def test_signal_exit_same_math_as_end_of_period(self):
@@ -556,23 +553,19 @@ class TestCloseTradeUnit:
         st1 = self._make_st(position=50, entry_price=100.0, capital_allocated=5015.0)
         t1_list = [PortfolioTrade(symbol="NVDA", entry_time=pd.Timestamp("2025-03-01"),
                                   qty=50, entry_price=100.0)]
-        cash1 = bt._close_trade(
-            st1, pd.Timestamp("2025-03-15"), 110.0, "signal",
-            {0: 0}, t1_list, 0, 50000.0,
-        )
+        state1 = PortfolioState(cash=50000.0, trades=t1_list, open_trade_idx={0: 0})
+        bt._close_trade(state1, st1, pd.Timestamp("2025-03-15"), 110.0, "signal", 0)
 
         # End-of-period close with same numbers
         st2 = self._make_st(position=50, entry_price=100.0, capital_allocated=5015.0)
         t2_list = [PortfolioTrade(symbol="NVDA", entry_time=pd.Timestamp("2025-03-01"),
                                   qty=50, entry_price=100.0)]
-        cash2 = bt._close_trade(
-            st2, pd.Timestamp("2025-03-15"), 110.0, "end_of_period",
-            {0: 0}, t2_list, 0, 50000.0,
-        )
+        state2 = PortfolioState(cash=50000.0, trades=t2_list, open_trade_idx={0: 0})
+        bt._close_trade(state2, st2, pd.Timestamp("2025-03-15"), 110.0, "end_of_period", 0)
 
         assert t1_list[0].pnl == pytest.approx(t2_list[0].pnl, abs=0.01)
         assert t1_list[0].pnl_pct == pytest.approx(t2_list[0].pnl_pct, abs=0.01)
-        assert cash1 == pytest.approx(cash2, abs=0.01)
+        assert state1.cash == pytest.approx(state2.cash, abs=0.01)
 
 
 class TestTradePnLAlignsWithEquity:
@@ -698,10 +691,8 @@ class TestPortfolioCooldown:
         )
         st = {"position": 10, "entry_price": 100.0, "capital_allocated": 1015.0,
               "leg": Leg("AAPL", "weekly_macd_kdj")}
-        bt._close_trade(
-            st, pd.Timestamp("2025-06-01"), 110.0, "止损",
-            {}, [], 0, 10000.0,
-        )
+        state = PortfolioState(cash=10000.0)
+        bt._close_trade(state, st, pd.Timestamp("2025-06-01"), 110.0, "止损", 0)
         assert bt._stop_dates.get("AAPL") == pd.Timestamp("2025-06-01")
 
     def test_signal_exit_no_cooldown(self):
@@ -711,10 +702,8 @@ class TestPortfolioCooldown:
         )
         st = {"position": 10, "entry_price": 100.0, "capital_allocated": 1015.0,
               "leg": Leg("AAPL", "weekly_macd_kdj")}
-        bt._close_trade(
-            st, pd.Timestamp("2025-06-01"), 110.0, "卖出信号",
-            {}, [], 0, 10000.0,
-        )
+        state = PortfolioState(cash=10000.0)
+        bt._close_trade(state, st, pd.Timestamp("2025-06-01"), 110.0, "卖出信号", 0)
         assert bt._stop_dates.get("AAPL") is None
 
 

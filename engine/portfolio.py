@@ -132,6 +132,25 @@ class LegState:
         return getattr(self, key, default)
 
 
+@dataclass
+class PortfolioState:
+    """Mutable state threaded through the portfolio backtest loop.
+
+    Replaces the previous pattern where ``cash`` was a local variable in
+    ``run()`` that every helper had to return-and-rebind. Helpers mutate
+    ``state.cash`` directly, which removes a class of "forgot to update cash"
+    bugs and makes the data-flow obvious.
+    """
+
+    cash: float
+    leg_state: dict = field(default_factory=dict)  # int → LegState
+    trades: List["PortfolioTrade"] = field(default_factory=list)
+    open_trade_idx: dict = field(default_factory=dict)  # leg_index → trades index
+    equity_history: List[Tuple[pd.Timestamp, float]] = field(default_factory=list)
+    daily_new_count: int = 0
+    prev_date: Optional[pd.Timestamp] = None
+
+
 # ---------------------------------------------------------------------------
 # Portfolio backtest engine
 # ---------------------------------------------------------------------------
@@ -322,39 +341,32 @@ class PortfolioBacktest:
         timeline = sorted(all_dates)
 
         # Per-leg state
-        leg_state: dict[int, LegState] = {}
+        leg_state: dict = {}
         for i, (leg, strategy, df_sig) in enumerate(leg_data):
             leg_state[i] = LegState(leg=leg, strategy=strategy, df=df_sig)
-        # Expose for _handle_pending_order so it can compute available_cash
-        # without rewiring every helper's signature.
-        self._leg_state_ref = leg_state
 
-        cash = self.initial_capital
-        trades: List[PortfolioTrade] = []
-        open_trade_idx: dict = {}  # leg_index -> trades index
-        equity_history = []
-        daily_new_count = 0
-        prev_date = None
+        # Portfolio-level mutable state — replaces a handful of local
+        # variables that previously had to be threaded through every helper.
+        state = PortfolioState(cash=self.initial_capital, leg_state=leg_state)
+        # Back-compat shim for any code still reaching for _leg_state_ref
+        # (e.g. private callers); avoid breaking that surface accidentally.
+        self._leg_state_ref = state.leg_state
 
         for date_idx in timeline:
             # Reset daily counter on new date
-            if prev_date is not None and date_idx.date() != prev_date.date():
-                daily_new_count = 0
-            prev_date = date_idx
+            if state.prev_date is not None and date_idx.date() != state.prev_date.date():
+                state.daily_new_count = 0
+            state.prev_date = date_idx
 
-            total_equity = cash
-
-            for i, st in leg_state.items():
+            for i, st in state.leg_state.items():
                 df_sig = st["df"]
                 if date_idx not in df_sig.index:
                     # Symbol has no bar for this date (cross-market holiday gap).
-                    # Use last close — position value unchanged on non-trading days.
-                    total_equity += st["position"] * st.get("last_price", 0)
+                    # Position value unchanged on non-trading days.
                     continue
 
                 idx_pos = df_sig.index.get_loc(date_idx)
                 if idx_pos < st["strategy"].min_bars:
-                    total_equity += st["position"] * st.get("last_price", 0)
                     continue
 
                 row = df_sig.iloc[idx_pos]
@@ -364,70 +376,61 @@ class PortfolioBacktest:
 
                 # --- pending order fill ---
                 if st.get("pending_order") is not None:
-                    handled, cash, skip_leg = self._handle_pending_order(
-                        st, row, date_idx, idx_pos, open_trade_idx, trades, i, cash,
+                    handled, skip_leg = self._handle_pending_order(
+                        state, st, row, date_idx, idx_pos, i,
                     )
-                    if skip_leg:
-                        total_equity += st["position"] * price
-                        continue
-                    if handled:
-                        total_equity += st["position"] * price
+                    if handled or skip_leg:
                         continue
 
                 # --- exit / entry signal ---
                 if st["position"] > 0:
                     self._check_leg_exit(st, df_sig, idx_pos, price)
                 elif st["position"] < 0:
-                    daily_new_count = self._check_leg_cover(
-                        st, df_sig, idx_pos, price, daily_new_count,
-                    )
+                    self._check_leg_cover(st, df_sig, idx_pos, price)
                 else:
-                    daily_new_count = self._check_leg_entry(
-                        st, df_sig, idx_pos, row, price, atr,
-                        leg_state, date_idx, cash, daily_new_count,
+                    self._check_leg_entry(
+                        state, st, df_sig, idx_pos, row, price, atr, date_idx,
                     )
 
-                total_equity += st["position"] * price
-
-            total_equity = cash + sum(
-                s["position"] * s.get("last_price", 0) for s in leg_state.values()
+            total_equity = state.cash + sum(
+                s["position"] * s.get("last_price", 0) for s in state.leg_state.values()
             )
-            equity_history.append((date_idx, total_equity))
+            state.equity_history.append((date_idx, total_equity))
 
         # Close all open positions at end of period
         last_date = timeline[-1] if timeline else pd.Timestamp(end)
-        for i, st in leg_state.items():
+        for i, st in state.leg_state.items():
             if st["position"] > 0 and "last_price" in st:
-                cash = self._close_trade(
-                    st, last_date, st["last_price"], "end_of_period",
-                    open_trade_idx, trades, i, cash,
-                )
+                self._close_trade(state, st, last_date, st["last_price"], "end_of_period", i)
             elif st["position"] < 0 and "last_price" in st:
-                cash = self._close_short_trade(
-                    st, last_date, st["last_price"], "end_of_period",
-                    open_trade_idx, trades, i, cash,
-                )
-        final_equity = cash
-        if equity_history:
+                self._close_short_trade(state, st, last_date, st["last_price"], "end_of_period", i)
+
+        final_equity = state.cash
+        if state.equity_history:
             # Keep result.final_equity and the last equity-curve point on the
             # same liquidation basis used by performance metrics.
-            equity_history[-1] = (last_date, final_equity)
+            state.equity_history[-1] = (last_date, final_equity)
 
         return PortfolioResult(
-            equity_history=equity_history,
+            equity_history=state.equity_history,
             initial_capital=self.initial_capital,
             final_equity=final_equity,
             legs=self.legs,
-            trades=trades,
+            trades=state.trades,
             rejections=self._rejections,
         )
 
     # -- run() sub-methods ----------------------------------------------------
 
     def _handle_pending_order(
-        self, st, row, date_idx, idx_pos, open_trade_idx, trades, leg_i, cash,
+        self, state: PortfolioState, st, row, date_idx, idx_pos, leg_i,
     ):
-        """Execute a pending order fill for one leg. Returns (handled, cash, skip)."""
+        """Execute a pending order fill for one leg.
+
+        Returns ``(handled, skip)`` — when handled, the caller should skip
+        signal evaluation for this leg on this bar. Cash mutations happen
+        inside the apply_* helpers via ``state.cash``.
+        """
         pending = st["pending_order"]
         # Only restrict sell fills when closing existing longs (position > 0).
         # Short-entry sells (position <= 0) should not be capped.
@@ -439,54 +442,48 @@ class PortfolioBacktest:
             if st["position"] > 0:
                 # Close / reduce long
                 if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                    cash = self._apply_close_fill(
-                        st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
-                    )
+                    self._apply_close_fill(state, st, fill, pending.reason, leg_i)
                     pending.quantity -= fill.filled_qty
                 if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] == 0:
                     st["pending_order"] = None
-                return True, cash, True
+                return True, True
             else:
                 # Open / add to short
                 if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                    cash = self._apply_short_entry_fill(st, fill, trades, open_trade_idx, leg_i, cash)
+                    self._apply_short_entry_fill(state, st, fill, leg_i)
                     pending.quantity -= fill.filled_qty
                 if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
                     st["pending_order"] = None
-                return True, cash, True
+                return True, True
 
         if pending.side == OrderSide.BUY:
             if st["position"] < 0:
                 # Cover short
                 if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                    cash = self._apply_cover_fill(
-                        st, fill, pending.reason, open_trade_idx, trades, leg_i, cash,
-                    )
+                    self._apply_cover_fill(state, st, fill, pending.reason, leg_i)
                     pending.quantity -= fill.filled_qty
                 if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or st["position"] >= 0:
                     st["pending_order"] = None
-                return True, cash, False
+                return True, False
             else:
                 # Open / add to long — must respect available_cash so short
                 # margin already locked elsewhere in the portfolio is not
                 # double-spent.
                 if fill.status in (OrderStatus.FILLED, OrderStatus.PARTIAL):
-                    portfolio_state = getattr(self, "_leg_state_ref", {})
-                    spendable = self._available_cash(cash, portfolio_state)
-                    if self._apply_open_fill(st, fill, trades, open_trade_idx, leg_i, spendable):
-                        cash += fill.net_cash_delta
+                    spendable = self._available_cash(state.cash, state.leg_state)
+                    if self._apply_open_fill(state, st, fill, leg_i, spendable):
                         pending.quantity -= fill.filled_qty
                     else:
                         self._reject(date_idx, st["leg"].symbol, "成交时现金不足",
                                      f"需${fill.gross_value + fill.commission:,.0f} > 可用${spendable:,.0f}")
                 if fill.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED) or pending.quantity <= 0:
                     st["pending_order"] = None
-                return True, cash, False
+                return True, False
 
         if fill.status in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
             st["pending_order"] = None
-            return True, cash, False
-        return False, cash, False
+            return True, False
+        return False, False
 
     def _check_leg_exit(self, st, df_sig, idx_pos, price):
         """Check exit signal for a held LONG position."""
@@ -514,10 +511,10 @@ class PortfolioBacktest:
                 reason=reason,
             )
 
-    def _check_leg_cover(self, st, df_sig, idx_pos, price, daily_new_count):
+    def _check_leg_cover(self, st, df_sig, idx_pos, price):
         """Check cover signal for an existing SHORT position.
 
-        Returns new daily_new_count (unchanged — cover is an exit, not an entry).
+        Cover is an exit — does not touch ``state.daily_new_count``.
         """
         if price < st["lowest"]:
             st["lowest"] = price
@@ -544,14 +541,13 @@ class PortfolioBacktest:
                 created_index=idx_pos,
                 reason=reason,
             )
-        return daily_new_count
 
     def _check_leg_entry(
-        self, st, df_sig, idx_pos, row, price, atr,
-        leg_state, date_idx, cash, daily_new_count,
+        self, state: PortfolioState, st, df_sig, idx_pos, row, price, atr, date_idx,
     ):
-        """Check entry signal for a leg with no position. Returns new daily_new_count.
+        """Check entry signal for a leg with no position.
 
+        Mutates ``state.daily_new_count`` on successful order placement.
         Supports both long (signal=1 → BUY) and short (signal=-1 → SELL) entries.
         """
         sig = st["strategy"].entry_signal(df_sig, idx_pos)
@@ -559,25 +555,25 @@ class PortfolioBacktest:
                 or st.get("pending_order") is not None
                 or idx_pos >= len(df_sig) - 1
                 or sig == 0):
-            return daily_new_count
+            return
 
         direction = "LONG" if sig == 1 else ("SHORT" if sig == -1 else None)
         if direction is None:
-            return daily_new_count
+            return
         if direction == "SHORT" and getattr(st["strategy"], "long_only", True):
-            return daily_new_count
+            return
 
         sym = st["leg"].symbol
 
         # Count active positions (absolute — both long and short count)
-        active_positions = sum(1 for s in leg_state.values() if s.get("position", 0) != 0)
+        active_positions = sum(1 for s in state.leg_state.values() if s.get("position", 0) != 0)
         if active_positions >= self.max_positions:
             self._reject(date_idx, sym, "仓位上限",
                          f"活跃仓位{active_positions}≥{self.max_positions}")
-            return daily_new_count
+            return
 
-        current_equity = cash + sum(
-            s["position"] * s.get("last_price", 0) for s in leg_state.values()
+        current_equity = state.cash + sum(
+            s["position"] * s.get("last_price", 0) for s in state.leg_state.values()
         )
 
         # Cooldown after stop
@@ -588,21 +584,21 @@ class PortfolioBacktest:
                 if days_since < self.cooldown_after_stop_days:
                     self._reject(date_idx, sym, "冷却期",
                                  f"距止损{days_since}天 (<{self.cooldown_after_stop_days})")
-                    return daily_new_count
+                    return
 
         # Daily new position cap
-        if self.max_daily_new_positions > 0 and daily_new_count >= self.max_daily_new_positions:
+        if self.max_daily_new_positions > 0 and state.daily_new_count >= self.max_daily_new_positions:
             self._reject(date_idx, sym, "日开仓上限",
-                         f"当日已开{daily_new_count}笔 (≥{self.max_daily_new_positions})")
-            return daily_new_count
+                         f"当日已开{state.daily_new_count}笔 (≥{self.max_daily_new_positions})")
+            return
 
         # LONG entries must size against available_cash so locked short margin
         # is respected. SHORT entries can size against the full cash pool —
         # margin lockup is enforced on subsequent long entries.
-        avail_cash = self._available_cash(cash, leg_state) if direction == "LONG" else cash
-        alloc = self._allocate(st["leg"], avail_cash, len(leg_state), current_equity)
+        avail_cash = self._available_cash(state.cash, state.leg_state) if direction == "LONG" else state.cash
+        alloc = self._allocate(st["leg"], avail_cash, len(state.leg_state), current_equity)
         if alloc <= 0:
-            return daily_new_count
+            return
 
         if self.sizing_mode == "risk_budget":
             qty = self._calc_risk_budget_qty(alloc, price, atr)
@@ -618,7 +614,7 @@ class PortfolioBacktest:
 
         qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
         if qty <= 0:
-            return daily_new_count
+            return
 
         notional = price * qty
 
@@ -626,28 +622,28 @@ class PortfolioBacktest:
             sector = self.sector_map.get(sym, "Unknown")
             sector_exposure = sum(
                 s["position"] * s.get("last_price", 0)
-                for s in leg_state.values()
+                for s in state.leg_state.values()
                 if self.sector_map.get(s["leg"].symbol, "Unknown") == sector
             )
             if (sector_exposure + notional) / max(current_equity, 1) > self.max_sector_weight:
                 self._reject(date_idx, sym, "行业权重",
                              f"{sector}敞口{(sector_exposure + notional) / max(current_equity, 1) * 100:.0f}% > {self.max_sector_weight * 100:.0f}%")
-                return daily_new_count
+                return
 
         if self.max_symbol_weight > 0 and current_equity > 0:
             if notional / current_equity > self.max_symbol_weight:
                 self._reject(date_idx, sym, "标的上限",
                              f"{sym}占比{notional / current_equity * 100:.0f}% > {self.max_symbol_weight * 100:.0f}%")
-                return daily_new_count
+                return
 
         if self.max_gross_exposure > 0 and current_equity > 0:
             existing_exposure = sum(
-                s["position"] * s.get("last_price", 0) for s in leg_state.values()
+                s["position"] * s.get("last_price", 0) for s in state.leg_state.values()
             )
             if (existing_exposure + notional) / current_equity > self.max_gross_exposure:
                 self._reject(date_idx, sym, "总敞口上限",
                              f"总敞口{(existing_exposure + notional) / current_equity * 100:.0f}% > {self.max_gross_exposure * 100:.0f}%")
-                return daily_new_count
+                return
 
         if direction == "LONG":
             actual_price = price * (1 + self.slippage_pct)
@@ -656,7 +652,7 @@ class PortfolioBacktest:
                 st["pending_order"] = self.execution_model.make_plan(
                     symbol=sym, side=OrderSide.BUY, quantity=qty, created_index=idx_pos,
                 )
-                daily_new_count += 1
+                state.daily_new_count += 1
             elif qty > 0:
                 self._reject(date_idx, sym, "可用现金不足",
                              f"需${cost:,.0f} > 可用${avail_cash:,.0f}")
@@ -666,40 +662,34 @@ class PortfolioBacktest:
                     symbol=sym, side=OrderSide.SELL, quantity=qty, created_index=idx_pos,
                     reason="short_entry",
                 )
-                daily_new_count += 1
-
-        return daily_new_count
+                state.daily_new_count += 1
 
     # -- helpers --------------------------------------------------------------
 
     def _close_trade(
-        self, st: dict, date_idx: pd.Timestamp, price: float, reason: str,
-        open_trade_idx: dict, trades: List[PortfolioTrade],
-        leg_index: int, cash: float,
-    ) -> float:
-        """Close a position — unified path for signal exits and end-of-period close.
+        self, state: PortfolioState, st, date_idx: pd.Timestamp, price: float,
+        reason: str, leg_index: int,
+    ) -> None:
+        """Close a long position — unified path for signal exits and end-of-period close.
 
-        Applies slippage and commission consistently.  Fills the matching
-        PortfolioTrade with exit info computed on a net basis:
-        entry_cost includes buy-side commission, exit_proceeds deducts
-        sell-side commission, so trade PnL is strictly aligned with
-        the cash curve.
+        Applies slippage and commission consistently. Mutates ``state.cash``
+        and ``state.trades`` / ``state.open_trade_idx`` in place.
         """
         qty = st["position"]
         exit_price = price * (1 - self.slippage_pct)
         exit_proceeds = exit_price * qty * (1 - self.commission_rate)
         entry_cost = st["capital_allocated"]
-        cash += exit_proceeds
+        state.cash += exit_proceeds
 
-        if leg_index in open_trade_idx:
-            t = trades[open_trade_idx[leg_index]]
+        if leg_index in state.open_trade_idx:
+            t = state.trades[state.open_trade_idx[leg_index]]
             t.exit_time = date_idx
             t.exit_price = exit_price
             t.pnl = exit_proceeds - entry_cost
             t.pnl_pct = (t.pnl / entry_cost * 100) if entry_cost > 0 else 0
             t.reason = reason
             t.hold_days = (date_idx - t.entry_time).days
-            del open_trade_idx[leg_index]
+            del state.open_trade_idx[leg_index]
 
         st["position"] = 0
         st["capital_allocated"] = 0
@@ -710,21 +700,19 @@ class PortfolioBacktest:
         # Track stop-loss exit for cooldown
         if reason.startswith("止损"):
             self._stop_dates[st["leg"].symbol] = date_idx
-        return cash
 
     def _close_short_trade(
-        self, st: dict, date_idx: pd.Timestamp, price: float, reason: str,
-        open_trade_idx: dict, trades: List[PortfolioTrade],
-        leg_index: int, cash: float,
-    ) -> float:
+        self, state: PortfolioState, st, date_idx: pd.Timestamp, price: float,
+        reason: str, leg_index: int,
+    ) -> None:
         """Close a short position — cover at market price."""
         qty = abs(st["position"])
         cover_price = price * (1 + self.slippage_pct)
         cost = cover_price * qty * (1 + self.commission_rate)
-        cash -= cost
+        state.cash -= cost
 
-        if leg_index in open_trade_idx:
-            t = trades[open_trade_idx[leg_index]]
+        if leg_index in state.open_trade_idx:
+            t = state.trades[state.open_trade_idx[leg_index]]
             t.exit_time = date_idx
             t.exit_price = cover_price
             # Short PnL: proceeds from entry minus cost to cover
@@ -733,7 +721,7 @@ class PortfolioBacktest:
             t.pnl_pct = (t.pnl / (t.entry_price * qty) * 100) if t.entry_price > 0 else 0
             t.reason = reason
             t.hold_days = (date_idx - t.entry_time).days
-            del open_trade_idx[leg_index]
+            del state.open_trade_idx[leg_index]
 
         st["position"] = 0
         st["capital_allocated"] = 0
@@ -743,22 +731,21 @@ class PortfolioBacktest:
         st["lowest"] = float('inf')
         if reason.startswith("止损"):
             self._stop_dates[st["leg"].symbol] = date_idx
-        return cash
 
     def _apply_open_fill(
-        self,
-        st: dict,
-        fill,
-        trades: List[PortfolioTrade],
-        open_trade_idx: dict,
-        leg_index: int,
-        cash: float,
+        self, state: PortfolioState, st, fill, leg_index: int, spendable_cash: float,
     ) -> bool:
-        """Apply a backtest fill to open or add to a portfolio leg."""
+        """Apply a backtest fill to open or add to a long leg.
+
+        ``spendable_cash`` is the available_cash budget at the moment of fill,
+        which is ≤ ``state.cash`` whenever any leg in the portfolio is short
+        (margin is locked). Returns False on insufficient funds.
+        """
         cost = fill.gross_value + fill.commission
-        if cost > cash or fill.filled_qty <= 0:
+        if cost > spendable_cash or fill.filled_qty <= 0:
             return False
 
+        state.cash -= cost
         old_qty = st["position"]
         st["position"] += fill.filled_qty
         st["highest"] = max(st.get("highest", 0), fill.fill_price)
@@ -768,8 +755,8 @@ class PortfolioBacktest:
             st["entry_price"] = (
                 st["entry_price"] * old_qty + fill.fill_price * fill.filled_qty
             ) / st["position"]
-            if leg_index in open_trade_idx:
-                t = trades[open_trade_idx[leg_index]]
+            if leg_index in state.open_trade_idx:
+                t = state.trades[state.open_trade_idx[leg_index]]
                 t.qty = st["position"]
                 t.entry_price = st["entry_price"]
         else:
@@ -781,19 +768,20 @@ class PortfolioBacktest:
                 qty=fill.filled_qty,
                 entry_price=fill.fill_price,
             )
-            trades.append(trade)
-            open_trade_idx[leg_index] = len(trades) - 1
+            state.trades.append(trade)
+            state.open_trade_idx[leg_index] = len(state.trades) - 1
         return True
 
     def _apply_short_entry_fill(
-        self, st, fill, trades, open_trade_idx, leg_index, cash,
-    ) -> float:
+        self, state: PortfolioState, st, fill, leg_index: int,
+    ) -> None:
         """SELL fill for opening or adding to a short position.
 
-        Returns updated cash (proceeds from short sale added).
+        Mutates ``state.cash`` (proceeds from short sale added) and
+        ``state.trades`` / ``state.open_trade_idx``.
         """
         if fill.filled_qty <= 0:
-            return cash
+            return
         old_qty = st["position"]
         st["position"] -= fill.filled_qty  # short: position goes negative
         st["highest"] = max(st.get("highest", 0), fill.fill_price)
@@ -804,8 +792,8 @@ class PortfolioBacktest:
             st["entry_price"] = (
                 st["entry_price"] * old_shares + fill.fill_price * fill.filled_qty
             ) / (old_shares + fill.filled_qty)
-            if leg_index in open_trade_idx:
-                t = trades[open_trade_idx[leg_index]]
+            if leg_index in state.open_trade_idx:
+                t = state.trades[state.open_trade_idx[leg_index]]
                 t.qty = abs(st["position"])
                 t.entry_price = st["entry_price"]
         else:
@@ -819,27 +807,25 @@ class PortfolioBacktest:
                 entry_price=fill.fill_price,
                 direction="SHORT",
             )
-            trades.append(trade)
-            open_trade_idx[leg_index] = len(trades) - 1
+            state.trades.append(trade)
+            state.open_trade_idx[leg_index] = len(state.trades) - 1
 
         # Short sale proceeds increase cash
-        proceeds = fill.fill_price * fill.filled_qty * (1 - self.commission_rate)
-        cash += proceeds
-        return cash
+        state.cash += fill.fill_price * fill.filled_qty * (1 - self.commission_rate)
 
     def _apply_cover_fill(
-        self, st, fill, reason, open_trade_idx, trades, leg_index, cash,
-    ) -> float:
+        self, state: PortfolioState, st, fill, reason: str, leg_index: int,
+    ) -> None:
         """BUY fill for covering a short position."""
         qty = min(fill.filled_qty, abs(st["position"]))
         if qty <= 0:
-            return cash
+            return
         cost = fill.fill_price * qty + fill.fill_price * qty * self.commission_rate
-        cash -= cost
+        state.cash -= cost
         st["position"] += qty  # negative towards zero
 
-        if leg_index in open_trade_idx:
-            t = trades[open_trade_idx[leg_index]]
+        if leg_index in state.open_trade_idx:
+            t = state.trades[state.open_trade_idx[leg_index]]
             if st["position"] == 0:
                 # Fully covered — record trade (PnL: entry - exit for shorts)
                 t.exit_time = fill.date
@@ -849,7 +835,7 @@ class PortfolioBacktest:
                 t.pnl_pct = (t.pnl / (t.entry_price * qty) * 100) if t.entry_price > 0 else 0
                 t.reason = reason
                 t.hold_days = (fill.date - t.entry_time).days
-                del open_trade_idx[leg_index]
+                del state.open_trade_idx[leg_index]
             else:
                 # Partial cover — update remaining quantity
                 t.qty = abs(st["position"])
@@ -862,31 +848,23 @@ class PortfolioBacktest:
             st["lowest"] = float('inf')
         if reason.startswith("止损"):
             self._stop_dates[st["leg"].symbol] = fill.date
-        return cash
 
     def _apply_close_fill(
-        self,
-        st: dict,
-        fill,
-        reason: str,
-        open_trade_idx: dict,
-        trades: List[PortfolioTrade],
-        leg_index: int,
-        cash: float,
-    ) -> float:
-        """Apply a backtest fill to close or reduce a portfolio leg."""
+        self, state: PortfolioState, st, fill, reason: str, leg_index: int,
+    ) -> None:
+        """Apply a backtest fill to close or reduce a long leg."""
         qty = min(fill.filled_qty, st["position"])
         if qty <= 0:
-            return cash
+            return
         avg_entry_cost = st["capital_allocated"] / st["position"] if st["position"] > 0 else 0
         entry_cost = avg_entry_cost * qty
         exit_proceeds = fill.fill_price * qty - fill.fill_price * qty * self.commission_rate
-        cash += exit_proceeds
+        state.cash += exit_proceeds
         st["position"] -= qty
         st["capital_allocated"] -= entry_cost
 
-        if leg_index in open_trade_idx:
-            t = trades[open_trade_idx[leg_index]]
+        if leg_index in state.open_trade_idx:
+            t = state.trades[state.open_trade_idx[leg_index]]
             if st["position"] == 0:
                 t.exit_time = fill.date
                 t.exit_price = fill.fill_price
@@ -894,7 +872,7 @@ class PortfolioBacktest:
                 t.pnl_pct = (t.pnl / entry_cost * 100) if entry_cost > 0 else 0
                 t.reason = reason
                 t.hold_days = (fill.date - t.entry_time).days
-                del open_trade_idx[leg_index]
+                del state.open_trade_idx[leg_index]
             else:
                 t.qty = st["position"]
 
@@ -906,7 +884,6 @@ class PortfolioBacktest:
             st["lowest"] = float('inf')
         if reason.startswith("止损"):
             self._stop_dates[st["leg"].symbol] = fill.date
-        return cash
 
     def _apply_execution_constraints(
         self, qty: int, row: pd.Series, df_sig: pd.DataFrame, idx_pos: int,
