@@ -172,6 +172,12 @@ class PortfolioBacktest:
         cooldown_after_stop_days: int = 0,
         # --- short selling ---
         short_margin_ratio: float = 1.5,
+        # --- single-symbol cap (parity with live RiskController) ---
+        # Defaults to RiskLimits().max_position_pct (0.30) so portfolio
+        # backtest semantics match live execution. Pass max_position_pct=0
+        # (or any falsy non-None) to disable the cap entirely — e.g. when
+        # running a 1-leg portfolio at full cash.
+        max_position_pct: Optional[float] = None,
     ):
         self.legs = legs
         self.initial_capital = initial_capital
@@ -196,6 +202,12 @@ class PortfolioBacktest:
         self.sizing_mode = sizing_mode
         self.risk_per_trade = risk_per_trade
         self.risk_atr_mult = risk_atr_mult
+        # Resolve max_position_pct sentinel: None → RiskLimits default (0.30),
+        # 0/0.0 → disabled. Imported lazily to avoid top-level cycle.
+        if max_position_pct is None:
+            from utils.risk import RiskLimits
+            max_position_pct = RiskLimits().max_position_pct
+        self.max_position_pct = max_position_pct
         self.max_sector_weight = max_sector_weight
         # Without a sector_map, the gate would lump every symbol into
         # "Unknown" — silently turning the per-sector cap into a global
@@ -259,6 +271,21 @@ class PortfolioBacktest:
     ) -> "PortfolioResult":
         if end is None:
             end = date.today().isoformat()
+
+        # Warn if max_position_pct × num_legs leaves cash idle. Below 4 legs
+        # at the 0.30 default, the portfolio cannot reach full deployment —
+        # caller may want to add legs or raise the cap.
+        if self.max_position_pct and len(self.legs) > 0:
+            total_deployable = self.max_position_pct * len(self.legs)
+            if total_deployable < 1.0:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "max_position_pct=%.2f × num_legs=%d = %.0f%% < 100%% — "
+                    "组合无法满仓 (剩 %.0f%% 现金闲置)。考虑增加标的或调高 max_position_pct, "
+                    "或显式传 max_position_pct=0 关闭该上限。",
+                    self.max_position_pct, len(self.legs),
+                    total_deployable * 100, (1 - total_deployable) * 100,
+                )
 
         provider = DataProvider()
 
@@ -581,6 +608,13 @@ class PortfolioBacktest:
             qty = self._calc_risk_budget_qty(alloc, price, atr)
         else:
             qty = st["strategy"].position_size(alloc, price, atr)
+
+        # Single-symbol cap — parity with live RiskController.calc_position_size.
+        # Applied as a hard ceiling on qty (not a reject) so signals on
+        # subsequent bars don't churn rejection log entries.
+        if self.max_position_pct and current_equity > 0:
+            cap_qty = int(current_equity * self.max_position_pct / price)
+            qty = min(qty, cap_qty)
 
         qty = self._apply_execution_constraints(qty, row, df_sig, idx_pos)
         if qty <= 0:
