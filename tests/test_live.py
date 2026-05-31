@@ -807,16 +807,22 @@ class TestRiskPersistence:
         finally:
             self._clean_risk_db()
 
-    def test_restore_different_day_skips_counts(self):
+    def test_restore_different_day_keeps_historical_resets_daily(self):
+        """P1-3: peak_equity & consecutive_losses are historical and must survive
+        day rollover; daily_trade_count is day-scoped and resets."""
         self._clean_risk_db()
         try:
             trader = self._make_trader()
             trader.cache.save_risk_state("date", "2020-01-01")
             trader.cache.save_risk_state("consecutive_losses", "5")
             trader.cache.save_risk_state("daily_trade_count", "10")
+            trader.cache.save_risk_state("peak_equity", "123456.78")
             trader.risk_ctrl.restore_state()
-            assert trader.risk._consecutive_losses == 0
+            # Day-scoped resets
             assert trader.risk._daily_trade_count == 0
+            # Historical persists
+            assert trader.risk._consecutive_losses == 5
+            assert trader.risk._peak_equity == 123456.78
         finally:
             self._clean_risk_db()
 

@@ -11,7 +11,7 @@ class TestRiskLimitsDefaults:
         assert r.max_total_exposure_pct == 0.80
         assert r.max_daily_loss_pct == 0.05
         assert r.min_order_value == 500.0
-        assert r.max_slippage_pct == 0.02
+        assert r.max_slippage_pct == 0.005
 
     def test_override(self):
         r = RiskLimits(max_position_pct=0.25, min_order_value=1000)

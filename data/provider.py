@@ -95,6 +95,9 @@ class DataProvider:
         self._fetch_failures: set = set()  # symbols that failed this session entirely
         self._failed_sources: set = set()  # stale sources — skip for all symbols
         self._tail_attempted: set = set()  # (symbol, end) pairs already attempted
+        # Deduplicate cross-source drift warnings — only warn once per
+        # (symbol, source) pair per session.
+        self._cross_source_warned: set = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -147,6 +150,7 @@ class DataProvider:
                     self._tail_attempted.add(dedup_key)
                     fetched, src = self._fetch_from_sources(sym, tail_start, end)
                     if fetched is not None and not fetched.empty:
+                        self._check_cross_source_drift(sym, fetched, src)
                         self.cache.save(sym, fetched, source=src or "unknown")
                 return self._load_from_cache(sym, start, end)
 
@@ -161,6 +165,7 @@ class DataProvider:
         for gap_start, gap_end in gaps:
             fetched, actual_source = self._fetch_from_sources(sym, gap_start, gap_end)
             if fetched is not None and not fetched.empty:
+                self._check_cross_source_drift(sym, fetched, actual_source)
                 self.cache.save(sym, fetched, source=actual_source or "unknown")
                 any_fetched = True
         if gaps and not any_fetched:
@@ -275,6 +280,78 @@ class DataProvider:
             if src.name == name:
                 return src
         return None
+
+    def _check_cross_source_drift(
+        self, symbol: str, fetched: pd.DataFrame, source: Optional[str],
+        tolerance: float = 0.01,
+    ) -> None:
+        """Warn when *fetched* close prices disagree with the existing cache.
+
+        Detects silent provider switches that change splits / adjustments
+        midstream. Compares overlapping dates and the cached bar immediately
+        adjacent to the fetched range (boundary drift catches split-adjust
+        differences between sources). Logs a warning at most once per
+        (symbol, source) per process — never blocks the write.
+        """
+        if fetched is None or fetched.empty or source is None:
+            return
+        key = (symbol.upper(), source)
+        if key in self._cross_source_warned:
+            return
+
+        try:
+            f_start = str(pd.Timestamp(fetched.index[0]).date())
+            f_end = str(pd.Timestamp(fetched.index[-1]).date())
+            # Pull cache covering 5 bars before/after the fetched window
+            pad_start = (pd.Timestamp(f_start) - pd.Timedelta(days=14)).date().isoformat()
+            pad_end = (pd.Timestamp(f_end) + pd.Timedelta(days=14)).date().isoformat()
+            cached = self.cache.load(symbol, pad_start, pad_end)
+        except Exception:
+            return
+        if cached is None or cached.empty:
+            return
+
+        # 1) Same-date overlap
+        common = fetched.index.normalize().intersection(cached.index.normalize())
+        max_overlap_drift = 0.0
+        for d in common[:5]:  # sample up to 5 overlapping bars
+            try:
+                fc = float(fetched.loc[fetched.index.normalize() == d, "Close"].iloc[0])
+                cc = float(cached.loc[cached.index.normalize() == d, "Close"].iloc[0])
+                if cc > 0:
+                    drift = abs(fc - cc) / cc
+                    if drift > max_overlap_drift:
+                        max_overlap_drift = drift
+            except (IndexError, KeyError):
+                continue
+
+        # 2) Boundary check — last cached bar before fetch vs first fetched bar
+        boundary_drift = 0.0
+        before = cached[cached.index < pd.Timestamp(f_start)]
+        if not before.empty:
+            try:
+                prev_close = float(before["Close"].iloc[-1])
+                first_close = float(fetched["Close"].iloc[0])
+                if prev_close > 0:
+                    # Compare relative move; >20% single-bar jump is suspicious
+                    boundary_drift = abs(first_close - prev_close) / prev_close
+            except (IndexError, KeyError):
+                pass
+
+        if max_overlap_drift > tolerance:
+            logger.warning(
+                "cross-source drift: %s from %s differs %.2f%% on %d overlapping bars; "
+                "possible split/adjustment divergence",
+                symbol, source, max_overlap_drift * 100, len(common),
+            )
+            self._cross_source_warned.add(key)
+        elif boundary_drift > 0.20:
+            logger.warning(
+                "cross-source boundary jump: %s from %s — %.1f%% move vs prior cached bar; "
+                "verify split/adjustment alignment",
+                symbol, source, boundary_drift * 100,
+            )
+            self._cross_source_warned.add(key)
 
     @staticmethod
     def _has_internal_gaps(df: pd.DataFrame) -> bool:

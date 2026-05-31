@@ -11,7 +11,10 @@ class RiskLimits:
     max_total_exposure_pct: float = 0.80
     max_daily_loss_pct: float = 0.05
     min_order_value: float = 500.0
-    max_slippage_pct: float = 0.02
+    # Reject orders whose signal-vs-last-price drift exceeds this fraction.
+    # 0.005 (50 bp) is conservative for liquid US stocks/ETFs; raise to 0.01
+    # for thinner names. The old 0.02 default effectively disabled the gate.
+    max_slippage_pct: float = 0.005
     max_consecutive_losses: int = 3
     max_daily_trades: int = 5
     base_risk_pct: float = 0.02

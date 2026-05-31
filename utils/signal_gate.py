@@ -8,13 +8,21 @@ from dataclasses import dataclass, field
 import re
 from typing import Dict, List, Optional, Tuple
 
-from strategy import STRATEGY_MAP
 from utils.market_state import (
     MarketRegime, Volatility, MarketState,
     is_trend_strategy, is_mean_reversion_strategy,
 )
 
-_regime_map = {name: getattr(cls, "regime", None) for name, cls in STRATEGY_MAP.items()}
+
+def _build_regime_map() -> Dict[str, Optional[str]]:
+    """Snapshot the current STRATEGY_MAP → regime mapping.
+
+    Imported lazily so module load does not freeze STRATEGY_MAP at import
+    time — callers that monkey-patch STRATEGY_MAP (tests, hot-reload) get a
+    fresh map per SignalGate instance.
+    """
+    from strategy import STRATEGY_MAP
+    return {name: getattr(cls, "regime", None) for name, cls in STRATEGY_MAP.items()}
 
 
 @dataclass
@@ -35,6 +43,7 @@ class SignalGate:
     pause_reason: str = ""
     max_total_exposure_pct: float = 0.80
     vol_high_scalar: float = 0.7
+    regime_map: Dict[str, Optional[str]] = field(default_factory=_build_regime_map)
 
     # -- Public API -------------------------------------------------------
 
@@ -94,9 +103,9 @@ class SignalGate:
             return False
         regime = self.market_state.regime
         strat = sig.get("strategy", "")
-        if regime == MarketRegime.RANGING and is_trend_strategy(strat, _regime_map):
+        if regime == MarketRegime.RANGING and is_trend_strategy(strat, self.regime_map):
             return True
         if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) \
-                and is_mean_reversion_strategy(strat, _regime_map):
+                and is_mean_reversion_strategy(strat, self.regime_map):
             return True
         return False

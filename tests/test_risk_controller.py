@@ -236,7 +236,9 @@ class TestStatePersistence:
         assert "AAPL" in ctrl.entry_prices
         assert ctrl.entry_prices["AAPL"] == 195.0
 
-    def test_restore_state_different_day_does_not_load(self, risk_limits, mock_cache, mock_broker, mock_notifier):
+    def test_restore_state_different_day_keeps_historical_resets_daily(self, risk_limits, mock_cache, mock_broker, mock_notifier):
+        """Cross-day restore: peak_equity & consecutive_losses persist (historical state);
+        day_start_equity & daily_trade_count reset (day-scoped)."""
         mock_cache.load_risk_state.side_effect = lambda key: {
             "date": "2020-01-01",
             "day_start_equity": "95000.0",
@@ -251,9 +253,12 @@ class TestStatePersistence:
             broker=mock_broker,
             notifier=mock_notifier,
         )
+        # Day-scoped state — reset on rollover
         assert ctrl.risk._day_start_equity == 0.0
-        assert ctrl.risk._consecutive_losses == 0
         assert ctrl.risk._daily_trade_count == 0
+        # Historical state — survives day rollover (P1-3 fix)
+        assert ctrl.risk._peak_equity == 105000.0
+        assert ctrl.risk._consecutive_losses == 1
 
 
 # ---------------------------------------------------------------------------

@@ -47,18 +47,34 @@ class RiskController:
             self.persist_state()
 
     def restore_state(self):
+        """Restore persisted risk state.
+
+        - ``peak_equity`` and ``consecutive_losses`` are time-invariant — they
+          represent historical state and MUST be restored across days, otherwise
+          the max_total_drawdown_pct circuit breaker silently disarms each
+          morning (peak resets to today's open equity) and the consecutive-
+          loss counter resets even though run_daemon's day-rollover only
+          intends to reset daily counters.
+        - ``day_start_equity`` and ``daily_trade_count`` are day-scoped and
+          only restored when the stored date matches today.
+        """
         stored_date = self.cache.load_risk_state("date")
         today = date.today().isoformat()
+
+        # Always restore historical state
+        cl = self.cache.load_risk_state("consecutive_losses")
+        pe = self.cache.load_risk_state("peak_equity")
+        self.risk._consecutive_losses = int(cl) if cl else 0
+        self.risk._peak_equity = float(pe) if pe else 0.0
+
+        # Day-scoped state only valid for today
         if stored_date == today:
-            cl = self.cache.load_risk_state("consecutive_losses")
             dt = self.cache.load_risk_state("daily_trade_count")
             dse = self.cache.load_risk_state("day_start_equity")
-            pe = self.cache.load_risk_state("peak_equity")
             self.risk._date = today
-            self.risk._consecutive_losses = int(cl) if cl else 0
             self.risk._daily_trade_count = int(dt) if dt else 0
             self.risk._day_start_equity = float(dse) if dse else 0.0
-            self.risk._peak_equity = float(pe) if pe else 0.0
+
         self.entry_prices = {
             sym: price for sym, (price, _) in self.cache.load_all_entry_prices().items()
         }

@@ -37,7 +37,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "max_total_exposure_pct": 0.80,
         "max_daily_loss_pct": 0.05,
         "min_order_value": 500.0,
-        "max_slippage_pct": 0.02,
+        "max_slippage_pct": 0.005,
         "max_consecutive_losses": 3,
         "max_daily_trades": 5,
         "base_risk_pct": 0.02,
