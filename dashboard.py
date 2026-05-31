@@ -1,4 +1,4 @@
-"""mytrader Dashboard — Streamlit web UI.
+"""traderbridge Dashboard — Streamlit web UI.
 
 Usage:
     pipenv run streamlit run dashboard.py

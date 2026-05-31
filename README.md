@@ -1,8 +1,10 @@
-# mytrader
+# TraderBridge
 
-个人量化交易系统 — 数据管线 → 策略库 → 回测 → 参数优化 → 每日扫描 → 实盘桥梁。
+> 原名 `mytrader` — 2026-05-31 改名
 
-[![CI](https://github.com/geelaro/mytrader/actions/workflows/ci.yml/badge.svg)](https://github.com/geelaro/mytrader/actions/workflows/ci.yml)
+个人量化**风险管理 + 决策辅助**工具 — 数据管线 → 因子归因 → 滚动 α → 信号有效性 → 三色风险灯 → 持仓监控 → dry-run 桥梁。**不替你下单，给你海图。**
+
+[![CI](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml)
 
 ## 功能
 
@@ -28,7 +30,7 @@
 | 数据质量 | quality.py — 缺失值/异常跳变/停牌标记 + validate_ohlcv 前置检查 |
 | Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 |
 | CI | GitHub Actions — push/PR 自动跑 pytest（637 测试 + 黄金样本回归）|
-| Docker | docker-compose.yml 一键部署 mytrader + futu-opend + HEALTHCHECK |
+| Docker | docker-compose.yml 一键部署 traderbridge + futu-opend + HEALTHCHECK |
 
 ## 策略
 
@@ -61,7 +63,7 @@
 ## 项目结构
 
 ```
-mytrader/
+traderbridge/
   data/              # 数据管线 (protocol/cache/provider/sources/quality/splits.json)
   strategy/          # 策略库 (base + 9 个活跃策略 + 3 个已弃用 + ensemble)
   broker/            # 券商接口 (base + mock + futu)
@@ -96,7 +98,7 @@ mytrader/
   dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
   config.py          # 统一运行时配置
   watchlist.toml     # 标的 + 策略 + 风控 + 市场状态 + 孤儿持仓配置
-  docker-compose.yml # Docker Compose 一键部署 (mytrader + futu-opend)
+  docker-compose.yml # Docker Compose 一键部署 (traderbridge + futu-opend)
 ```
 
 ## 快速开始
@@ -432,7 +434,7 @@ horizon    n   median    win%   sharpe
 |---------|--------|------|
 | `logs/live.log` | live_trader.py | JSON 行（Loki/ELK 可解析） |
 | `logs/daily.log` | daily.py | JSON 行 |
-| `logs/mytrader.log` | 全部模块 | JSON 行 |
+| `logs/traderbridge.log` | 全部模块 | JSON 行 |
 
 ### Docker 部署
 

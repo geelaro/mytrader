@@ -47,14 +47,14 @@ from .base import (
 
 
 # ---------------------------------------------------------------------------
-# Symbol mapping: mytrader format ↔ Futu format
+# Symbol mapping: traderbridge format ↔ Futu format
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
 
 
 def _to_futu_symbol(symbol: str) -> str:
-    """Convert mytrader symbol to Futu format (US.AAPL, HK.00700, SH.510300)."""
+    """Convert traderbridge symbol to Futu format (US.AAPL, HK.00700, SH.510300)."""
     s = symbol.upper().strip()
     if s.startswith("US."):
         return s

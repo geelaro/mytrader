@@ -1,4 +1,4 @@
-# mytrader 策略指南
+# traderbridge 策略指南
 
 10 个策略按类型分三组。
 

@@ -202,7 +202,7 @@ def show_history(cache: CacheManager = None, days: int = 7):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="mytrader daily signal scanner")
+    parser = argparse.ArgumentParser(description="traderbridge daily signal scanner")
     parser.add_argument("--date", type=str, help="Target date (YYYY-MM-DD), default today")
     parser.add_argument("--history", action="store_true", help="Show recent signal history")
     parser.add_argument("--config", type=str, default="watchlist.toml", help="Config file path")

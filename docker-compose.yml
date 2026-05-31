@@ -1,13 +1,13 @@
 version: "3.9"
 
 services:
-  mytrader:
+  traderbridge:
     build: .
-    image: mytrader:latest
-    container_name: mytrader
+    image: traderbridge:latest
+    container_name: traderbridge
     restart: unless-stopped
     environment:
-      - MYTRADER_DB=/data/trading_data.db
+      - TRADERBRIDGE_DB=/data/trading_data.db
       - FEISHU_WEBHOOK=${FEISHU_WEBHOOK:-}
       - FUTU_HOST=${FUTU_HOST:-127.0.0.1}
       - FUTU_PORT=${FUTU_PORT:-11111}
@@ -26,7 +26,7 @@ services:
     ports:
       - "8080:8080"
     networks:
-      - mytrader-net
+      - traderbridge-net
 
   futu-opend:
     image: futu-opend:latest
@@ -37,8 +37,8 @@ services:
     ports:
       - "11111:11111"
     networks:
-      - mytrader-net
+      - traderbridge-net
 
 networks:
-  mytrader-net:
+  traderbridge-net:
     driver: bridge

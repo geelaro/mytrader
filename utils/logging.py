@@ -7,7 +7,7 @@ Usage:
     logger.warning("something", extra={"symbol": "AAPL"})
 
 Named loggers ("live", "daily") → logs/{name}.log + console, isolated.
-All other loggers → logs/mytrader.log (JSON) + console (text).
+All other loggers → logs/traderbridge.log (JSON) + console (text).
 """
 
 import json
@@ -58,7 +58,7 @@ _backup_count = 3
 # Track which named loggers have their own handlers
 _named_initialized: set = set()
 
-# Logger names that get their own log file (not routed to shared mytrader.log)
+# Logger names that get their own log file (not routed to shared traderbridge.log)
 _NAMED_LOGGERS = {"live", "daily"}
 
 
@@ -111,7 +111,7 @@ def setup_logging(
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
     shared_file = RotatingFileHandler(
-        log_path / "mytrader.log",
+        log_path / "traderbridge.log",
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding="utf-8",
@@ -127,7 +127,7 @@ def setup_logging(
 
 def _setup_named_logger(logger: logging.Logger, name: str):
     """Give *logger* its own file handler; stop propagation so its
-    messages don't land in the shared mytrader.log or root console.
+    messages don't land in the shared traderbridge.log or root console.
 
     Named loggers only write to file, not console — use print() for
     interactive terminal output."""

@@ -1,4 +1,4 @@
-"""mytrader Dashboard — main orchestrator.
+"""traderbridge Dashboard — main orchestrator.
 
 Sidebar + tab routing + calls into sub-modules.
 """
@@ -25,8 +25,8 @@ logger = get_logger("dashboard.main")
 
 
 def main():
-    st.set_page_config(page_title="Mytrader", layout="wide")
-    st.title("Mytrader Dashboard")
+    st.set_page_config(page_title="TraderBridge", layout="wide")
+    st.title("TraderBridge — 风险管理 / 决策辅助")
 
     # -------------------------------------------------------------------
     # Sidebar — controls

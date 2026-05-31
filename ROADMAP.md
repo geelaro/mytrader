@@ -1,4 +1,6 @@
-# mytrader 整改与开发计划
+# traderbridge 整改与开发计划
+
+> 原名 `mytrader`, 2026-05-31 改名为 traderbridge (体现"决策辅助/风险管理"定位)
 
 > 审查日期: 2026-05-23 ｜ 基准: ~16,855 行 Python, 76 源文件, 485 测试
 >
@@ -229,8 +231,8 @@
 - [x] 完成
 - **文件:** 新增 `docker-compose.yml`
 - **内容:**
-  - `services: mytrader` + `futu-opend`（FutuOpenD 容器）
-  - 环境变量注入: `FEISHU_*` `MYTRADER_DB` `FUTU_HOST`
+  - `services: traderbridge` + `futu-opend`（FutuOpenD 容器）
+  - 环境变量注入: `FEISHU_*` `TRADERBRIDGE_DB` (legacy `MYTRADER_DB` 也接受) `FUTU_HOST`
   - 持久化卷: `trading_data.db` `logs/` `reports/`
 
 ### O-2 daemon 健康检查

@@ -382,8 +382,13 @@ class LiveTrader:
         print(f"{'=' * 60}")
 
         # Boot health endpoint so Docker HEALTHCHECK / external monitors
-        # can observe daemon liveness.
-        health_port = int(os.environ.get("MYTRADER_HEALTH_PORT", "8080"))
+        # can observe daemon liveness. Legacy MYTRADER_HEALTH_PORT is honoured
+        # for pre-rename deployments.
+        health_port = int(
+            os.environ.get("TRADERBRIDGE_HEALTH_PORT")
+            or os.environ.get("MYTRADER_HEALTH_PORT")
+            or "8080"
+        )
         try:
             start_health_server(health_port)
             _health_state["status"] = "ok"

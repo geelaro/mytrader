@@ -1,4 +1,4 @@
-# AGENTS.md — mytrader
+# AGENTS.md — traderbridge
 
 ## Prerequisites
 
@@ -75,8 +75,8 @@ Access config: `from config import config` (singleton), then `config.risk.max_po
 ## Database
 
 - SQLite, WAL mode. Production DB: `trading_data.db` (gitignored).
-- Test DB: `conftest.py` sets `MYTRADER_DB` env var to a temp file before any import to isolate from production.
-- `data/cache.py` — `CacheManager` reads `MYTRADER_DB` env var; falls back to `trading_data.db`.
+- Test DB: `conftest.py` sets `TRADERBRIDGE_DB` env var to a temp file before any import to isolate from production.
+- `data/cache.py` — `CacheManager` reads `TRADERBRIDGE_DB` env var first, falls back to legacy `MYTRADER_DB`, then `trading_data.db`.
 - DB tables: `ohlcv_daily`, `signals`, `order_log`, `slippage_log`, `ops_log`, `entry_prices`, `trade_pnl`, `risk_state`.
 
 ## Undo / rollback workflow

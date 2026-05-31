@@ -11,8 +11,8 @@ import pytest
 
 # Isolate test database from production (per-session temp file)
 import tempfile as _tempfile
-_test_db_dir = _tempfile.mkdtemp(prefix="mytrader_test_")
-os.environ["MYTRADER_DB"] = os.path.join(_test_db_dir, "test.db")
+_test_db_dir = _tempfile.mkdtemp(prefix="traderbridge_test_")
+os.environ["TRADERBRIDGE_DB"] = os.path.join(_test_db_dir, "test.db")
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))

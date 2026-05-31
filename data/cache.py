@@ -128,7 +128,13 @@ class _CacheBase:
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = os.environ.get("MYTRADER_DB", "trading_data.db")
+            # Resolution order: TRADERBRIDGE_DB (new) → MYTRADER_DB (legacy
+            # for pre-rename .env files / docker-compose) → default file.
+            db_path = (
+                os.environ.get("TRADERBRIDGE_DB")
+                or os.environ.get("MYTRADER_DB")
+                or "trading_data.db"
+            )
         self.db_path = Path(db_path).resolve()
         self._conn: Optional[sqlite3.Connection] = None
         self._batch_mode = False
