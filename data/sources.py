@@ -74,8 +74,11 @@ _TENCENT_CODE_MAP = {
     "MU": "usMU.OQ", "INTC": "usINTC.OQ", "ORCL": "usORCL.N",
 }
 
-# Manual split adjustments — Tencent qfq parameter does NOT adjust US stocks.
-# Prices before split_date are DIVIDED by ratio.
+# Manual split adjustments — applied to ALL US sources (Tencent, SinaUS,
+# YahooChart).  Tencent's qfq parameter is a no-op for US stocks; Sina
+# returns raw unadjusted prices; Yahoo's chart v8 ``quote`` field is also
+# unadjusted (``adjclose`` exists but we ignore it for source uniformity).
+# Prices before split_date are DIVIDED by ratio, volume MULTIPLIED.
 # Edit data/splits.json to add/correct entries.
 def _load_splits() -> dict[str, list[tuple[str, int]]]:
     import json
@@ -87,6 +90,31 @@ def _load_splits() -> dict[str, list[tuple[str, int]]]:
     return {}
 
 _US_SPLITS: dict[str, list[tuple[str, int]]] = _load_splits()
+
+
+def apply_us_splits(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Apply ``splits.json`` corrections to a US-equity OHLCV frame in place.
+
+    No-op for symbols not in the config.  Must be called by every US-equity
+    source (TencentSource / SinaUSSource / YahooChartSource) so the cache
+    sees a single consistent post-split price scale across sources — mixing
+    adjusted Tencent bars with unadjusted Sina bars produced 10× cliffs in
+    NVDA history (2023-12-26 case).
+    """
+    sym = symbol.upper()
+    if sym not in _US_SPLITS or df.empty:
+        return df
+    for split_date, ratio in _US_SPLITS[sym]:
+        split_dt = pd.Timestamp(split_date)
+        pre = df.index < split_dt
+        if not pre.any():
+            continue
+        for col in ("Open", "High", "Low", "Close"):
+            if col in df.columns:
+                df.loc[pre, col] = df.loc[pre, col] / ratio
+        if "Volume" in df.columns:
+            df.loc[pre, "Volume"] = df.loc[pre, "Volume"] * ratio
+    return df
 
 
 class TencentSource(DataSource):
@@ -150,18 +178,7 @@ class TencentSource(DataSource):
             })
 
         df = pd.DataFrame(rows).set_index("date").sort_index()
-
-        # Tencent does NOT adjust US stocks for splits (qfq is no-op here).
-        # Apply manual corrections so historical prices are comparable.
-        if sym in _US_SPLITS:
-            for split_date, ratio in _US_SPLITS[sym]:
-                split_dt = pd.Timestamp(split_date)
-                pre = df.index < split_dt
-                for col in ["Open", "High", "Low", "Close"]:
-                    df.loc[pre, col] = df.loc[pre, col] / ratio
-                df.loc[pre, "Volume"] = df.loc[pre, "Volume"] * ratio
-
-        # Clip to requested range
+        df = apply_us_splits(df, sym)
         df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
         return self.validate(df, symbol)
 
@@ -402,6 +419,7 @@ class SinaUSSource(DataSource):
             })
 
         df = pd.DataFrame(rows).set_index("date").sort_index()
+        df = apply_us_splits(df, sym)
         df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
         return self.validate(df, symbol)
 
@@ -480,6 +498,7 @@ class YahooChartSource(DataSource):
             })
 
         df = pd.DataFrame(rows).set_index("date").sort_index()
+        df = apply_us_splits(df, sym)
         return self.validate(df, symbol)
 
 
