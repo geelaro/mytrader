@@ -32,7 +32,35 @@ from typing import Optional
 
 import requests
 
-from data.sources import _yahoo_session
+
+# Realtime quote uses its OWN session, NOT shared with data.sources._yahoo_session.
+# Why: _yahoo_session warms with a fc.yahoo.com cookie request needed by Yahoo's
+# historical chart endpoint.  That cookie marks the session for tighter rate
+# limits on the realtime endpoints — empirically spark/chart 429 within seconds
+# of acquiring the cookie.  Realtime endpoints work fine WITHOUT cookies, so we
+# build a minimal session here and keep it isolated.
+_REALTIME_SESSION: Optional[requests.Session] = None
+_REALTIME_SESSION_LOCK = threading.Lock()
+
+
+def _realtime_session() -> requests.Session:
+    """Lightweight Yahoo session for realtime endpoints — no fc.yahoo.com cookie."""
+    global _REALTIME_SESSION
+    if _REALTIME_SESSION is not None:
+        return _REALTIME_SESSION
+    with _REALTIME_SESSION_LOCK:
+        if _REALTIME_SESSION is not None:
+            return _REALTIME_SESSION
+        s = requests.Session()
+        s.trust_env = True
+        s.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        })
+        _REALTIME_SESSION = s
+        return s
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +114,7 @@ def _try_spark(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
     url = "https://query1.finance.yahoo.com/v8/finance/spark"
     params = {"symbols": "^VIX", "range": "1d", "interval": "1m"}
     try:
-        s = _yahoo_session()
+        s = _realtime_session()
         r = s.get(url, params=params, timeout=timeout)
         r.raise_for_status()
         data = r.json()
@@ -114,7 +142,7 @@ def _try_chart(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
     url = "https://query2.finance.yahoo.com/v8/finance/chart/^VIX"
     params = {"interval": "1m", "range": "1d"}
     try:
-        s = _yahoo_session()
+        s = _realtime_session()
         r = s.get(url, params=params, timeout=timeout)
         r.raise_for_status()
         data = r.json()

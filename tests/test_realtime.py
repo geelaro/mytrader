@@ -91,25 +91,25 @@ class TestGetRealtimeVix:
     def test_happy_path_returns_price(self):
         session = MagicMock()
         session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() == 18.45
 
     def test_returns_none_on_request_error(self):
         session = MagicMock()
         session.get.side_effect = requests.ConnectionError("offline")
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
 
     def test_returns_none_on_timeout(self):
         session = MagicMock()
         session.get.side_effect = requests.Timeout("slow")
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
 
     def test_returns_none_on_http_error(self):
         session = MagicMock()
         session.get.return_value = _mock_yahoo_response({}, status=403)
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
 
     def test_returns_none_on_invalid_json(self):
@@ -119,14 +119,14 @@ class TestGetRealtimeVix:
         json_fail.json.side_effect = ValueError("not json")
         session = MagicMock()
         session.get.side_effect = [json_fail, json_fail]
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
 
     def test_cache_hit_skips_network(self):
         """Second call within TTL should not hit Yahoo."""
         session = MagicMock()
         session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             v1 = get_realtime_vix(ttl=60)
             v2 = get_realtime_vix(ttl=60)
             v3 = get_realtime_vix(ttl=60)
@@ -141,7 +141,7 @@ class TestGetRealtimeVix:
             _mock_yahoo_response(_spark_payload(18.45)),
             _mock_yahoo_response(_spark_payload(19.20)),
         ]
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             v1 = get_realtime_vix(ttl=0.05)
             time.sleep(0.1)  # let TTL expire
             v2 = get_realtime_vix(ttl=0.05)
@@ -161,7 +161,7 @@ class TestGetRealtimeVix:
             requests.ConnectionError("offline"),  # chart
             _mock_yahoo_response(_spark_payload(18.45)),  # retry: spark ok
         ]
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
             assert get_realtime_vix() == 18.45
         assert session.get.call_count == 3
@@ -169,7 +169,7 @@ class TestGetRealtimeVix:
     def test_reset_cache_forces_refetch(self):
         session = MagicMock()
         session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             get_realtime_vix(ttl=60)
             assert session.get.call_count == 1
             reset_cache()
@@ -189,7 +189,7 @@ class TestGetRealtimeVix:
             _mock_yahoo_response({}, status=429),         # spark rate-limited
             _mock_yahoo_response(chart_payload),          # chart works
         ]
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() == 18.45
         assert session.get.call_count == 2
 
@@ -202,6 +202,6 @@ class TestGetRealtimeVix:
             _mock_yahoo_response({}, status=429),  # spark
             _mock_yahoo_response({}, status=429),  # chart
         ]
-        with patch("data.realtime._yahoo_session", return_value=session):
+        with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
         assert session.get.call_count == 2
