@@ -82,16 +82,15 @@ class TestExtractLatestQuote:
 # ===================================================================
 
 
+def _spark_payload(price: float) -> dict:
+    """Build a Yahoo spark-shaped response with the given final close."""
+    return {"^VIX": {"timestamp": [1, 2], "close": [17.0, price]}}
+
+
 class TestGetRealtimeVix:
     def test_happy_path_returns_price(self):
-        payload = {
-            "chart": {"result": [{
-                "meta": {"regularMarketPrice": 18.45},
-                "indicators": {"quote": [{"close": []}]},
-            }]},
-        }
         session = MagicMock()
-        session.get.return_value = _mock_yahoo_response(payload)
+        session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
         with patch("data.realtime._yahoo_session", return_value=session):
             assert get_realtime_vix() == 18.45
 
@@ -124,41 +123,22 @@ class TestGetRealtimeVix:
 
     def test_cache_hit_skips_network(self):
         """Second call within TTL should not hit Yahoo."""
-        payload = {
-            "chart": {"result": [{
-                "meta": {"regularMarketPrice": 18.45},
-                "indicators": {"quote": [{"close": []}]},
-            }]},
-        }
         session = MagicMock()
-        session.get.return_value = _mock_yahoo_response(payload)
+        session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
         with patch("data.realtime._yahoo_session", return_value=session):
             v1 = get_realtime_vix(ttl=60)
             v2 = get_realtime_vix(ttl=60)
             v3 = get_realtime_vix(ttl=60)
         assert v1 == v2 == v3 == 18.45
-        # Only the first call hit Yahoo
+        # Only the first call hit Yahoo (spark succeeds on first try)
         assert session.get.call_count == 1
 
     def test_cache_expires_after_ttl(self):
         """Calls after TTL expiry should re-hit Yahoo."""
-        payload1 = {
-            "chart": {"result": [{
-                "meta": {"regularMarketPrice": 18.45},
-                "indicators": {"quote": [{"close": []}]},
-            }]},
-        }
-        payload2 = {
-            "chart": {"result": [{
-                "meta": {"regularMarketPrice": 19.20},
-                "indicators": {"quote": [{"close": []}]},
-            }]},
-        }
         session = MagicMock()
-        # First call returns 18.45, subsequent returns 19.20
         session.get.side_effect = [
-            _mock_yahoo_response(payload1),
-            _mock_yahoo_response(payload2),
+            _mock_yahoo_response(_spark_payload(18.45)),
+            _mock_yahoo_response(_spark_payload(19.20)),
         ]
         with patch("data.realtime._yahoo_session", return_value=session):
             v1 = get_realtime_vix(ttl=0.05)
@@ -169,35 +149,47 @@ class TestGetRealtimeVix:
         assert session.get.call_count == 2
 
     def test_failure_not_cached_so_next_call_retries(self):
-        """A failed fetch shouldn't poison the cache."""
+        """A failed fetch shouldn't poison the cache.
+
+        With two-endpoint fallback (spark, then chart), a single network
+        error causes both endpoints to be tried → 2 calls per fetch attempt.
+        """
         session = MagicMock()
-        # First fails, second succeeds
         session.get.side_effect = [
+            # First attempt: both endpoints fail with connection errors
             requests.ConnectionError("offline"),
-            _mock_yahoo_response({
-                "chart": {"result": [{
-                    "meta": {"regularMarketPrice": 18.45},
-                    "indicators": {"quote": [{"close": []}]},
-                }]},
-            }),
+            requests.ConnectionError("offline"),
+            # Second attempt: spark succeeds immediately
+            _mock_yahoo_response(_spark_payload(18.45)),
         ]
         with patch("data.realtime._yahoo_session", return_value=session):
             assert get_realtime_vix() is None
-            assert get_realtime_vix() == 18.45  # retried, succeeded
-        assert session.get.call_count == 2
+            assert get_realtime_vix() == 18.45
+        assert session.get.call_count == 3
 
     def test_reset_cache_forces_refetch(self):
-        payload = {
-            "chart": {"result": [{
-                "meta": {"regularMarketPrice": 18.45},
-                "indicators": {"quote": [{"close": []}]},
-            }]},
-        }
         session = MagicMock()
-        session.get.return_value = _mock_yahoo_response(payload)
+        session.get.return_value = _mock_yahoo_response(_spark_payload(18.45))
         with patch("data.realtime._yahoo_session", return_value=session):
             get_realtime_vix(ttl=60)
             assert session.get.call_count == 1
             reset_cache()
             get_realtime_vix(ttl=60)
+        assert session.get.call_count == 2
+
+    def test_falls_back_to_chart_when_spark_fails(self):
+        """If spark endpoint fails, chart endpoint is tried as backup."""
+        session = MagicMock()
+        chart_payload = {
+            "chart": {"result": [{
+                "meta": {"regularMarketPrice": 18.45},
+                "indicators": {"quote": [{"close": []}]},
+            }]},
+        }
+        session.get.side_effect = [
+            _mock_yahoo_response({}, status=429),         # spark rate-limited
+            _mock_yahoo_response(chart_payload),          # chart works
+        ]
+        with patch("data.realtime._yahoo_session", return_value=session):
+            assert get_realtime_vix() == 18.45
         assert session.get.call_count == 2

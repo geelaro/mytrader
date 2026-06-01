@@ -51,8 +51,12 @@ def get_realtime_vix(
 ) -> Optional[float]:
     """Fetch current VIX value from Yahoo (≈15-minute delayed for free).
 
+    Tries two Yahoo endpoints in order — the lighter ``spark`` endpoint
+    first (rarely rate-limited), then the heavier ``chart/v8`` endpoint
+    that the rest of the codebase already uses.  The first success wins.
+
     Returns float in decimal points (e.g. 18.45 for VIX=18.45) or
-    ``None`` on any failure.  Callers should treat None as "fall back
+    ``None`` on total failure.  Callers should treat None as "fall back
     to cached EOD VIX".
     """
     now = time.time()
@@ -61,6 +65,48 @@ def get_realtime_vix(
         if cached and (now - cached[0]) < ttl:
             return cached[1]
 
+    value = _try_spark() or _try_chart(timeout)
+    if value is not None:
+        with _cache_lock:
+            _cache["vix"] = (now, value)
+    return value
+
+
+def _try_spark(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
+    """Yahoo `query1/v8/finance/spark` — lightweight chart endpoint.
+
+    Response shape:
+        {"^VIX": {"timestamp": [...], "close": [...], "previousClose": x,
+                  "chartPreviousClose": y, ...}}
+    """
+    url = "https://query1.finance.yahoo.com/v8/finance/spark"
+    params = {"symbols": "^VIX", "range": "1d", "interval": "1m"}
+    try:
+        s = _yahoo_session()
+        r = s.get(url, params=params, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.debug("Realtime VIX spark fetch failed: %s", e)
+        return None
+    try:
+        block = data.get("^VIX") or {}
+        closes = block.get("close") or []
+    except AttributeError:
+        return None
+    for c in reversed(closes):
+        if isinstance(c, (int, float)) and c > 0:
+            return float(c)
+    # Fall back to previousClose / chartPreviousClose if intraday is empty
+    for key in ("regularMarketPrice", "previousClose", "chartPreviousClose"):
+        v = block.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return None
+
+
+def _try_chart(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
+    """Yahoo `query2/v8/finance/chart/^VIX` — heavier endpoint (fallback)."""
     url = "https://query2.finance.yahoo.com/v8/finance/chart/^VIX"
     params = {"interval": "1m", "range": "1d"}
     try:
@@ -69,14 +115,9 @@ def get_realtime_vix(
         r.raise_for_status()
         data = r.json()
     except (requests.RequestException, ValueError) as e:
-        logger.debug("Realtime VIX fetch failed: %s", e)
+        logger.debug("Realtime VIX chart fetch failed: %s", e)
         return None
-
-    value = _extract_latest_quote(data)
-    if value is not None:
-        with _cache_lock:
-            _cache["vix"] = (now, value)
-    return value
+    return _extract_latest_quote(data)
 
 
 def reset_cache() -> None:

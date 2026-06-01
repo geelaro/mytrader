@@ -38,12 +38,17 @@ def _yahoo_session() -> requests.Session:
 
     Yahoo Finance requires a cookie from fc.yahoo.com before serving
     chart endpoints.  The session is cached per process.
+
+    Honours ``HTTPS_PROXY`` / ``HTTP_PROXY`` env vars so users behind a
+    local proxy (Clash / V2Ray) can reach Yahoo.  Set ``trust_env=True``
+    is the default for requests, but we make it explicit here because
+    some earlier version of this code disabled it.
     """
     global _YAHOO_SESSION
     if _YAHOO_SESSION is not None:
         return _YAHOO_SESSION
     s = requests.Session()
-    s.trust_env = False
+    s.trust_env = True
     s.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
