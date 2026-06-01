@@ -113,11 +113,16 @@ class TestGetRealtimeVix:
             assert get_realtime_vix() is None
 
     def test_returns_none_on_invalid_json(self):
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.json.side_effect = ValueError("not json")
+        """All three endpoints fail in different ways → None."""
+        # JSON failure for spark + chart, HTML response without the pattern
+        json_fail = MagicMock()
+        json_fail.raise_for_status = MagicMock()
+        json_fail.json.side_effect = ValueError("not json")
+        html_fail = MagicMock()
+        html_fail.raise_for_status = MagicMock()
+        html_fail.text = "<html>no vix here</html>"
         session = MagicMock()
-        session.get.return_value = resp
+        session.get.side_effect = [json_fail, json_fail, html_fail]
         with patch("data.realtime._yahoo_session", return_value=session):
             assert get_realtime_vix() is None
 
@@ -151,21 +156,22 @@ class TestGetRealtimeVix:
     def test_failure_not_cached_so_next_call_retries(self):
         """A failed fetch shouldn't poison the cache.
 
-        With two-endpoint fallback (spark, then chart), a single network
-        error causes both endpoints to be tried → 2 calls per fetch attempt.
+        With three-endpoint fallback (spark, chart, HTML), a total failure
+        consumes 3 calls.  Then a successful spark call on retry adds 1 more.
         """
         session = MagicMock()
         session.get.side_effect = [
-            # First attempt: both endpoints fail with connection errors
-            requests.ConnectionError("offline"),
-            requests.ConnectionError("offline"),
+            # First attempt: all three endpoints down
+            requests.ConnectionError("offline"),  # spark
+            requests.ConnectionError("offline"),  # chart
+            requests.ConnectionError("offline"),  # html
             # Second attempt: spark succeeds immediately
             _mock_yahoo_response(_spark_payload(18.45)),
         ]
         with patch("data.realtime._yahoo_session", return_value=session):
             assert get_realtime_vix() is None
             assert get_realtime_vix() == 18.45
-        assert session.get.call_count == 3
+        assert session.get.call_count == 4
 
     def test_reset_cache_forces_refetch(self):
         session = MagicMock()
@@ -193,3 +199,42 @@ class TestGetRealtimeVix:
         with patch("data.realtime._yahoo_session", return_value=session):
             assert get_realtime_vix() == 18.45
         assert session.get.call_count == 2
+
+    def test_falls_back_to_html_when_both_apis_fail(self):
+        """spark + chart 429 → HTML scrape succeeds."""
+        html_with_vix = (
+            '<html><body>'
+            '<fin-streamer data-symbol="^VIX" '
+            'data-field="regularMarketPrice" value="22.18"></fin-streamer>'
+            '</body></html>'
+        )
+        session = MagicMock()
+        # Build the HTML response mock — needs .text, not .json
+        html_resp = MagicMock()
+        html_resp.status_code = 200
+        html_resp.text = html_with_vix
+        html_resp.raise_for_status = MagicMock()
+        session.get.side_effect = [
+            _mock_yahoo_response({}, status=429),  # spark
+            _mock_yahoo_response({}, status=429),  # chart
+            html_resp,                              # HTML
+        ]
+        with patch("data.realtime._yahoo_session", return_value=session):
+            assert get_realtime_vix() == 22.18
+        assert session.get.call_count == 3
+
+    def test_html_missing_fin_streamer_returns_none(self):
+        """If HTML doesn't contain the expected pattern, return None."""
+        bad_html = "<html><body>price page rearranged</body></html>"
+        session = MagicMock()
+        html_resp = MagicMock()
+        html_resp.status_code = 200
+        html_resp.text = bad_html
+        html_resp.raise_for_status = MagicMock()
+        session.get.side_effect = [
+            _mock_yahoo_response({}, status=429),
+            _mock_yahoo_response({}, status=429),
+            html_resp,
+        ]
+        with patch("data.realtime._yahoo_session", return_value=session):
+            assert get_realtime_vix() is None

@@ -26,6 +26,7 @@ calling :func:`reset_cache` (mainly for tests).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Optional
@@ -51,9 +52,13 @@ def get_realtime_vix(
 ) -> Optional[float]:
     """Fetch current VIX value from Yahoo (≈15-minute delayed for free).
 
-    Tries two Yahoo endpoints in order — the lighter ``spark`` endpoint
-    first (rarely rate-limited), then the heavier ``chart/v8`` endpoint
-    that the rest of the codebase already uses.  The first success wins.
+    Tries three endpoints in order, first success wins:
+
+    1. ``query1/v8/finance/spark`` — lightest, sometimes rate-limited.
+    2. ``query2/v8/finance/chart`` — same backend, often 429s the worst.
+    3. ``finance.yahoo.com/quote/^VIX`` HTML page — heavy (~2 MB) but
+       far more permissive on rate limits, parses out the value from
+       the embedded ``<fin-streamer>`` element.
 
     Returns float in decimal points (e.g. 18.45 for VIX=18.45) or
     ``None`` on total failure.  Callers should treat None as "fall back
@@ -65,7 +70,11 @@ def get_realtime_vix(
         if cached and (now - cached[0]) < ttl:
             return cached[1]
 
-    value = _try_spark() or _try_chart(timeout)
+    value = (
+        _try_spark(timeout)
+        or _try_chart(timeout)
+        or _try_html(timeout)
+    )
     if value is not None:
         with _cache_lock:
             _cache["vix"] = (now, value)
@@ -118,6 +127,43 @@ def _try_chart(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
         logger.debug("Realtime VIX chart fetch failed: %s", e)
         return None
     return _extract_latest_quote(data)
+
+
+# Yahoo's quote HTML embeds the live price as a fin-streamer value attr.
+# The regex below allows the data-symbol and data-field attrs to appear in
+# either order and tolerates whitespace / other attrs between them.
+_HTML_VIX_RE = re.compile(
+    r'data-symbol="\^VIX"[^>]*data-field="regularMarketPrice"[^>]*value="([\d.]+)"',
+    re.IGNORECASE,
+)
+
+
+def _try_html(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
+    """Scrape the Yahoo quote HTML page for the live VIX value.
+
+    Slower (~2 MB response) but far more rate-limit tolerant than the
+    JSON endpoints, since the public page must serve browser users.
+    Used as last-resort fallback.
+    """
+    url = "https://finance.yahoo.com/quote/%5EVIX/"
+    try:
+        s = _yahoo_session()
+        r = s.get(url, timeout=timeout)
+        r.raise_for_status()
+        m = _HTML_VIX_RE.search(r.text)
+    except (requests.RequestException, ValueError) as e:
+        logger.debug("Realtime VIX html fetch failed: %s", e)
+        return None
+    if m is None:
+        logger.debug("Realtime VIX html fetch: fin-streamer pattern not found")
+        return None
+    try:
+        value = float(m.group(1))
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
 
 
 def reset_cache() -> None:
