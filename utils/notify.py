@@ -360,6 +360,84 @@ class Notifier:
         )
         return self._send({"msg_type": "interactive", "card": card})
 
+    def risk_alert_card(self, state) -> bool:
+        """Send a RED risk-light alert card.
+
+        ``state`` is an :class:`analysis.risk_monitor.RiskState`.  Renders
+        title, reasons bullets, and current indicators.
+        """
+        ind = state.indicators or {}
+        elements = []
+        if state.reasons:
+            elements.append(self._mk_field(
+                "触发原因",
+                "\n".join(f"• {r}" for r in state.reasons),
+            ))
+        if ind:
+            lines = []
+            if "spy_close" in ind:
+                lines.append(f"SPY {ind['spy_close']} (MA200 {ind.get('spy_ma200','-')}, "
+                             f"{ind.get('spy_vs_ma200_pct',0):+.2f}%)")
+            if "spy_adx" in ind:
+                lines.append(f"ADX {ind['spy_adx']}")
+            if "spy_5d_return_pct" in ind:
+                lines.append(f"SPY 5日 {ind['spy_5d_return_pct']:+.2f}%")
+            if "vix" in ind:
+                lines.append(f"VIX {ind['vix']}")
+            if lines:
+                elements.append(self._mk_field("当前指标", "\n".join(lines)))
+        if "as_of" in ind:
+            elements.append(self._mk_field("截止", str(ind["as_of"])))
+
+        card = self._mk_card(
+            title=f"{state.emoji} 风险灯转 RED — 减仓预警",
+            color=COLOR["error"],
+            elements=elements,
+            footer=f"traderbridge 风险监控  |  {datetime.now().strftime('%H:%M')}",
+        )
+        return self.enqueue({"msg_type": "interactive", "card": card})
+
+    def position_alert_card(self, position: dict, distance_pct: float) -> bool:
+        """Send a position-approaching-stop alert card."""
+        symbol = position.get("symbol", "?")
+        current = position.get("current_price", 0)
+        stop = position.get("stop_price", 0)
+        shares = position.get("shares")
+        strategy = position.get("strategy")
+
+        elements = [
+            self._mk_field("当前价", f"${current:.2f}"),
+            self._mk_field("止损价", f"${stop:.2f}"),
+            self._mk_field("距止损", f"{distance_pct:.2f}%"),
+        ]
+        if shares:
+            elements.append(self._mk_field("持仓", f"{shares} 股"))
+        if strategy:
+            elements.append(self._mk_field("策略", self._strat_label(strategy)))
+
+        card = self._mk_card(
+            title=f"⚠ {symbol} 临近止损",
+            color=COLOR["warn"],
+            elements=elements,
+            footer=f"traderbridge 风险监控  |  {datetime.now().strftime('%H:%M')}",
+        )
+        return self.enqueue({"msg_type": "interactive", "card": card})
+
+    def vix_alert_card(self, vix_value: float, threshold: float) -> bool:
+        """Send a VIX spike alert card."""
+        elements = [
+            self._mk_field("VIX 当前", f"{vix_value:.2f}"),
+            self._mk_field("触发阈值", f"≥ {threshold:.0f}"),
+            self._mk_field("含义", "极端恐慌区间, 考虑降仓 / 暂停加仓"),
+        ]
+        card = self._mk_card(
+            title=f"VIX 突破 — {vix_value:.1f}",
+            color=COLOR["error"],
+            elements=elements,
+            footer=f"traderbridge 风险监控  |  {datetime.now().strftime('%H:%M')}",
+        )
+        return self.enqueue({"msg_type": "interactive", "card": card})
+
     # ------------------------------------------------------------------
     # Internal — send
     # ------------------------------------------------------------------

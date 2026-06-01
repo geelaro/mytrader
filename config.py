@@ -69,6 +69,16 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "app_secret": "",
         "chat_id": "",
     },
+    "alerts": {
+        "enabled": True,
+        "risk_light_enabled": True,
+        "vix_spike_enabled": True,
+        "vix_alert_threshold": 30.0,
+        "vix_clear_threshold": 27.0,
+        "position_alert_enabled": True,
+        "position_distance_alert_pct": 5.0,
+        "position_distance_clear_pct": 7.0,
+    },
 }
 
 
@@ -142,6 +152,7 @@ class RuntimeConfig:
         self.broker_futu = _Section(self._data["broker_futu"])
         self.data = _Section(self._data["data"])
         self.feishu = _Section(self._data["feishu"])
+        self.alerts = _Section(self._data["alerts"])
 
     # ---- YAML loading ----
 
