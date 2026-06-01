@@ -50,6 +50,7 @@ from live.order_manager import OrderManager
 from live.risk_alerts import AlertConfig, RiskAlerter
 from live.position_stops import compute_hypothetical_positions
 from analysis.risk_monitor import compute_risk_state, RiskState
+from data.realtime import get_realtime_vix
 from config import config as runtime_config
 
 logger = get_logger("live")
@@ -382,14 +383,17 @@ class LiveTrader:
 
         Uses 1-year lookback — risk_monitor needs ≥220 bars for MA200 + ADX.
         VIX value is read from the same RiskState indicators dict so we make
-        one round-trip per tick.
+        one round-trip per tick.  An attempt is made to overlay Yahoo's
+        realtime VIX (~15-minute delayed) so intraday spikes can fire the
+        alert; on failure it falls back silently to the cached EOD value.
         """
         end = pd.Timestamp(target_date) if target_date else pd.Timestamp.today()
         start = (end - pd.DateOffset(years=2)).strftime("%Y-%m-%d")
         end_str = end.strftime("%Y-%m-%d")
         spy_df = self.provider.get_daily("SPY", start=start, end=end_str)
         vix_df = self.provider.get_daily("^VIX", start=start, end=end_str)
-        state = compute_risk_state(spy_df, vix_df)
+        live_vix = get_realtime_vix()  # None on failure → falls back to EOD
+        state = compute_risk_state(spy_df, vix_df, realtime_vix=live_vix)
         vix_value = state.indicators.get("vix") if state else None
         return state, vix_value
 

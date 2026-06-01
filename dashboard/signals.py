@@ -9,6 +9,7 @@ from utils import get_logger
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 from strategy import SIGNAL_LABEL
 from analysis.risk_monitor import compute_risk_state, RiskLevel
+from data.realtime import get_realtime_vix
 from live.position_stops import compute_hypothetical_positions
 
 logger = get_logger("dashboard.signals")
@@ -39,7 +40,11 @@ def render_risk_light(config, target_date, provider):
         st.divider()
         return
 
-    state = compute_risk_state(spy_df, vix_df)
+    # Try to overlay Yahoo realtime VIX (~15-minute delayed) so the badge
+    # reflects intraday rather than yesterday's close. Failures fall back
+    # to the EOD value from vix_df silently.
+    live_vix = get_realtime_vix()
+    state = compute_risk_state(spy_df, vix_df, realtime_vix=live_vix)
     theme = _RISK_THEME[state.level]
 
     # Regime / volatility tag — uses the existing MarketStateClassifier
@@ -95,11 +100,16 @@ def render_risk_light(config, target_date, provider):
     )
     c2.metric("SPY 5日", f"{ind.get('spy_5d_return_pct', 0):+.2f}%")
     c3.metric("SPY ADX", f"{ind.get('spy_adx', 0):.1f}")
+    vix_src = ind.get("vix_source", "eod")
+    vix_label = "VIX (实时)" if vix_src == "realtime" else "VIX (昨收)"
     c4.metric(
-        "VIX",
+        vix_label,
         f"{ind.get('vix', 0):.2f}",
         delta=None,
-        help="<18 低波, 18-30 偏高, >30 极端恐慌",
+        help=(
+            "<18 低波, 18-30 偏高, >30 极端恐慌. "
+            + ("Yahoo ~15min 延迟实时" if vix_src == "realtime" else "CBOE 官方收盘价")
+        ),
     )
 
     # Reason bullets

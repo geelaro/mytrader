@@ -177,3 +177,45 @@ class TestParamsOverride:
         )
         # VIX = 14, threshold = 12 → not green
         assert state.level != RiskLevel.GREEN
+
+
+# ===================================================================
+# Realtime VIX override
+# ===================================================================
+
+
+class TestRealtimeVixOverride:
+    def test_realtime_overrides_eod(self):
+        """Realtime VIX 35 should flip RED even if cached EOD says 15."""
+        spy = _synthetic_spy(np.linspace(300, 500, 300))
+        eod_vix = _synthetic_vix(15.0)  # green-light EOD
+        state = compute_risk_state(spy, eod_vix, realtime_vix=35.0)
+        # VIX > 30 forces RED
+        assert state.level == RiskLevel.RED
+        assert any("VIX=35.0" in r for r in state.reasons)
+        # Indicator reflects the realtime value, not the EOD
+        assert state.indicators["vix"] == 35.0
+        assert state.indicators["vix_source"] == "realtime"
+
+    def test_none_realtime_uses_eod(self):
+        """None override → falls back to EOD vix_df as before."""
+        spy = _synthetic_spy(np.linspace(300, 500, 300))
+        state = compute_risk_state(spy, _synthetic_vix(15.0), realtime_vix=None)
+        assert state.indicators["vix"] == 15.0
+        assert state.indicators["vix_source"] == "eod"
+
+    def test_zero_realtime_ignored(self):
+        """A zero or negative realtime value is treated as missing."""
+        spy = _synthetic_spy(np.linspace(300, 500, 300))
+        state = compute_risk_state(spy, _synthetic_vix(15.0), realtime_vix=0)
+        assert state.indicators["vix"] == 15.0
+        assert state.indicators["vix_source"] == "eod"
+
+    def test_realtime_keeps_indicators_from_spy(self):
+        """Realtime override only touches VIX, not SPY/ADX/etc."""
+        spy = _synthetic_spy(np.linspace(300, 500, 300))
+        state = compute_risk_state(spy, _synthetic_vix(15.0), realtime_vix=18.0)
+        # All other indicators still populated
+        for k in ("spy_close", "spy_ma200", "spy_vs_ma200_pct",
+                  "spy_adx", "spy_5d_return_pct", "as_of"):
+            assert k in state.indicators

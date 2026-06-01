@@ -89,6 +89,7 @@ def compute_risk_state(
     spy_df: pd.DataFrame,
     vix_df: pd.DataFrame,
     params: Optional[dict] = None,
+    realtime_vix: Optional[float] = None,
 ) -> RiskState:
     """Compute the current risk light from SPY and VIX OHLCV.
 
@@ -102,6 +103,13 @@ def compute_risk_state(
         is preferred; mismatched dates are resolved by forward-fill.
     params : dict, optional
         Override default thresholds.
+    realtime_vix : float, optional
+        Live VIX value (e.g. from :func:`data.realtime.get_realtime_vix`).
+        When provided, overrides the EOD value from ``vix_df`` for the
+        RED/GREEN threshold check.  Use during US trading hours so the
+        risk light reflects intraday spikes rather than yesterday's close.
+        The ``vix`` indicator in the returned RiskState is the realtime
+        value when this override is active.
 
     Returns
     -------
@@ -136,9 +144,15 @@ def compute_risk_state(
     else:
         ret_5d = 0.0
 
-    # VIX latest — forward-fill onto SPY's last date if needed
-    vix_aligned = vix_df["Close"].reindex(spy.index, method="ffill")
-    vix_now = float(vix_aligned.iloc[-1]) if not vix_aligned.empty else float(vix_df["Close"].iloc[-1])
+    # VIX latest — realtime override takes precedence if supplied,
+    # otherwise forward-fill onto SPY's last date from the EOD frame.
+    if realtime_vix is not None and realtime_vix > 0:
+        vix_now = float(realtime_vix)
+        vix_source = "realtime"
+    else:
+        vix_aligned = vix_df["Close"].reindex(spy.index, method="ffill")
+        vix_now = float(vix_aligned.iloc[-1]) if not vix_aligned.empty else float(vix_df["Close"].iloc[-1])
+        vix_source = "eod"
 
     indicators = {
         "spy_close": round(spy_close, 2),
@@ -147,6 +161,7 @@ def compute_risk_state(
         "spy_adx": round(adx, 1),
         "spy_5d_return_pct": round(ret_5d, 2),
         "vix": round(vix_now, 2),
+        "vix_source": vix_source,
         "as_of": spy.index[-1].date().isoformat(),
     }
 
