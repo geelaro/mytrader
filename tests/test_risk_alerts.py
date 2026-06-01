@@ -291,6 +291,38 @@ class TestPositionAlert:
         notifier.position_alert_card.assert_not_called()
 
 
+class TestTickCombined:
+    def test_tick_fires_all_three(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        summary = alerter.tick(
+            risk_state=_make_state(RiskLevel.RED),
+            vix_value=35.0,
+            positions=[_pos("AAPL", 100, 97)],
+        )
+        assert summary == {"risk_light": True, "vix": True, "positions": 1}
+        notifier.risk_alert_card.assert_called_once()
+        notifier.vix_alert_card.assert_called_once()
+        notifier.position_alert_card.assert_called_once()
+
+    def test_tick_skips_none_inputs(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        summary = alerter.tick(risk_state=None, vix_value=None, positions=None)
+        assert summary == {"risk_light": False, "vix": False, "positions": 0}
+        notifier.risk_alert_card.assert_not_called()
+        notifier.vix_alert_card.assert_not_called()
+        notifier.position_alert_card.assert_not_called()
+
+    def test_tick_partial(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        summary = alerter.tick(vix_value=35.0)
+        assert summary == {"risk_light": False, "vix": True, "positions": 0}
+        notifier.risk_alert_card.assert_not_called()
+        notifier.vix_alert_card.assert_called_once()
+
+
 class TestRiskLightRobustness:
     def test_notifier_unavailable_does_not_crash(self, temp_cache):
         notifier = _make_notifier(available=False)

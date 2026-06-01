@@ -7,8 +7,9 @@ import streamlit as st
 
 from utils import get_logger
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
-from strategy import SIGNAL_LABEL, STRATEGY_MAP
+from strategy import SIGNAL_LABEL
 from analysis.risk_monitor import compute_risk_state, RiskLevel
+from live.position_stops import compute_hypothetical_positions
 
 logger = get_logger("dashboard.signals")
 
@@ -356,32 +357,12 @@ def render_signal_detail(config, target_date, provider, cache):
 # ---------------------------------------------------------------------------
 
 
-def _find_open_simulated_trade(df_sig: pd.DataFrame) -> int | None:
-    """Locate the most recent unclosed buy signal in ``df_sig``.
-
-    Scans the Signal column from the end backward. A buy (1) with no
-    sell (-1) in between is treated as an open simulated position.
-    Returns the bar index of the entry, or None if no open trade.
-    """
-    if "Signal" not in df_sig.columns:
-        return None
-    signals = df_sig["Signal"].values
-    for i in range(len(signals) - 1, -1, -1):
-        if signals[i] == -1:
-            return None
-        if signals[i] == 1:
-            return i
-    return None
-
-
 def render_position_watch(config, target_date, provider):
     """Display 'simulated positions' from each symbol's active strategy and
     flag any within 5% of their trailing stop.
 
-    Uses a Chandelier-style trailing stop estimate
-    (``highest_high_since_entry - trail_atr_mult × ATR``) as a conservative
-    proxy. Symbols whose latest active-strategy signal is a closed trade
-    (i.e. saw a sell after the most recent buy) are excluded.
+    Calculation lives in :func:`live.position_stops.compute_hypothetical_positions`
+    so the daemon's alerter can reuse it; this function only renders.
     """
     st.subheader("假设持仓监控")
     st.caption(
@@ -389,81 +370,12 @@ def render_position_watch(config, target_date, provider):
         "用 Chandelier 移动止损估算距离. 仅用于减仓预警, 不替代实盘持仓数据."
     )
 
-    lookback_years = config.get("scanner", {}).get("lookback_years", 3)
-    start = (pd.Timestamp(target_date) - pd.DateOffset(years=lookback_years)).strftime("%Y-%m-%d")
-    end = target_date.isoformat()
-
-    rows: list[dict] = []
-    for item in config.get("watchlist", []):
-        symbol = item["symbol"]
-        strat_name = item.get("active", "")
-        if not isinstance(strat_name, str) or strat_name not in STRATEGY_MAP:
-            continue  # skip ensemble (list) and unknowns
-
-        try:
-            df = provider.get_daily(symbol, start=start, end=end)
-        except Exception as exc:
-            logger.debug("position watch fetch failed for %s: %s", symbol, exc)
-            continue
-        if df is None or df.empty:
-            continue
-
-        params = config.get("strategy", {}).get(strat_name, {})
-        try:
-            strategy = STRATEGY_MAP[strat_name](**params)
-            df_sig = strategy.calculate_indicators(df)
-        except Exception as exc:
-            logger.debug("position watch indicators failed for %s/%s: %s",
-                         symbol, strat_name, exc)
-            continue
-
-        idx_entry = _find_open_simulated_trade(df_sig)
-        if idx_entry is None:
-            continue
-
-        try:
-            entry_date = df_sig.index[idx_entry]
-            entry_price = float(df_sig["Close"].iloc[idx_entry])
-            current_price = float(df_sig["Close"].iloc[-1])
-            atr = float(df_sig["ATR"].iloc[-1]) if "ATR" in df_sig.columns else 0.0
-        except (KeyError, IndexError):
-            continue
-        if atr <= 0 or entry_price <= 0:
-            continue
-
-        # Chandelier stop — uses High when available, else Close
-        track_col = "High" if "High" in df_sig.columns else "Close"
-        try:
-            highest = float(df_sig[track_col].iloc[idx_entry:].max())
-        except (KeyError, ValueError):
-            continue
-
-        trail_mult = float(getattr(strategy.params, "trail_atr_mult", 2.5))
-        stop_price = highest - trail_mult * atr
-
-        pnl_pct = (current_price / entry_price - 1) * 100
-        dist_pct = (current_price - stop_price) / current_price * 100 if current_price > 0 else 0
-        days_held = (df_sig.index[-1] - entry_date).days
-
-        rows.append({
-            "symbol": symbol,
-            "strategy": strat_name,
-            "entry_date": entry_date.date().isoformat(),
-            "entry_price": entry_price,
-            "current_price": current_price,
-            "pnl_pct": pnl_pct,
-            "stop_price": stop_price,
-            "distance_pct": dist_pct,
-            "days_held": days_held,
-        })
+    rows = compute_hypothetical_positions(config, target_date, provider)
 
     if not rows:
         st.info("当前无假设持仓 — active 策略最近的信号均已平仓 (或从未触发买入)")
         st.divider()
         return
-
-    # Sort: closest to stop first (most urgent)
-    rows.sort(key=lambda r: r["distance_pct"])
 
     df_display = pd.DataFrame([{
         "标的": r["symbol"],

@@ -47,6 +47,10 @@ from utils.signal_scanner import SignalScanner
 from utils.notify import Notifier
 from live.risk_controller import RiskController
 from live.order_manager import OrderManager
+from live.risk_alerts import AlertConfig, RiskAlerter
+from live.position_stops import compute_hypothetical_positions
+from analysis.risk_monitor import compute_risk_state, RiskState
+from config import config as runtime_config
 
 logger = get_logger("live")
 
@@ -104,6 +108,10 @@ class LiveTrader:
             risk_ctrl=self.risk_ctrl,
             dry_run=self.dry_run,
         )
+        # Feishu risk alerter — state machine for risk-light / VIX /
+        # position-near-stop notifications, driven from daemon ticks.
+        alert_cfg = AlertConfig.from_dict(runtime_config.raw.get("alerts"))
+        self.alerter = RiskAlerter(self.notifier, self.cache, alert_cfg)
 
     # ------------------------------------------------------------------
     # Main entry
@@ -334,6 +342,58 @@ class LiveTrader:
         return results
 
     # ------------------------------------------------------------------
+    # Risk alerter — daemon hook
+    # ------------------------------------------------------------------
+
+    def run_alerts(self, target_date: Optional[str] = None) -> dict:
+        """Compute risk inputs and run all enabled alert checks.
+
+        Best-effort: any exception (data fetch failure, indicator NaN, …)
+        is caught and logged; the daemon must not die because the alerter
+        could not fetch SPY today.  Returns the tick summary on success or
+        an all-false dict if anything went wrong.
+        """
+        try:
+            risk_state, vix_value = self._compute_risk_state(target_date)
+        except Exception:
+            logger.exception("risk_state 计算失败, 跳过本轮告警")
+            risk_state, vix_value = None, None
+
+        try:
+            positions = compute_hypothetical_positions(
+                self.config, pd.Timestamp(target_date or date.today()), self.provider,
+            )
+        except Exception:
+            logger.exception("假设持仓计算失败, 跳过持仓告警")
+            positions = []
+
+        try:
+            return self.alerter.tick(
+                risk_state=risk_state,
+                vix_value=vix_value,
+                positions=positions,
+            )
+        except Exception:
+            logger.exception("alerter.tick 异常")
+            return {"risk_light": False, "vix": False, "positions": 0}
+
+    def _compute_risk_state(self, target_date: Optional[str]) -> tuple:
+        """Fetch SPY + VIX and return ``(RiskState, vix_value)``.
+
+        Uses 1-year lookback — risk_monitor needs ≥220 bars for MA200 + ADX.
+        VIX value is read from the same RiskState indicators dict so we make
+        one round-trip per tick.
+        """
+        end = pd.Timestamp(target_date) if target_date else pd.Timestamp.today()
+        start = (end - pd.DateOffset(years=2)).strftime("%Y-%m-%d")
+        end_str = end.strftime("%Y-%m-%d")
+        spy_df = self.provider.get_daily("SPY", start=start, end=end_str)
+        vix_df = self.provider.get_daily("^VIX", start=start, end=end_str)
+        state = compute_risk_state(spy_df, vix_df)
+        vix_value = state.indicators.get("vix") if state else None
+        return state, vix_value
+
+    # ------------------------------------------------------------------
     # Daemon
     # ------------------------------------------------------------------
 
@@ -421,6 +481,9 @@ class LiveTrader:
 
                 print(f"\n  [{datetime.now().strftime('%H:%M:%S')}] 第 {cycle} 轮")
                 self.run()
+                alert_summary = self.run_alerts()
+                if any(alert_summary.values()):
+                    logger.info("风险告警触发: %s", alert_summary)
                 _health_state["last_tick"] = datetime.now().isoformat()
                 _health_state["paused"] = self.risk_ctrl.trading_paused
                 _health_state["status"] = "paused" if self.risk_ctrl.trading_paused else "ok"

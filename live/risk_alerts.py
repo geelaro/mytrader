@@ -173,6 +173,32 @@ class RiskAlerter:
         return fired
 
     # ------------------------------------------------------------------
+    # Combined daemon hook
+    # ------------------------------------------------------------------
+
+    def tick(
+        self,
+        risk_state: Optional["RiskState"] = None,
+        vix_value: Optional[float] = None,
+        positions: Optional[list] = None,
+    ) -> dict:
+        """Run all enabled checks in one call — intended for daemon ticks.
+
+        Each input is optional: pass ``None`` (or empty list) to skip that
+        check.  Returns a dict summarising what fired::
+
+            {"risk_light": bool, "vix": bool, "positions": int}
+        """
+        summary = {"risk_light": False, "vix": False, "positions": 0}
+        if risk_state is not None:
+            summary["risk_light"] = self.check_risk_light(risk_state)
+        if vix_value is not None:
+            summary["vix"] = self.check_vix(vix_value)
+        if positions:
+            summary["positions"] = self.check_positions(positions)
+        return summary
+
+    # ------------------------------------------------------------------
     # Notification renderers
     # ------------------------------------------------------------------
 
