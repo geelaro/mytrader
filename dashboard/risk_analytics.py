@@ -16,10 +16,13 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from analysis.concentration import concentration_summary, hhi_label
+from analysis.correlation_analysis import correlation_summary
+from analysis.evt import evt_summary
 from analysis.risk_decomposition import risk_decomposition_summary, risk_parity_weights
 from analysis.stress import SCENARIOS, run_scenarios
 from analysis.var import portfolio_returns, var_summary
@@ -62,6 +65,10 @@ def render_risk_analytics(config: dict, target_date, provider):
 
     st.write(f"组合持仓: **{len(weights)}** 个标的, 等权")
 
+    # Fetch prices up front — used by VaR, correlation, risk-decomposition,
+    # what-if. ``lookback_years`` controls the window.
+    prices = _fetch_prices(weights.keys(), target_date, provider, lookback_years)
+
     # ── Concentration ──────────────────────────────────────────────
     st.subheader("集中度")
     concentration = concentration_summary(
@@ -96,9 +103,13 @@ def render_risk_analytics(config: dict, target_date, provider):
 
     st.divider()
 
+    # ── Correlation analysis ───────────────────────────────────────
+    _render_correlation_section(prices, weights)
+
+    st.divider()
+
     # ── VaR / ES ───────────────────────────────────────────────────
     st.subheader("VaR / 期望损失 (ES)")
-    prices = _fetch_prices(weights.keys(), target_date, provider, lookback_years)
     pf_ret = portfolio_returns(prices, weights)
     if pf_ret.empty:
         st.warning("无法计算 VaR — 历史价格数据不足")
@@ -109,19 +120,46 @@ def render_risk_analytics(config: dict, target_date, provider):
             f"日均 {summary['mean'] * 100:+.3f}%, "
             f"波动 {summary['std'] * 100:.2f}%. 所有数值为单日损失."
         )
+        # EVT extrapolation for high-confidence tails
+        evt = evt_summary(pf_ret)
+        evt_by_conf = {row["confidence"]: row for row in evt["comparison"]}
+
         rows = []
-        for conf in ("95%", "99%"):
-            metrics = summary[conf]
+        for conf, conf_key in [("95%", "0.95"), ("99%", "0.99"),
+                                ("99.5%", "0.995"), ("99.9%", "0.999")]:
+            if conf in summary:  # 95% / 99% already in var_summary
+                m = summary[conf]
+                hist = m["historical"]
+                param = m["parametric"]
+                cvar = m["cvar"]
+            else:
+                # 99.5% / 99.9% — only EVT can give a reliable estimate
+                hist = 0.0
+                param = 0.0
+                cvar = 0.0
+            evt_row = evt_by_conf.get(conf, {})
             rows.append({
                 "置信度": conf,
-                "Historical VaR": f"{metrics['historical'] * 100:.2f}%",
-                "Parametric VaR": f"{metrics['parametric'] * 100:.2f}%",
-                "Expected Shortfall (CVaR)": f"{metrics['cvar'] * 100:.2f}%",
+                "Historical VaR": f"{hist * 100:.2f}%" if hist > 0 else "—",
+                "Parametric VaR": f"{param * 100:.2f}%" if param > 0 else "—",
+                "EVT VaR": f"{evt_row.get('evt', 0) * 100:.2f}%" if evt_row.get("evt", 0) > 0 else "—",
+                "ES (Historical)": f"{cvar * 100:.2f}%" if cvar > 0 else "—",
+                "EVT ES": f"{evt_row.get('evt_es', 0) * 100:.2f}%" if evt_row.get("evt_es", 0) > 0 and np.isfinite(evt_row.get("evt_es", 0)) else "—",
             })
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+        if evt.get("warning"):
+            st.warning(evt["warning"])
+        elif evt.get("fit"):
+            f = evt["fit"]
+            st.caption(
+                f"EVT GPD 拟合: ξ = **{f['xi']:.3f}** (>0 重尾, ≈0 正态, <0 轻尾), "
+                f"β = {f['beta']:.4f}, 用 {f['n_exceed']} 个超阈观测."
+            )
         st.caption(
-            "解读: Historical 是经验百分位, Parametric 是正态假设, "
-            "ES 是\"穿透 VaR 之后平均亏多少\". 三者差距大说明分布有肥尾."
+            "解读: Historical = 经验分位, Parametric = 正态闭式, "
+            "**EVT = 拟合 GPD 后外推**(99%+ 唯一可靠估计, 历史样本太稀疏). "
+            "EVT > Historical 通常说明有肥尾, 是好事(更保守)."
         )
 
     st.divider()
@@ -165,6 +203,78 @@ def render_risk_analytics(config: dict, target_date, provider):
 
     # ── What-If Rebalance ──────────────────────────────────────────
     _render_what_if(prices, weights)
+
+
+# ---------------------------------------------------------------------------
+# Correlation analysis section
+# ---------------------------------------------------------------------------
+
+
+def _render_correlation_section(prices: pd.DataFrame, weights: dict):
+    """Effective bets + max pair correlation + cluster breakdown."""
+    st.subheader("相关性分析")
+    st.caption(
+        "看你 N 个持仓里实际有多少**独立赌注**. 两个 ρ=0.9 的标的 "
+        "数学上是一个仓位 — sector HHI 抓不到, 这里能."
+    )
+    if prices.empty or len(weights) < 2:
+        st.info("相关性分析需要 ≥ 2 个持仓且历史价格数据充足")
+        return
+
+    summary = correlation_summary(prices, weights=weights)
+    eb = summary.get("effective_bets", {})
+    if not eb:
+        st.warning("相关性分析数据不足 — 至少需要 30 个交易日")
+        return
+
+    cols = st.columns(4)
+    cols[0].metric("持仓数", eb["n_symbols"])
+    cols[1].metric(
+        "有效独立赌注",
+        f"{eb['effective_n']:.2f}",
+        help="PCA 加权 effective N. 越接近持仓数说明越分散, 越接近 1 说明实际只是一个仓位.",
+    )
+    cols[2].metric(
+        "独立比例",
+        f"{eb['concentration_ratio'] * 100:.1f}%",
+        help="effective_n / n_symbols. ≥80% 良好, ≤50% 警告.",
+    )
+    max_pair = summary.get("max_pair")
+    if max_pair:
+        cols[3].metric(
+            "最大对相关性",
+            f"{max_pair['correlation']:.2f}",
+            help=f"{max_pair['symbols'][0]} ↔ {max_pair['symbols'][1]}",
+        )
+
+    # Cluster breakdown
+    clusters = summary.get("clusters", {})
+    if clusters and clusters.get("n_clusters"):
+        cluster_map = clusters["clusters"]
+        n_clusters = clusters["n_clusters"]
+        n_syms = clusters["n_symbols"]
+        st.write(
+            f"**层次聚类**: {n_syms} 个持仓 → **{n_clusters}** 个聚类 "
+            f"(|ρ| > {1 - clusters['distance_threshold']:.2f} 视为同一类)"
+        )
+        if n_clusters < n_syms:
+            cluster_rows = []
+            for cid, syms in sorted(cluster_map.items()):
+                cluster_rows.append({
+                    "聚类": f"#{cid}",
+                    "标的数": len(syms),
+                    "标的": ", ".join(syms),
+                })
+            st.dataframe(
+                pd.DataFrame(cluster_rows),
+                hide_index=True, use_container_width=True,
+            )
+            st.caption(
+                f"**洞察**: 你以为有 {n_syms} 个独立仓位, 实际只有 {n_clusters} 个独立赌注. "
+                "同一聚类的标的高度联动, 减仓任一个对组合风险的边际效应都类似."
+            )
+        else:
+            st.success(f"全部 {n_syms} 个持仓相关性较低, 是 {n_clusters} 个独立赌注 ✓")
 
 
 # ---------------------------------------------------------------------------
