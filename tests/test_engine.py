@@ -259,7 +259,7 @@ class TestPlotResult:
             initial_capital=10000, final_equity=10400,
         )
         path = str(tmp_path / "test_plot.png")
-        fig = plot_result(result, df, symbol="TEST", save_path=path)
+        fig = plot_result(result, df, symbol="TEST", save_path=path, show=False)
         import os
         assert os.path.exists(path)
         import matplotlib.pyplot as plt

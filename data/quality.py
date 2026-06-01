@@ -19,7 +19,7 @@ def flag_price_jumps(df: pd.DataFrame, threshold_pct: float = 20.0) -> pd.DataFr
 
     Helps detect bad ticks, split-correction errors, or data glitches.
     """
-    ret = df["Close"].pct_change().abs() * 100
+    ret = df["Close"].pct_change(fill_method=None).abs() * 100
     df["_price_jump"] = ret > threshold_pct
     return df
 

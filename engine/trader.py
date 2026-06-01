@@ -675,7 +675,7 @@ def print_result(result):
                   f"{t.exit_reason:<10}")
 
 
-def plot_result(result, df, symbol="AAPL", save_path=None):
+def plot_result(result, df, symbol="AAPL", save_path=None, show=True):
     """Plot backtest results: price + trades, equity curve, drawdown."""
     try:
         setup_chinese_font()
@@ -752,7 +752,8 @@ def plot_result(result, df, symbol="AAPL", save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"\n图表已保存至: {save_path}")
-    plt.show()
+    if show:
+        plt.show()
     return fig
 
 

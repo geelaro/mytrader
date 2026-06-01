@@ -28,3 +28,4 @@ output/
 # IDE
 .idea/
 .vscode/
+.claude/
