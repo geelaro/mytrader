@@ -20,8 +20,10 @@ import pandas as pd
 import streamlit as st
 
 from analysis.concentration import concentration_summary, hhi_label
+from analysis.risk_decomposition import risk_decomposition_summary, risk_parity_weights
 from analysis.stress import SCENARIOS, run_scenarios
 from analysis.var import portfolio_returns, var_summary
+from analysis.what_if import apply_rebalance, compare_portfolios
 from live.position_stops import compute_hypothetical_positions
 from utils.sectors import DEFAULT_SECTORS
 
@@ -153,6 +155,180 @@ def render_risk_analytics(config: dict, target_date, provider):
             "假设当时就持有这个组合. 数据不足的场景说明部分标的当时还没上市. "
             "Daily-rebalanced 收益, 与 buy-and-hold 略有差异."
         )
+
+    st.divider()
+
+    # ── Risk Decomposition ─────────────────────────────────────────
+    _render_risk_decomposition(prices, weights)
+
+    st.divider()
+
+    # ── What-If Rebalance ──────────────────────────────────────────
+    _render_what_if(prices, weights)
+
+
+# ---------------------------------------------------------------------------
+# Risk Decomposition section
+# ---------------------------------------------------------------------------
+
+
+def _render_risk_decomposition(prices: pd.DataFrame, weights: dict):
+    """Bar chart + table of per-symbol risk contribution (Component VaR)."""
+    st.subheader("风险贡献分解")
+    st.caption(
+        "把组合 VaR 分解到每个持仓: 哪个标的贡献了最多风险? "
+        "等权资金但风险贡献可能极不均衡 — 这是\"看起来分散但实际押注\"的检测器."
+    )
+    if prices.empty:
+        st.warning("数据不足以计算风险分解")
+        return
+
+    summary = risk_decomposition_summary(prices, weights)
+    if summary["by_symbol"].empty:
+        st.warning("数据不足以计算风险分解 (至少需要 30 个交易日)")
+        return
+
+    cols = st.columns(3)
+    cols[0].metric("组合 VaR (95%, 单日)", f"{summary['total_var_pct']:.2f}%")
+    top = summary["top_contributor"]
+    cols[1].metric("风险贡献最大", str(top) if top else "—")
+    cols[2].metric("Top 占比", f"{summary['top_contributor_pct']:.1f}%")
+
+    df = summary["by_symbol"].copy()
+    # Format for display
+    df_display = pd.DataFrame({
+        "标的": df.index,
+        "权重": [f"{v * 100:.1f}%" for v in df["weight"]],
+        "Marginal VaR": [f"{v:.3f}%" for v in df["mvar_pct"]],
+        "Component VaR": [f"{v:.3f}%" for v in df["cvar_pct"]],
+        "风险贡献%": [f"{v:.1f}%" for v in df["rc_pct"]],
+    })
+    st.dataframe(df_display, hide_index=True, use_container_width=True)
+
+    # Bar chart: risk contribution %
+    chart_df = df[["rc_pct"]].rename(columns={"rc_pct": "风险贡献 %"})
+    st.bar_chart(chart_df)
+    st.caption(
+        "**解读**: Marginal VaR = 多加 1 单位权重会让组合 VaR 增加多少. "
+        "Component VaR = 该持仓承担的 VaR 份额, 各分量加和 ≈ 组合总 VaR (欧拉分解). "
+        "**风险贡献% 远大于权重%** 的位置是首要减仓候选."
+    )
+
+
+# ---------------------------------------------------------------------------
+# What-If section
+# ---------------------------------------------------------------------------
+
+
+_PRESETS = {
+    "保持当前": "current",
+    "Risk Parity (各持仓风险贡献等同)": "risk_parity",
+    "等权": "equal_weight",
+    "去掉风险贡献最大的位置": "drop_top",
+    "把风险贡献最大的位置砍半": "halve_top",
+}
+
+
+def _render_what_if(prices: pd.DataFrame, weights: dict):
+    """Interactive preview: try preset rebalances, see before/after metrics."""
+    st.subheader("What-If 假设分析")
+    st.caption(
+        "试一试不同的调仓策略, 看 VaR / HHI / 行业暴露 会怎么变. "
+        "不下单, 纯计算预演."
+    )
+    if prices.empty or not weights:
+        st.warning("数据不足以做假设分析")
+        return
+
+    preset_label = st.selectbox(
+        "调仓方案",
+        list(_PRESETS.keys()),
+        index=1,  # default to Risk Parity (most useful)
+    )
+    preset = _PRESETS[preset_label]
+
+    new_weights = _apply_preset(prices, weights, preset)
+    if not new_weights:
+        st.info("调仓方案无法计算 (数据不足或无效)")
+        return
+
+    comparison = compare_portfolios(
+        prices, weights, new_weights,
+        sector_map=DEFAULT_SECTORS,
+    )
+    st.markdown(f"**变化**: {comparison['summary_text']}")
+
+    # Before / after table
+    rows = []
+    for metric, label, fmt in [
+        ("var_pct", "组合 VaR (单日)", lambda v: f"{v:.2f}%"),
+        ("hhi", "HHI", lambda v: f"{v:.0f} ({hhi_label(v)})"),
+        ("effective_n", "有效持仓数", lambda v: f"{v:.2f}"),
+        ("top_3_weight", "Top-3 占比", lambda v: f"{v * 100:.1f}%"),
+        ("sector_hhi", "行业 HHI", lambda v: f"{v:.0f} ({hhi_label(v)})"),
+    ]:
+        if metric not in comparison["before"]:
+            continue
+        rows.append({
+            "指标": label,
+            "Before": fmt(comparison["before"][metric]),
+            "After": fmt(comparison["after"][metric]),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    # Weight diff table
+    weight_rows = []
+    all_syms = sorted(set(weights.keys()) | set(new_weights.keys()))
+    w_before_norm = _normalised(weights)
+    w_after_norm = _normalised(new_weights)
+    for sym in all_syms:
+        wb = w_before_norm.get(sym, 0)
+        wa = w_after_norm.get(sym, 0)
+        if abs(wa - wb) < 0.001:  # skip rows with no meaningful change
+            continue
+        weight_rows.append({
+            "标的": sym,
+            "Before": f"{wb * 100:.1f}%",
+            "After": f"{wa * 100:.1f}%",
+            "变化": f"{(wa - wb) * 100:+.1f}pp",
+        })
+    if weight_rows:
+        with st.expander(f"权重变化 ({len(weight_rows)} 个)"):
+            st.dataframe(
+                pd.DataFrame(weight_rows),
+                hide_index=True, use_container_width=True,
+            )
+
+
+def _apply_preset(prices: pd.DataFrame, weights: dict, preset: str) -> dict:
+    """Build the new weights dict for a given preset choice."""
+    if preset == "current":
+        return dict(weights)
+    if preset == "equal_weight":
+        return {s: 1.0 for s in weights}
+    if preset == "risk_parity":
+        rp = risk_parity_weights(prices, symbols=list(weights.keys()))
+        if rp.empty:
+            return {}
+        return rp.to_dict()
+    # The next two need risk decomposition to find the top contributor
+    summary = risk_decomposition_summary(prices, weights)
+    top = summary.get("top_contributor")
+    if not top:
+        return dict(weights)
+    if preset == "drop_top":
+        return apply_rebalance(weights, {top: -weights[top]})
+    if preset == "halve_top":
+        return apply_rebalance(weights, {top: -weights[top] / 2})
+    return dict(weights)
+
+
+def _normalised(weights: dict) -> dict:
+    """Sum-to-1 normalised version of weights, for display."""
+    total = sum(w for w in weights.values() if w > 0)
+    if total <= 0:
+        return {}
+    return {s: w / total for s, w in weights.items() if w > 0}
 
 
 # ---------------------------------------------------------------------------
