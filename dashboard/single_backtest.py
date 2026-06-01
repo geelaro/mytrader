@@ -10,6 +10,8 @@ from utils import get_logger, load_toml
 from utils.font import setup_chinese_font
 from strategy import STRATEGY_MAP
 from engine.trader import BacktestEngine
+from analysis.risk_metrics import risk_adjusted_summary
+from analysis.drawdown import drawdown_summary, underwater_curve
 
 import matplotlib.pyplot as plt
 
@@ -87,6 +89,8 @@ def render_single_backtest(selected_symbol, selected_strategy, backtest_years,
                 st.pyplot(fig)
                 plt.close(fig)
 
+                _render_risk_adjusted_section(result)
+
                 with st.expander("最新指标"):
                     last_row = df_sig.iloc[-1]
                     indicator_cols = [c for c in df_sig.columns
@@ -132,6 +136,86 @@ def render_single_backtest(selected_symbol, selected_strategy, backtest_years,
 
         _render_signal_history_and_comparison(
             selected_symbol, start, end, provider, cache)
+
+
+def _render_risk_adjusted_section(result):
+    """Risk-adjusted metrics + underwater curve + top drawdown episodes.
+
+    Reads from ``result.equity_curve`` which is a pd.Series indexed by date.
+    """
+    eq = result.equity_curve
+    if eq is None or len(eq) < 2:
+        return
+    rets = eq.pct_change().dropna()
+    if rets.empty:
+        return
+
+    st.subheader("风险调整收益")
+
+    metrics = risk_adjusted_summary(rets)
+    cols = st.columns(5)
+    cols[0].metric("Sortino", f"{metrics['sortino']:.2f}",
+                   help="(年化收益 − rf) / 下行波动. 只惩罚下行, 比 Sharpe 更贴近\"风险\".")
+    cols[1].metric("Calmar", f"{metrics['calmar']:.2f}",
+                   help="CAGR / MaxDD. 越大越好, 1.0 视为合格.")
+    omega = metrics["omega"]
+    omega_str = "∞" if omega == float("inf") else f"{omega:.2f}"
+    cols[2].metric("Omega", omega_str,
+                   help="阈值 0 之上 vs 之下的期望比. >1 表示盈亏期望胜出.")
+    cols[3].metric("Pain Index", f"{metrics['pain_index_pct']:.2f}%",
+                   help="平均回撤深度 (%). 比 MaxDD 反映持续性, 越低越好.")
+    cols[4].metric("Pain Ratio", f"{metrics['pain_ratio']:.2f}",
+                   help="CAGR / Pain Index. Calmar 的钝化版.")
+
+    # Underwater curve
+    uw = underwater_curve(rets)
+    if not uw.empty:
+        st.caption("水下曲线 (Underwater curve) — 资金距前高的距离, 越长说明回本越慢")
+        setup_chinese_font()
+        fig, ax = plt.subplots(figsize=(10, 2.5))
+        ax.fill_between(uw.index, uw.values, 0,
+                        color="#d62728", alpha=0.4, linewidth=0)
+        ax.plot(uw.index, uw.values, color="#a01010", linewidth=0.7)
+        ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+        ax.set_ylabel("Underwater %")
+        ax.grid(True, alpha=0.3)
+        ax.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+        st.pyplot(fig)
+        plt.close(fig)
+
+    # Drawdown episodes
+    dd = drawdown_summary(rets, top_n=5)
+    rs = dd["recovery_stats"]
+    inline = (
+        f"平均回撤深度 **{dd['avg_drawdown_pct']:.2f}%** | "
+        f"水下时间占比 **{dd['pct_time_underwater']:.1f}%**"
+    )
+    if rs["n_episodes"] > 0:
+        inline += (
+            f" | 已完成 {rs['n_episodes']} 次回撤, "
+            f"中位回本 **{rs['median_days']:.0f}** 天 / "
+            f"95% 分位 **{rs['p95_days']:.0f}** 天"
+        )
+    if rs["still_in_drawdown"]:
+        inline += f" | ⚠ 当前仍处于回撤, 已 **{rs['current_dd_days']}** 天未回本"
+    st.markdown(inline)
+
+    if dd["top_episodes"]:
+        with st.expander(f"前 {len(dd['top_episodes'])} 大回撤"):
+            rows = []
+            for ep in dd["top_episodes"]:
+                rec = ep["recovery_date"]
+                rec_str = rec.strftime("%Y-%m-%d") if pd.notna(rec) and hasattr(rec, "strftime") else "未恢复"
+                rows.append({
+                    "起峰日": ep["peak_date"].strftime("%Y-%m-%d") if hasattr(ep["peak_date"], "strftime") else str(ep["peak_date"])[:10],
+                    "谷底日": ep["trough_date"].strftime("%Y-%m-%d") if hasattr(ep["trough_date"], "strftime") else str(ep["trough_date"])[:10],
+                    "恢复日": rec_str,
+                    "深度": f"{ep['depth_pct']:.2f}%",
+                    "至谷底天数": int(ep["duration_to_trough_days"]) if not pd.isna(ep["duration_to_trough_days"]) else "-",
+                    "回本天数": int(ep["duration_to_recovery_days"]) if not pd.isna(ep["duration_to_recovery_days"]) else "-",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def _render_signal_history_and_comparison(selected_symbol, start, end, provider, cache):
