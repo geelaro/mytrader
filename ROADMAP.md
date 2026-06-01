@@ -310,6 +310,44 @@
 
 ---
 
+## 专业风险管理平台对标 (2026-06-01 评估)
+
+按 Aladdin / Barra / Bloomberg POMS 对标, traderbridge 缺失的模块,
+按价值排序. 标 ✅ 的本批次做.
+
+### 第一批 — 本批次实施
+
+- ✅ **VaR / Expected Shortfall** — Historical/Parametric/Conditional VaR, 1d 95%/99%
+- ✅ **历史场景压力测试** — 2008/2020/2022 重放 + 当前持仓重算
+- ✅ **集中度指标** — HHI, Top-N, Effective N, 行业暴露, 相关性 HHI
+
+### 第二批 — 实盘相关
+
+- [ ] **Kill Switch / 紧急平仓** — 一键 market-sell-all + VIX>50 自动触发.
+  实盘前必备, 半天
+- [ ] **流动性风险** — Days-to-Liquidate (持仓/ADV), Position vs ADV %.
+  中小盘 / 大仓位时出场预估
+
+### 第三批 — 业绩分析深化
+
+- [ ] **Risk-Adjusted Metrics 深化** — Sortino / Calmar / MAR / Omega.
+  当前只有 Sharpe. Sortino 只看下行波动, 更贴近"风险"
+- [ ] **Drawdown Analytics 深化** — Underwater curve, Time-to-recover,
+  Pain Index. 当前只有 MaxDD 数字
+- [ ] **Brinson Performance Attribution** — 资产配置 vs 选股 vs 交互效应
+  分解. 不同于现有的因子暴露归因
+- [ ] **Realized vs Unrealized PnL 拆分** — trade_pnl 表已有 realized,
+  dashboard 没正式拆开展示
+
+### 第四批 — 报告与合规
+
+- [ ] **风险报告自动生成** — 周报 / 月报 PDF, 含 VaR / Beta / 暴露 /
+  持仓 / PnL 归因, 飞书推送
+- [ ] **税务批次会计 (FIFO/LIFO/HIFO)** — 报税需要, 但富途自带, 可暂缓
+- [ ] **Style drift detection** — 策略在不同 regime 下风格漂移监测
+
+---
+
 ## 优先级决策矩阵
 
 ```

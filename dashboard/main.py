@@ -20,6 +20,7 @@ from dashboard.factor_attribution import render_factor_attribution
 from dashboard.signal_effectiveness import render_signal_effectiveness
 from dashboard.ops import render_ops
 from dashboard.config_editor import render_config_editor
+from dashboard.risk_analytics import render_risk_analytics
 
 logger = get_logger("dashboard.main")
 
@@ -83,8 +84,9 @@ def main():
     # Tabs: single backtest | portfolio backtest
     # -------------------------------------------------------------------
 
-    tab_single, tab_portfolio, tab_factors, tab_signal_eff, tab_alerts, tab_config = st.tabs(
-        ["单标的回测", "组合回测", "因子归因", "信号有效性", "风险告警历史", "配置管理"]
+    tab_single, tab_portfolio, tab_factors, tab_signal_eff, tab_risk, tab_alerts, tab_config = st.tabs(
+        ["单标的回测", "组合回测", "因子归因", "信号有效性", "风险量化",
+         "风险告警历史", "配置管理"]
     )
 
     with tab_single:
@@ -112,6 +114,9 @@ def main():
             selected_symbol, selected_strategy,
             strategy_options, symbols,
         )
+
+    with tab_risk:
+        render_risk_analytics(config, target_date, provider)
 
     with tab_alerts:
         render_alert_history(cache)
