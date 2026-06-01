@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -108,6 +108,14 @@ _SCHEMA_DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_ops_event    ON ops_log(event)",
     "CREATE INDEX IF NOT EXISTS idx_ops_ts       ON ops_log(ts)",
+    """CREATE TABLE IF NOT EXISTS alert_history (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts         TEXT NOT NULL,
+        alert_type TEXT NOT NULL,
+        payload    TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_alert_ts   ON alert_history(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_alert_type ON alert_history(alert_type)",
     """CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY
     )""",
@@ -445,6 +453,62 @@ class StateStore(_CacheBase):
                 "SELECT value FROM risk_state WHERE key = ?", [key]
             ).fetchone()
         return row[0] if row else None
+
+    # -- alert history ------------------------------------------------------
+
+    def record_alert(self, alert_type: str, payload: dict,
+                     ts: Optional[str] = None) -> None:
+        """Append one alert event to the history log.
+
+        Parameters
+        ----------
+        alert_type : str
+            Caller-defined category ("risk_light" / "vix_spike" / "position_stop").
+        payload : dict
+            Structured detail (reasons, indicators, symbol …); JSON-encoded.
+        ts : str, optional
+            ISO timestamp.  Defaults to ``datetime.now().isoformat()``.
+        """
+        import json as _json
+        if ts is None:
+            ts = datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            self.init_schema()
+            self.conn.execute(
+                "INSERT INTO alert_history (ts, alert_type, payload) VALUES (?, ?, ?)",
+                [ts, alert_type, _json.dumps(payload, ensure_ascii=False)],
+            )
+            self._commit()
+
+    def load_alert_history(
+        self,
+        days: int = 30,
+        alert_type: Optional[str] = None,
+    ) -> list:
+        """Return alerts within the last ``days`` (newest first).
+
+        Each row is a dict ``{"ts": str, "alert_type": str, "payload": dict}``.
+        Pass ``alert_type`` to restrict to one category.
+        """
+        import json as _json
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        sql = "SELECT ts, alert_type, payload FROM alert_history WHERE ts >= ?"
+        args = [cutoff]
+        if alert_type:
+            sql += " AND alert_type = ?"
+            args.append(alert_type)
+        sql += " ORDER BY ts DESC"
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(sql, args).fetchall()
+        out = []
+        for ts, atype, payload_str in rows:
+            try:
+                payload = _json.loads(payload_str)
+            except (ValueError, TypeError):
+                payload = {"_raw": payload_str}
+            out.append({"ts": ts, "alert_type": atype, "payload": payload})
+        return out
 
     # -- entry prices -------------------------------------------------------
 

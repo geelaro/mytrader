@@ -13,7 +13,7 @@ from data import DataProvider
 from data.cache import CacheManager
 from strategy import STRATEGY_MAP
 
-from dashboard.signals import render_market_state, render_todays_signals, render_risk_light, render_signal_detail, render_position_watch
+from dashboard.signals import render_market_state, render_todays_signals, render_risk_light, render_signal_detail, render_position_watch, render_alert_history
 from dashboard.single_backtest import render_single_backtest
 from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
 from dashboard.factor_attribution import render_factor_attribution
@@ -83,8 +83,8 @@ def main():
     # Tabs: single backtest | portfolio backtest
     # -------------------------------------------------------------------
 
-    tab_single, tab_portfolio, tab_factors, tab_signal_eff, tab_config = st.tabs(
-        ["单标的回测", "组合回测", "因子归因", "信号有效性", "配置管理"]
+    tab_single, tab_portfolio, tab_factors, tab_signal_eff, tab_alerts, tab_config = st.tabs(
+        ["单标的回测", "组合回测", "因子归因", "信号有效性", "风险告警历史", "配置管理"]
     )
 
     with tab_single:
@@ -112,6 +112,9 @@ def main():
             selected_symbol, selected_strategy,
             strategy_options, symbols,
         )
+
+    with tab_alerts:
+        render_alert_history(cache)
 
     with tab_config:
         render_config_editor(config)

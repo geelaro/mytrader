@@ -144,6 +144,56 @@ class TestRiskState:
         assert temp_cache.load_risk_state("daily_trade_count") == "4"
 
 
+class TestAlertHistory:
+    def test_record_and_load_single(self, temp_cache):
+        temp_cache.record_alert(
+            "risk_light",
+            {"level": "red", "reasons": ["VIX > 30"]},
+        )
+        rows = temp_cache.load_alert_history(days=1)
+        assert len(rows) == 1
+        assert rows[0]["alert_type"] == "risk_light"
+        assert rows[0]["payload"]["level"] == "red"
+        assert rows[0]["payload"]["reasons"] == ["VIX > 30"]
+
+    def test_newest_first_ordering(self, temp_cache):
+        temp_cache.record_alert("a", {"i": 1}, ts="2026-05-01T10:00:00")
+        temp_cache.record_alert("b", {"i": 2}, ts="2026-05-31T10:00:00")
+        temp_cache.record_alert("c", {"i": 3}, ts="2026-05-15T10:00:00")
+        rows = temp_cache.load_alert_history(days=365)
+        # DESC by ts: 5-31, 5-15, 5-01
+        assert [r["payload"]["i"] for r in rows] == [2, 3, 1]
+
+    def test_filter_by_alert_type(self, temp_cache):
+        temp_cache.record_alert("risk_light", {"x": 1})
+        temp_cache.record_alert("vix_spike", {"x": 2})
+        temp_cache.record_alert("risk_light", {"x": 3})
+
+        only_rl = temp_cache.load_alert_history(days=1, alert_type="risk_light")
+        assert len(only_rl) == 2
+        assert all(r["alert_type"] == "risk_light" for r in only_rl)
+
+    def test_days_filter_excludes_old(self, temp_cache):
+        from datetime import datetime, timedelta
+        old_ts = (datetime.now() - timedelta(days=60)).isoformat(timespec="seconds")
+        recent_ts = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+        temp_cache.record_alert("a", {"i": "old"}, ts=old_ts)
+        temp_cache.record_alert("a", {"i": "recent"}, ts=recent_ts)
+
+        rows = temp_cache.load_alert_history(days=30)
+        assert len(rows) == 1
+        assert rows[0]["payload"]["i"] == "recent"
+
+    def test_empty_history_returns_empty_list(self, temp_cache):
+        assert temp_cache.load_alert_history(days=30) == []
+
+    def test_unicode_payload_round_trip(self, temp_cache):
+        temp_cache.record_alert("vix_spike", {"原因": "极端恐慌", "value": 35.0})
+        rows = temp_cache.load_alert_history(days=1)
+        assert rows[0]["payload"]["原因"] == "极端恐慌"
+        assert rows[0]["payload"]["value"] == 35.0
+
+
 class TestEntryPrices:
     def test_save_and_load_single(self, temp_cache):
         temp_cache.save_entry_price("AAPL", 195.0, "2025-06-01")

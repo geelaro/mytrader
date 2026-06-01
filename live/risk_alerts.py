@@ -202,8 +202,25 @@ class RiskAlerter:
     # Notification renderers
     # ------------------------------------------------------------------
 
+    def _record_history(self, alert_type: str, payload: dict) -> None:
+        """Best-effort write to alert_history; never crashes the alerter."""
+        try:
+            self.store.record_alert(alert_type, payload)
+        except Exception:
+            logger.exception("RiskAlerter: failed to record %s history", alert_type)
+
     def _notify_risk_light(self, state: "RiskState"):
-        """Render a RED risk-light alert card and enqueue to Feishu."""
+        """Record + push a RED risk-light alert.
+
+        History is recorded BEFORE notifier dispatch so it survives notifier
+        failures (offline, webhook down, etc.) — the audit trail must be
+        independent of message delivery.
+        """
+        self._record_history("risk_light", {
+            "level": state.level.value,
+            "reasons": list(state.reasons),
+            "indicators": dict(state.indicators or {}),
+        })
         if not self.notifier.available:
             logger.warning("RiskAlerter: notifier unavailable, RED alert dropped")
             return
@@ -213,7 +230,11 @@ class RiskAlerter:
             logger.exception("RiskAlerter: failed to send RED alert")
 
     def _notify_vix(self, value: float):
-        """Render a VIX spike alert card and enqueue to Feishu."""
+        """Record + push a VIX spike alert."""
+        self._record_history("vix_spike", {
+            "value": float(value),
+            "threshold": float(self.config.vix_alert_threshold),
+        })
         if not self.notifier.available:
             logger.warning("RiskAlerter: notifier unavailable, VIX alert dropped")
             return
@@ -223,7 +244,15 @@ class RiskAlerter:
             logger.exception("RiskAlerter: failed to send VIX alert")
 
     def _notify_position(self, position: dict, distance_pct: float):
-        """Render a position-approaching-stop card and enqueue to Feishu."""
+        """Record + push a position-approaching-stop alert."""
+        self._record_history("position_stop", {
+            "symbol": position.get("symbol"),
+            "current_price": position.get("current_price"),
+            "stop_price": position.get("stop_price"),
+            "distance_pct": float(distance_pct),
+            "strategy": position.get("strategy"),
+            "shares": position.get("shares"),
+        })
         if not self.notifier.available:
             logger.warning(
                 "RiskAlerter: notifier unavailable, position alert dropped for %s",

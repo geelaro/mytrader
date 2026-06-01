@@ -401,3 +401,92 @@ def render_position_watch(config, target_date, provider):
         st.success(f"全部 {len(rows)} 个假设持仓距移动止损 ≥ 5%, 暂无减仓预警")
 
     st.divider()
+
+
+# ---------------------------------------------------------------------------
+# Risk alert history — retrospective view of fired alerts
+# ---------------------------------------------------------------------------
+
+
+_ALERT_TYPE_LABEL = {
+    "risk_light": "🔴 风险灯",
+    "vix_spike":  "📈 VIX 突破",
+    "position_stop": "⚠ 持仓临近止损",
+}
+
+
+def _format_alert_detail(alert_type: str, payload: dict) -> str:
+    """One-line human-readable summary for a history row."""
+    if alert_type == "risk_light":
+        ind = payload.get("indicators") or {}
+        spy = ind.get("spy_close")
+        vix = ind.get("vix")
+        adx = ind.get("spy_adx")
+        bits = []
+        if spy is not None:
+            bits.append(f"SPY {spy}")
+        if vix is not None:
+            bits.append(f"VIX {vix}")
+        if adx is not None:
+            bits.append(f"ADX {adx}")
+        reasons = payload.get("reasons") or []
+        head = " | ".join(bits) if bits else ""
+        return (head + " — " + "; ".join(reasons)) if reasons else head
+    if alert_type == "vix_spike":
+        return f"VIX {payload.get('value', '-')} ≥ {payload.get('threshold', '-')}"
+    if alert_type == "position_stop":
+        return (f"{payload.get('symbol', '?')} "
+                f"距止损 {payload.get('distance_pct', 0):.2f}% "
+                f"(${payload.get('current_price', 0):.2f} → ${payload.get('stop_price', 0):.2f})")
+    return ""
+
+
+def render_alert_history(cache, days: int = 30):
+    """Show the alert audit trail and breakdown by type / day.
+
+    Reads :class:`StateStore.load_alert_history`; renders:
+    - summary metrics (total alerts, by-type counts)
+    - daily count bar chart
+    - chronological table with one-line detail per row
+    """
+    st.header("风险告警历史")
+    st.caption(
+        "回看过去 N 天的风险灯/VIX/持仓告警时间线 + 当时指标. "
+        "用于验证阈值合不合理 — 太密说明假警多, 太疏说明阈值太宽松."
+    )
+
+    col_days, _ = st.columns([1, 4])
+    days = col_days.number_input("回看天数", min_value=1, max_value=365, value=days, step=1)
+
+    rows = cache.load_alert_history(days=int(days))
+    if not rows:
+        st.info(f"过去 {days} 天无风险告警记录")
+        return
+
+    # Summary metrics
+    by_type = defaultdict(int)
+    for r in rows:
+        by_type[r["alert_type"]] += 1
+    cols = st.columns(4)
+    cols[0].metric("总告警数", len(rows))
+    cols[1].metric("风险灯 RED", by_type.get("risk_light", 0))
+    cols[2].metric("VIX 突破", by_type.get("vix_spike", 0))
+    cols[3].metric("持仓临近止损", by_type.get("position_stop", 0))
+
+    # Daily count bar chart
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["ts"]).dt.date
+    daily = df.groupby(["date", "alert_type"]).size().unstack(fill_value=0)
+    if not daily.empty:
+        st.subheader("每日告警分布")
+        st.bar_chart(daily)
+
+    # Chronological table
+    st.subheader("时间线 (最新在前)")
+    display_rows = [{
+        "时间": r["ts"].replace("T", " "),
+        "类型": _ALERT_TYPE_LABEL.get(r["alert_type"], r["alert_type"]),
+        "详情": _format_alert_detail(r["alert_type"], r["payload"]),
+    } for r in rows]
+    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+    st.divider()

@@ -323,6 +323,80 @@ class TestTickCombined:
         notifier.vix_alert_card.assert_called_once()
 
 
+class TestAlertHistoryRecording:
+    """Stage B: verify every fired alert is persisted to alert_history."""
+
+    def test_red_alert_recorded(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        state = _make_state(
+            RiskLevel.RED,
+            reasons=["VIX > 30"],
+            indicators={"vix": 35.0, "spy_close": 400.0},
+        )
+        alerter.check_risk_light(state)
+        rows = temp_cache.load_alert_history(days=1, alert_type="risk_light")
+        assert len(rows) == 1
+        assert rows[0]["payload"]["level"] == "red"
+        assert rows[0]["payload"]["reasons"] == ["VIX > 30"]
+        assert rows[0]["payload"]["indicators"]["vix"] == 35.0
+
+    def test_vix_alert_recorded(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        alerter.check_vix(33.5)
+        rows = temp_cache.load_alert_history(days=1, alert_type="vix_spike")
+        assert len(rows) == 1
+        assert rows[0]["payload"]["value"] == 33.5
+        assert rows[0]["payload"]["threshold"] == 30.0
+
+    def test_position_alert_recorded(self, temp_cache):
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        alerter.check_positions([_pos(
+            "AAPL", current=100, stop=97, shares=10, strategy="weekly_macd_kdj",
+        )])
+        rows = temp_cache.load_alert_history(days=1, alert_type="position_stop")
+        assert len(rows) == 1
+        p = rows[0]["payload"]
+        assert p["symbol"] == "AAPL"
+        assert p["distance_pct"] == pytest.approx(3.0, abs=0.01)
+        assert p["strategy"] == "weekly_macd_kdj"
+        assert p["shares"] == 10
+
+    def test_consecutive_red_records_only_once(self, temp_cache):
+        """State machine de-dupes — history shouldn't get duplicate rows."""
+        notifier = _make_notifier()
+        alerter = RiskAlerter(notifier, temp_cache)
+        state = _make_state(RiskLevel.RED)
+        alerter.check_risk_light(state)
+        alerter.check_risk_light(state)
+        alerter.check_risk_light(state)
+        rows = temp_cache.load_alert_history(days=1)
+        assert len(rows) == 1
+
+    def test_history_survives_notifier_failure(self, temp_cache):
+        """Notifier crash must not lose the audit trail."""
+        notifier = _make_notifier()
+        notifier.risk_alert_card.side_effect = RuntimeError("webhook 500")
+        alerter = RiskAlerter(notifier, temp_cache)
+        alerter.check_risk_light(_make_state(RiskLevel.RED))
+        rows = temp_cache.load_alert_history(days=1)
+        assert len(rows) == 1
+        assert rows[0]["alert_type"] == "risk_light"
+
+    def test_history_survives_notifier_unavailable(self, temp_cache):
+        notifier = _make_notifier(available=False)
+        alerter = RiskAlerter(notifier, temp_cache)
+        alerter.check_risk_light(_make_state(RiskLevel.RED))
+        alerter.check_vix(35.0)
+        alerter.check_positions([_pos("AAPL", 100, 97)])
+        rows = temp_cache.load_alert_history(days=1)
+        # All three recorded even though notifier was unavailable
+        types = sorted(r["alert_type"] for r in rows)
+        assert types == ["position_stop", "risk_light", "vix_spike"]
+
+
 class TestRiskLightRobustness:
     def test_notifier_unavailable_does_not_crash(self, temp_cache):
         notifier = _make_notifier(available=False)
