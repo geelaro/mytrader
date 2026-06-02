@@ -21,6 +21,7 @@ from dashboard.brinson_attribution import render_brinson_attribution
 from dashboard.pnl_breakdown import render_pnl_breakdown
 from dashboard.signal_effectiveness import render_signal_effectiveness
 from dashboard.kill_switch import render_kill_switch
+from dashboard.risk_report import render_risk_report
 from dashboard.ops import render_ops
 from dashboard.config_editor import render_config_editor
 from dashboard.risk_analytics import render_risk_analytics
@@ -88,11 +89,12 @@ def main():
     # -------------------------------------------------------------------
 
     (tab_single, tab_portfolio, tab_factors, tab_brinson, tab_pnl,
-     tab_signal_eff, tab_risk, tab_alerts, tab_kill, tab_config) = st.tabs(
+     tab_signal_eff, tab_risk, tab_alerts, tab_report, tab_kill,
+     tab_config) = st.tabs(
         ["单标的回测", "组合回测", "因子归因", "业绩归因 Brinson",
          "盈亏分析",
-         "信号有效性", "风险量化", "风险告警历史", "🚨 Kill Switch",
-         "配置管理"]
+         "信号有效性", "风险量化", "风险告警历史", "📑 风险报告",
+         "🚨 Kill Switch", "配置管理"]
     )
 
     with tab_single:
@@ -132,6 +134,9 @@ def main():
 
     with tab_alerts:
         render_alert_history(cache)
+
+    with tab_report:
+        render_risk_report(config, target_date, provider, cache)
 
     with tab_kill:
         _render_kill_switch_tab(config, cache)
