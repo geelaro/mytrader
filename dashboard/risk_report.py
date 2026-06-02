@@ -34,14 +34,25 @@ def render_risk_report(config, target_date, provider, cache):
     with col2:
         do_build = st.button("生成报告", type="primary")
 
-    if not do_build:
+    # Persist the built report across Streamlit reruns — every button click
+    # re-enters this function, so we can't rely on a local variable.  Without
+    # this, the "推送到飞书" button always early-returns because do_build is
+    # False on the rerun triggered by the send button.
+    if do_build:
+        with st.spinner("聚合所有分析模块..."):
+            report = RiskReport(config, provider, cache,
+                                target_date=report_date)
+            st.session_state["_rr_report"] = report
+            st.session_state["_rr_data"] = report.build()
+            st.session_state["_rr_md"] = report.to_markdown()
+
+    if "_rr_report" not in st.session_state:
         st.info("点 '生成报告' 后会聚合所有分析模块,可能需要几十秒。")
         return
 
-    with st.spinner("聚合所有分析模块..."):
-        report = RiskReport(config, provider, cache, target_date=report_date)
-        data = report.build()
-        md = report.to_markdown()
+    report = st.session_state["_rr_report"]
+    data = st.session_state["_rr_data"]
+    md = st.session_state["_rr_md"]
 
     # ── Inline render ──────────────────────────────────────────────
     st.subheader(f"风险报告 — {data['as_of']}")
@@ -75,9 +86,16 @@ def render_risk_report(config, target_date, provider, cache):
         st.code(md, language="markdown")
 
     # ── Send to Feishu ─────────────────────────────────────────────
-    col1, col2 = st.columns([1, 3])
+    col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         do_send = st.button("📤 推送到飞书", type="secondary")
+    with col2:
+        do_clear = st.button("清空", type="secondary",
+                             help="清除已生成的报告缓存")
+    if do_clear:
+        for key in ("_rr_report", "_rr_data", "_rr_md"):
+            st.session_state.pop(key, None)
+        st.rerun()
     if do_send:
         from utils.notify import Notifier
         nf = Notifier(async_mode=False)

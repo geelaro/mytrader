@@ -154,6 +154,10 @@ class RiskReport:
             })
             elements.append({"tag": "hr"})
         return {
+            # ``wide_screen_mode`` is required for Feishu APP-mode interactive
+            # cards to render properly in some app versions; without it the
+            # message may be silently degraded to plain text or dropped.
+            "config": {"wide_screen_mode": True, "enable_forward": True},
             "header": {
                 "title": {
                     "tag": "plain_text",
