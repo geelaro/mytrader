@@ -20,6 +20,7 @@ from dashboard.factor_attribution import render_factor_attribution
 from dashboard.brinson_attribution import render_brinson_attribution
 from dashboard.pnl_breakdown import render_pnl_breakdown
 from dashboard.signal_effectiveness import render_signal_effectiveness
+from dashboard.kill_switch import render_kill_switch
 from dashboard.ops import render_ops
 from dashboard.config_editor import render_config_editor
 from dashboard.risk_analytics import render_risk_analytics
@@ -87,10 +88,11 @@ def main():
     # -------------------------------------------------------------------
 
     (tab_single, tab_portfolio, tab_factors, tab_brinson, tab_pnl,
-     tab_signal_eff, tab_risk, tab_alerts, tab_config) = st.tabs(
+     tab_signal_eff, tab_risk, tab_alerts, tab_kill, tab_config) = st.tabs(
         ["单标的回测", "组合回测", "因子归因", "业绩归因 Brinson",
          "盈亏分析",
-         "信号有效性", "风险量化", "风险告警历史", "配置管理"]
+         "信号有效性", "风险量化", "风险告警历史", "🚨 Kill Switch",
+         "配置管理"]
     )
 
     with tab_single:
@@ -131,6 +133,9 @@ def main():
     with tab_alerts:
         render_alert_history(cache)
 
+    with tab_kill:
+        _render_kill_switch_tab(config, cache)
+
     with tab_config:
         render_config_editor(config)
 
@@ -145,6 +150,41 @@ def main():
     # -------------------------------------------------------------------
 
     render_ops(config, cache)
+
+
+# ---------------------------------------------------------------------------
+# Kill Switch wiring — needs a broker + risk_ctrl + notifier
+# ---------------------------------------------------------------------------
+
+
+@st.cache_resource
+def _kill_switch_deps(_config_marker: str):
+    """Build a MockBroker / RiskController / Notifier for the Kill Switch tab.
+
+    Cached as a singleton so the broker state survives across reruns
+    (positions, paused flag, etc.).  The ``_config_marker`` argument is
+    just a cache key; passing the watchlist mtime would invalidate on
+    config changes if needed.
+    """
+    from broker import MockBroker
+    from live.risk_controller import RiskController
+    from utils.risk import RiskLimits
+    from utils.notify import Notifier
+    from data.cache import CacheManager
+
+    broker = MockBroker(initial_cash=10000)
+    cache = CacheManager()
+    risk = RiskLimits()
+    notifier = Notifier(dry_run=True)
+    risk_ctrl = RiskController(risk=risk, cache=cache, broker=broker,
+                               notifier=notifier)
+    return broker, risk_ctrl, notifier
+
+
+def _render_kill_switch_tab(config: dict, cache):
+    """Wrap render_kill_switch with broker/risk_ctrl/notifier injection."""
+    broker, risk_ctrl, notifier = _kill_switch_deps("v1")
+    render_kill_switch(broker, risk_ctrl, notifier, cache)
 
 
 if __name__ == "__main__":

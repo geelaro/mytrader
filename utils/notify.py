@@ -423,6 +423,49 @@ class Notifier:
         )
         return self.enqueue({"msg_type": "interactive", "card": card})
 
+    def kill_switch_card(
+        self,
+        reason: str,
+        n_positions: int,
+        orders: list,
+        errors: list,
+        dry_run: bool = False,
+    ) -> bool:
+        """Send a Kill Switch activation card.
+
+        ``orders`` and ``errors`` are lists of dicts produced by
+        :meth:`live.kill_switch.KillSwitch.trigger`.  Renders a RED card
+        with reason + position count + per-symbol order status.
+        """
+        elements = [
+            self._mk_field("触发原因", reason or "—"),
+            self._mk_field("持仓数 / 已下单",
+                           f"{n_positions} / {len(orders)} "
+                           f"{'(DRY RUN)' if dry_run else ''}"),
+        ]
+        if orders:
+            lines = []
+            for o in orders[:15]:
+                lines.append(
+                    f"{o.get('symbol', '?'):<6} {o.get('side', '?'):<5} "
+                    f"{o.get('qty', 0)} → {o.get('status', '?')}"
+                )
+            elements.append(self._mk_field("订单明细", "\n".join(lines)))
+        if errors:
+            lines = [
+                f"{e.get('symbol', '?')}: {e.get('error', '?')[:80]}"
+                for e in errors[:5]
+            ]
+            elements.append(self._mk_field("错误", "\n".join(lines)))
+        title_prefix = "🚨 KILL SWITCH" if not dry_run else "🚨 KILL SWITCH (DRY RUN)"
+        card = self._mk_card(
+            title=f"{title_prefix} — 紧急平仓触发",
+            color=COLOR["error"],
+            elements=elements,
+            footer=f"traderbridge 风险监控  |  {datetime.now().strftime('%H:%M:%S')}",
+        )
+        return self.enqueue({"msg_type": "interactive", "card": card})
+
     def vix_alert_card(self, vix_value: float, threshold: float) -> bool:
         """Send a VIX spike alert card."""
         elements = [
