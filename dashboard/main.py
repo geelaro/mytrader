@@ -18,6 +18,7 @@ from dashboard.single_backtest import render_single_backtest
 from dashboard.portfolio_backtest import render_portfolio_backtest, render_monte_carlo
 from dashboard.factor_attribution import render_factor_attribution
 from dashboard.brinson_attribution import render_brinson_attribution
+from dashboard.pnl_breakdown import render_pnl_breakdown
 from dashboard.signal_effectiveness import render_signal_effectiveness
 from dashboard.ops import render_ops
 from dashboard.config_editor import render_config_editor
@@ -85,8 +86,10 @@ def main():
     # Tabs: single backtest | portfolio backtest
     # -------------------------------------------------------------------
 
-    tab_single, tab_portfolio, tab_factors, tab_brinson, tab_signal_eff, tab_risk, tab_alerts, tab_config = st.tabs(
+    (tab_single, tab_portfolio, tab_factors, tab_brinson, tab_pnl,
+     tab_signal_eff, tab_risk, tab_alerts, tab_config) = st.tabs(
         ["单标的回测", "组合回测", "因子归因", "业绩归因 Brinson",
+         "盈亏分析",
          "信号有效性", "风险量化", "风险告警历史", "配置管理"]
     )
 
@@ -111,6 +114,9 @@ def main():
 
     with tab_brinson:
         render_brinson_attribution(config, target_date, provider)
+
+    with tab_pnl:
+        render_pnl_breakdown(config, target_date, provider, cache)
 
     with tab_signal_eff:
         render_signal_effectiveness(
