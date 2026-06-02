@@ -112,8 +112,10 @@ class TestRiskReportBuild:
         _boom.__name__ = "_build_var"
         r._build_var = _boom
         result = r.build()
+        # Failure surfaces in the section's warnings with exception type + msg
         failed = [s for s in result["sections"]
-                  if s.warnings and "section build raised" in s.warnings[0]]
+                  if s.warnings and "RuntimeError" in s.warnings[0]
+                  and "boom" in s.warnings[0]]
         assert len(failed) == 1
 
     def test_empty_watchlist(self, mock_provider, temp_cache):

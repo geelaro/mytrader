@@ -86,12 +86,19 @@ class RiskReport:
                 sec = builder()
                 if sec is not None:
                     sections.append(sec)
-            except Exception:
-                logger.exception("Risk report section %s failed", builder.__name__)
+            except Exception as exc:
+                # WARNING (not ERROR/exception) so an installed
+                # NotifyLogHandler doesn't auto-forward this to Feishu —
+                # the failing section is already surfaced inside the
+                # report itself.
+                logger.warning(
+                    "Risk report section %s failed: %s: %s",
+                    builder.__name__, type(exc).__name__, exc,
+                )
                 sections.append(Section(
                     title=f"⚠ {builder.__name__}",
-                    summary="模块失败",
-                    warnings=["section build raised — see logs"],
+                    summary=f"模块失败: {type(exc).__name__}",
+                    warnings=[f"{type(exc).__name__}: {exc}"],
                 ))
 
         return {
