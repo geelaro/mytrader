@@ -5,6 +5,7 @@
 个人量化**风险管理 + 决策辅助**工具 — 数据管线 → 因子归因 → 滚动 α → 信号有效性 → 三色风险灯 → 持仓监控 → dry-run 桥梁。**不替你下单，给你海图。**
 
 [![CI](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/geelaro/traderbridge/branch/master/graph/badge.svg)](https://codecov.io/gh/geelaro/traderbridge)
 
 ## 功能
 

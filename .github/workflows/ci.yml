@@ -18,4 +18,15 @@ jobs:
           python-version: '3.10'
       - run: pip install pipenv
       - run: pipenv install --dev
-      - run: pipenv run pytest tests/ -v --tb=short
+      - name: Run tests with coverage
+        run: |
+          pipenv run pytest tests/ -v --tb=short \
+            --cov=. --cov-report=xml --cov-report=term \
+            --cov-config=.coveragerc
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          fail_ci_if_error: false   # don't block CI if Codecov is flaky
+          verbose: true

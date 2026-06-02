@@ -3,6 +3,7 @@
 
 # Coverage
 .coverage
+coverage.xml
 
 # Python
 __pycache__/

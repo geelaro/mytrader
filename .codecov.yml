@@ -1,0 +1,25 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 60%        # baseline; current actual is higher
+        threshold: 2%      # allow 2pp drop without failing PR
+        if_ci_failed: error
+    patch:
+      default:
+        target: 70%        # new code expected to be well-tested
+        threshold: 5%
+        if_ci_failed: error
+
+ignore:
+  - "tests/**"
+  - "dashboard/**"
+  - "scripts/**"
+  - "archive/**"
+  - "htmlcov/**"
+  - "conftest.py"
+
+comment:
+  layout: "header, diff, flags, components, files, footer"
+  behavior: default
+  require_changes: false
