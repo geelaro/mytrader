@@ -77,6 +77,13 @@ _TENCENT_CODE_MAP = {
     "AMZN": "usAMZN.OQ", "TSLA": "usTSLA.OQ", "NVDA": "usNVDA.OQ",
     "META": "usMETA.OQ", "QQQ": "usQQQ.OQ", "SPY": "usSPY.AM",
     "MU": "usMU.OQ", "INTC": "usINTC.OQ", "ORCL": "usORCL.N",
+    # SPDR Select Sector ETFs — NYSE Arca (.AM suffix like SPY).
+    # Without explicit mapping the fallback "usXLK" returns a single-bar
+    # bogus quote that pollutes the cache.
+    "XLK": "usXLK.AM", "XLF": "usXLF.AM", "XLY": "usXLY.AM",
+    "XLV": "usXLV.AM", "XLE": "usXLE.AM", "XLI": "usXLI.AM",
+    "XLU": "usXLU.AM", "XLB": "usXLB.AM", "XLRE": "usXLRE.AM",
+    "XLC": "usXLC.AM", "XLP": "usXLP.AM",
 }
 
 # Manual split adjustments — applied to ALL US sources (Tencent, SinaUS,

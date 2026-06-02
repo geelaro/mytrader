@@ -364,6 +364,30 @@ MOCK_SINA_RESP = [
 ]
 
 
+class TestTencentCodeMap:
+    """Symbols we routinely fetch must have explicit code mappings.
+
+    Without an entry, TencentSource falls back to ``usXLK`` (no suffix)
+    which returns a single-bar bogus quote that pollutes the cache —
+    seen in production when Brinson tab fetched SPDR sector ETFs.
+    """
+
+    def test_spdr_sector_etfs_mapped(self):
+        from data.sources import _TENCENT_CODE_MAP
+        # SPDR Select Sector ETFs trade on NYSE Arca — .AM suffix
+        for sym in ("XLK", "XLF", "XLY", "XLV", "XLE", "XLI",
+                    "XLU", "XLB", "XLRE", "XLC", "XLP"):
+            assert sym in _TENCENT_CODE_MAP, f"{sym} missing from Tencent map"
+            assert _TENCENT_CODE_MAP[sym].endswith(".AM"), \
+                f"{sym} not on NYSE Arca suffix"
+
+    def test_spy_qqq_still_mapped(self):
+        """Regression: existing benchmark symbols stayed mapped."""
+        from data.sources import _TENCENT_CODE_MAP
+        assert _TENCENT_CODE_MAP["SPY"] == "usSPY.AM"
+        assert _TENCENT_CODE_MAP["QQQ"] == "usQQQ.OQ"
+
+
 class TestTencentSourceFetch:
     def test_fetch_returns_dataframe(self):
         from data.sources import TencentSource
