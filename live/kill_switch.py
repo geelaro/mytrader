@@ -26,6 +26,7 @@ re-triggering while active is a no-op.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 _KEY_ACTIVE = "kill_switch:active"
 _KEY_REASON = "kill_switch:reason"
 _KEY_TRIGGERED_AT = "kill_switch:triggered_at"
+
+# Composite-state JSON key for atomic write of {active, reason, triggered_at}.
+# Three separate keys exist for backward-compat reads — new code writes both
+# the JSON blob AND the legacy individual keys so old readers still see them.
+_KEY_STATE = "kill_switch:state"
 
 
 class KillSwitch:
@@ -71,12 +77,34 @@ class KillSwitch:
 
     @property
     def is_active(self) -> bool:
-        return self.cache.load_risk_state(_KEY_ACTIVE) == "1"
+        state = self._load_state()
+        return bool(state.get("active"))
 
     def get_state(self) -> dict:
-        """Snapshot of current kill switch state."""
+        """Snapshot of current kill switch state.
+
+        Reads from the atomic ``_KEY_STATE`` JSON blob; falls back to the
+        legacy three-key layout for installations that triggered before
+        the atomic-state migration.
+        """
+        return self._load_state()
+
+    def _load_state(self) -> dict:
+        """Resolve {active, reason, triggered_at} preferring atomic JSON."""
+        blob = self.cache.load_risk_state(_KEY_STATE)
+        if blob:
+            try:
+                data = json.loads(blob)
+                return {
+                    "active": bool(data.get("active")),
+                    "reason": str(data.get("reason") or ""),
+                    "triggered_at": str(data.get("triggered_at") or ""),
+                }
+            except (ValueError, TypeError):
+                logger.warning("KillSwitch: malformed state blob, "
+                               "falling back to legacy keys")
         return {
-            "active": self.is_active,
+            "active": self.cache.load_risk_state(_KEY_ACTIVE) == "1",
             "reason": self.cache.load_risk_state(_KEY_REASON) or "",
             "triggered_at": self.cache.load_risk_state(_KEY_TRIGGERED_AT) or "",
         }
@@ -129,9 +157,23 @@ class KillSwitch:
         # Import here to avoid circular import at module load
         from broker import Order, OrderSide, OrderType
 
-        positions = list(self.broker.get_positions() or [])
         orders: list = []
         errors: list = []
+
+        # Reading positions must NEVER throw out of trigger() — that would
+        # leave risk_ctrl.trading_paused un-set, _KEY_STATE un-set, and the
+        # Feishu alert un-sent, which is the worst possible failure mode
+        # for a Kill Switch.  Capture the failure into the audit trail and
+        # continue with the pause+notify steps below.
+        try:
+            positions = list(self.broker.get_positions() or [])
+        except Exception as exc:
+            logger.exception("KillSwitch: broker.get_positions() failed")
+            errors.append({
+                "symbol": "*",
+                "error": f"get_positions failed: {type(exc).__name__}: {exc}",
+            })
+            positions = []
 
         for pos in positions:
             qty = int(getattr(pos, "quantity", 0) or 0)
@@ -176,10 +218,22 @@ class KillSwitch:
         except Exception:
             logger.exception("KillSwitch: failed to pause risk_ctrl")
 
-        # Persist active flag (idempotency depends on this)
-        self.cache.save_risk_state(_KEY_ACTIVE, "1")
-        self.cache.save_risk_state(_KEY_REASON, reason)
-        self.cache.save_risk_state(_KEY_TRIGGERED_AT, ts)
+        # Persist active flag.  Atomic JSON write to _KEY_STATE so a crash
+        # mid-save can't leave "active=1 with empty reason/timestamp".
+        # Legacy individual keys are also written for backward-compat
+        # readers; they're best-effort if the JSON write succeeded.
+        state_blob = json.dumps({
+            "active": True, "reason": reason, "triggered_at": ts,
+        }, ensure_ascii=False)
+        self.cache.save_risk_state(_KEY_STATE, state_blob)
+        # Legacy mirror — failures here don't affect idempotency since
+        # is_active reads from _KEY_STATE first.
+        try:
+            self.cache.save_risk_state(_KEY_ACTIVE, "1")
+            self.cache.save_risk_state(_KEY_REASON, reason)
+            self.cache.save_risk_state(_KEY_TRIGGERED_AT, ts)
+        except Exception:
+            logger.warning("KillSwitch: legacy state mirror failed", exc_info=True)
 
         # Audit trail
         payload = {
@@ -214,7 +268,14 @@ class KillSwitch:
         """
         if not self.is_active:
             return
-        self.cache.save_risk_state(_KEY_ACTIVE, "0")
+        # Atomic clear; mirror to legacy keys for backward-compat readers.
+        cleared = json.dumps({"active": False, "reason": "",
+                              "triggered_at": ""}, ensure_ascii=False)
+        self.cache.save_risk_state(_KEY_STATE, cleared)
+        try:
+            self.cache.save_risk_state(_KEY_ACTIVE, "0")
+        except Exception:
+            logger.warning("KillSwitch: legacy reset mirror failed", exc_info=True)
         try:
             self.risk_ctrl.trading_paused = False
             self.risk_ctrl.pause_reason = ""

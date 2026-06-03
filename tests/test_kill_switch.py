@@ -194,6 +194,88 @@ class TestIdempotency:
 # ===================================================================
 
 
+class TestRobustness:
+    """Failure modes that MUST not silently break Kill Switch."""
+
+    def test_broker_get_positions_failure_still_pauses_and_notifies(
+            self, kill_switch, broker, risk_ctrl, notifier, temp_cache):
+        """Broker outage during trigger() must not skip the safety steps.
+
+        If get_positions raises, we still want:
+          - risk_ctrl.trading_paused = True (so daemon doesn't open new pos)
+          - kill_switch.is_active = True (idempotency flag set)
+          - Audit history written
+          - Feishu notification fired
+          - errors[] populated with the broker exception
+        """
+        broker.get_positions.side_effect = RuntimeError("broker offline")
+        result = kill_switch.trigger("emergency")
+        # Trigger completes — not exception
+        assert result["status"] in ("triggered", "no_positions")
+        assert result["errors"]
+        assert "broker offline" in result["errors"][0]["error"]
+        # Safety steps all happened
+        assert risk_ctrl.trading_paused is True
+        assert kill_switch.is_active is True
+        notifier.kill_switch_card.assert_called_once()
+        # Audit recorded
+        rows = temp_cache.load_alert_history(days=1, alert_type="kill_switch")
+        assert len(rows) == 1
+        assert "broker offline" in rows[0]["payload"]["errors"][0]["error"]
+
+
+class TestAtomicStatePersistence:
+    """The active flag + reason + timestamp must be stored atomically so a
+    mid-write crash can't leave 'active=1 with empty reason'."""
+
+    def test_state_loaded_from_atomic_json_blob(
+            self, kill_switch, broker, temp_cache):
+        from live.kill_switch import _KEY_STATE, _KEY_ACTIVE
+        broker.get_positions.return_value = [_position("AAPL", 100)]
+        kill_switch.trigger("test reason")
+        # Atomic JSON exists
+        blob = temp_cache.load_risk_state(_KEY_STATE)
+        assert blob is not None
+        import json as _j
+        parsed = _j.loads(blob)
+        assert parsed["active"] is True
+        assert parsed["reason"] == "test reason"
+        assert parsed["triggered_at"]
+
+    def test_atomic_state_takes_precedence_over_legacy(
+            self, kill_switch, broker, temp_cache):
+        """If JSON blob says inactive, legacy "1" mirror is ignored."""
+        from live.kill_switch import _KEY_STATE, _KEY_ACTIVE
+        import json as _j
+        # Synthesise a stale legacy "active" marker
+        temp_cache.save_risk_state(_KEY_ACTIVE, "1")
+        # But the atomic blob says inactive
+        temp_cache.save_risk_state(_KEY_STATE, _j.dumps({
+            "active": False, "reason": "", "triggered_at": "",
+        }))
+        assert kill_switch.is_active is False
+
+    def test_legacy_state_fallback_when_blob_missing(
+            self, kill_switch, broker, temp_cache):
+        """Old installations with only the three legacy keys still work."""
+        from live.kill_switch import _KEY_ACTIVE, _KEY_REASON, _KEY_TRIGGERED_AT
+        temp_cache.save_risk_state(_KEY_ACTIVE, "1")
+        temp_cache.save_risk_state(_KEY_REASON, "legacy")
+        temp_cache.save_risk_state(_KEY_TRIGGERED_AT, "2026-06-01T10:00:00")
+        # No _KEY_STATE blob — should fall back
+        state = kill_switch.get_state()
+        assert state["active"] is True
+        assert state["reason"] == "legacy"
+
+    def test_malformed_blob_falls_back_to_legacy(
+            self, kill_switch, temp_cache):
+        from live.kill_switch import _KEY_STATE, _KEY_ACTIVE
+        temp_cache.save_risk_state(_KEY_STATE, "not valid json {{{")
+        temp_cache.save_risk_state(_KEY_ACTIVE, "1")
+        # Should fall back gracefully to legacy key
+        assert kill_switch.is_active is True
+
+
 class TestStateAndReset:
     def test_initial_not_active(self, kill_switch):
         assert kill_switch.is_active is False

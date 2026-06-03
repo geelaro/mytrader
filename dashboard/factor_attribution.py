@@ -54,46 +54,63 @@ def render_factor_attribution(
         )
     with col_c:
         do_run = st.button("跑因子归因", type="primary")
+    with col_a:
+        do_clear = st.button("清空", type="secondary",
+                             help="清除已生成的归因结果")
+    if do_clear:
+        for k in ("_fa_result", "_fa_equity", "_fa_factors", "_fa_attr"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
-    if not do_run:
+    # Streamlit reruns the page on every widget interaction.  Stash
+    # results in session_state so downstream buttons (e.g. future "导出"
+    # additions) don't lose the build.  See dashboard/risk_report.py for
+    # the canonical pattern.
+    if do_run:
+        if not symbols:
+            st.warning("watchlist 为空, 无法跑组合回测")
+            return
+        start = (pd.Timestamp(target_date) - pd.DateOffset(years=backtest_years)).strftime("%Y-%m-%d")
+        end = target_date.isoformat()
+        with st.spinner("跑组合回测..."):
+            legs = [Leg(sym, pf_strategy) for sym in symbols]
+            bt = PortfolioBacktest(
+                legs=legs,
+                initial_capital=100000,
+                allocation=allocation_mode,
+            )
+            try:
+                pf_result = bt.run(start=start, end=end)
+            except Exception as e:
+                st.error(f"组合回测失败: {e}")
+                return
+        equity = pf_result.equity_curve
+        if equity is None or equity.empty:
+            st.warning("组合回测无数据")
+            return
+        with st.spinner("加载因子收益 + 跑回归..."):
+            factors = FactorReturns(mode=mode).load(start, end)
+            if factors.empty:
+                st.error("因子数据加载失败 (检查 SPY/IWM/IVE/IVW/MTUM/QUAL/USMV/SHV 是否可拉)")
+                return
+            attr = FactorAttribution(equity, factors)
+            try:
+                result = attr.regress()
+            except ValueError as e:
+                st.error(f"回归失败: {e}")
+                return
+        st.session_state["_fa_result"] = result
+        st.session_state["_fa_equity"] = equity
+        st.session_state["_fa_factors"] = factors
+        st.session_state["_fa_attr"] = attr
+
+    if "_fa_result" not in st.session_state:
         return
 
-    if not symbols:
-        st.warning("watchlist 为空, 无法跑组合回测")
-        return
-
-    start = (pd.Timestamp(target_date) - pd.DateOffset(years=backtest_years)).strftime("%Y-%m-%d")
-    end = target_date.isoformat()
-
-    with st.spinner("跑组合回测..."):
-        legs = [Leg(sym, pf_strategy) for sym in symbols]
-        bt = PortfolioBacktest(
-            legs=legs,
-            initial_capital=100000,
-            allocation=allocation_mode,
-        )
-        try:
-            pf_result = bt.run(start=start, end=end)
-        except Exception as e:
-            st.error(f"组合回测失败: {e}")
-            return
-
-    equity = pf_result.equity_curve
-    if equity is None or equity.empty:
-        st.warning("组合回测无数据")
-        return
-
-    with st.spinner("加载因子收益 + 跑回归..."):
-        factors = FactorReturns(mode=mode).load(start, end)
-        if factors.empty:
-            st.error("因子数据加载失败 (检查 SPY/IWM/IVE/IVW/MTUM/QUAL/USMV/SHV 是否可拉)")
-            return
-        attr = FactorAttribution(equity, factors)
-        try:
-            result = attr.regress()
-        except ValueError as e:
-            st.error(f"回归失败: {e}")
-            return
+    result = st.session_state["_fa_result"]
+    equity = st.session_state["_fa_equity"]
+    factors = st.session_state["_fa_factors"]
+    attr = st.session_state["_fa_attr"]
 
     # -------------------------------------------------------------------
     # Headline metrics
