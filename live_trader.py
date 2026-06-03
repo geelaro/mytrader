@@ -628,9 +628,16 @@ _health_state = {
 
 
 def start_health_server(port: int = 8080):
-    """Start a minimal HTTP health endpoint in a daemon thread."""
+    """Start a minimal HTTP server exposing /health (JSON) and /metrics
+    (Prometheus text) in a daemon thread.
+
+    /health  — Docker HEALTHCHECK / liveness probe
+    /metrics — Prometheus scrape endpoint, see utils/metrics_server.py
+    """
     import json as _json
     from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    from utils import metrics_server as metrics
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -638,6 +645,17 @@ def start_health_server(port: int = 8080):
                 payload = _json.dumps(_health_state, default=str).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            elif self.path == "/metrics":
+                metrics.set_gauge(
+                    "daemon_paused",
+                    1.0 if _health_state.get("paused") else 0.0,
+                )
+                payload = metrics.render().encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)

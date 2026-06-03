@@ -96,13 +96,24 @@ def get_realtime_vix(
     with _cache_lock:
         cached = _cache.get("vix")
         if cached and (now - cached[0]) < ttl:
+            _incr_metric("realtime_vix_cache_hits_total")
             return cached[1]
 
+    _incr_metric("realtime_vix_cache_misses_total")
     value = _try_spark(timeout) or _try_chart(timeout)
     if value is not None:
         with _cache_lock:
             _cache["vix"] = (now, value)
     return value
+
+
+def _incr_metric(name: str) -> None:
+    """Best-effort metric increment — never raises."""
+    try:
+        from utils import metrics_server
+        metrics_server.incr(name)
+    except Exception:
+        pass
 
 
 def _try_spark(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:

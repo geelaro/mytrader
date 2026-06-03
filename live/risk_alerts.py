@@ -39,6 +39,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _incr_alert(alert_type: str) -> None:
+    """Best-effort metrics increment — never raises."""
+    try:
+        from utils import metrics_server
+        metrics_server.incr("risk_alert_fired_total", {"type": alert_type})
+    except Exception:
+        pass
+
+
 # State-store key prefix; keep separate from existing risk_state keys.
 _KEY_RISK_LIGHT = "alert:last_risk_level"
 _KEY_VIX_ALERTED = "alert:vix_alerted"
@@ -100,6 +109,7 @@ class RiskAlerter:
 
         if current == "red" and prev != "red":
             self._notify_risk_light(state)
+            _incr_alert("risk_light")
             return True
         return False
 
@@ -124,6 +134,7 @@ class RiskAlerter:
         if not was_alerted and vix_value >= self.config.vix_alert_threshold:
             self.store.save_risk_state(_KEY_VIX_ALERTED, "1")
             self._notify_vix(vix_value)
+            _incr_alert("vix_spike")
             return True
         if was_alerted and vix_value < self.config.vix_clear_threshold:
             self.store.save_risk_state(_KEY_VIX_ALERTED, "0")
@@ -167,6 +178,7 @@ class RiskAlerter:
             if not was_alerted and distance_pct < self.config.position_distance_alert_pct:
                 self.store.save_risk_state(key, "1")
                 self._notify_position(pos, distance_pct)
+                _incr_alert("position_stop")
                 fired += 1
             elif was_alerted and distance_pct > self.config.position_distance_clear_pct:
                 self.store.save_risk_state(key, "0")

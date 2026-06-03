@@ -257,6 +257,16 @@ class KillSwitch:
         # Push Feishu card (best-effort)
         self._notify(reason, len(positions), orders, errors, dry_run)
 
+        # Metrics — count manual + dry-run separately for ops dashboard.
+        try:
+            from utils import metrics_server
+            metrics_server.incr(
+                "kill_switch_triggered_total",
+                {"dry_run": "true" if dry_run else "false"},
+            )
+        except Exception:
+            pass
+
         status = "no_positions" if not positions else "triggered"
         return {"status": status, **payload}
 
