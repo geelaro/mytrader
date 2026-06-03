@@ -1,4 +1,7 @@
-from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit
+from .base import (
+    BaseStrategy, StrategyParams, ChandelierTrailingExit,
+    register, get_strategy_map,
+)
 from .enhanced_macd import EnhancedMACDStrategy, EnhancedMACDParams  # deprecated — keep for golden tests
 from .trend_follower import TrendFollower, TrendFollowerParams
 from .weekly_macd import WeeklyMACD, WeeklyMACDParams
@@ -12,18 +15,13 @@ from .spy_ma_breakout import SPYMABreakout, SPYMABreakoutParams
 from .ensemble import StrategyEnsemble, EnsembleParams
 from .rsi2_mean_reversion import RSI2MeanReversion, RSI2MeanReversionParams
 
-STRATEGY_MAP = {
-    "trend_follower": TrendFollower,
-    "weekly_macd": WeeklyMACD,
-    "macd_kdj": MACDKDJStrategy,
-    "weekly_macd_kdj": WeeklyMACD_KDJ,
-    "donchian_breakout": DonchianBreakout,
-    "atr_breakout": ATRBreakout,
-    "turtle_trading": TurtleTrading,
-    "daily_macd_kdj": DailyMACD_KDJ,
-    "spy_ma_breakout": SPYMABreakout,
-    "rsi2_mean_reversion": RSI2MeanReversion,
-}
+# STRATEGY_MAP is populated by the @register("name") decorator on each
+# strategy class (see strategy/base.py:register).  Adding a new strategy
+# no longer requires touching this dict — just import its module above
+# to trigger class definition (and thus the @register side effect).
+# Late-registered strategies (e.g. via third-party packages) also show up
+# automatically.
+STRATEGY_MAP = get_strategy_map()
 
 SIGNAL_LABEL = {1: "买入", -1: "卖出", 0: "—"}
 

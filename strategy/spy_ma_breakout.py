@@ -14,7 +14,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr
+from .base import BaseStrategy, StrategyParams, compute_atr, register
 from utils import get_logger as _get_logger
 
 _spy_logger = _get_logger("strategy.spy_ma_breakout")
@@ -48,6 +48,7 @@ class SPYMABreakoutParams(StrategyParams):
             raise ValueError("take_profit_atr_mult must be > 0")
 
 
+@register("spy_ma_breakout")
 class SPYMABreakout(BaseStrategy):
     """SPY macro filter + MA trend + N-day breakout + stop-loss + take-profit (long-only).
 

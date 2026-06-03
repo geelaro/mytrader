@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_adx
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_adx, register
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class TrendFollowerParams(StrategyParams):
         if not (self.trail_atr_mult > 0): raise ValueError("validation failed")
 
 
+@register("trend_follower")
 class TrendFollower(ChandelierTrailingExit, BaseStrategy):
     """Breakout trend-follower with Chandelier trailing stop.
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_atr, compute_macd, resample_weekly
+from .base import BaseStrategy, StrategyParams, compute_atr, compute_macd, resample_weekly, register
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class WeeklyMACDParams(StrategyParams):
     }
 
 
+@register("weekly_macd")
 class WeeklyMACD(BaseStrategy):
     """MACD golden/death cross on weekly bars. Low trade frequency.
 

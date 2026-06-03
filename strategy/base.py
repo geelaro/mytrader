@@ -13,10 +13,53 @@ public methods.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Type
 
 import numpy as np
 import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# Strategy registry — populated by the @register decorator on subclasses
+# ---------------------------------------------------------------------------
+
+_STRATEGY_REGISTRY: dict[str, type] = {}
+
+
+def register(name: str) -> Callable[[type], type]:
+    """Decorator: register a strategy under ``name`` in the global map.
+
+    Replaces the old manual ``STRATEGY_MAP[name] = SomeStrategy`` in
+    ``strategy/__init__.py``.  Forgetting to register meant the
+    optimizer / scanner couldn't find the strategy.
+
+    Usage::
+
+        @register("trend_follower")
+        class TrendFollower(BaseStrategy):
+            ...
+
+    The registry is read via ``strategy.STRATEGY_MAP`` (which re-exports
+    this module-level dict).  Duplicate names raise ValueError at import
+    time so name collisions can't go silent.
+    """
+    def _wrap(cls: type) -> type:
+        if name in _STRATEGY_REGISTRY and _STRATEGY_REGISTRY[name] is not cls:
+            raise ValueError(
+                f"Strategy name '{name}' already registered to "
+                f"{_STRATEGY_REGISTRY[name].__name__}; cannot redefine on "
+                f"{cls.__name__}"
+            )
+        _STRATEGY_REGISTRY[name] = cls
+        cls._strategy_name = name  # type: ignore[attr-defined]
+        return cls
+    return _wrap
+
+
+def get_strategy_map() -> dict[str, type]:
+    """Live view of the registry — kept as a function so callers always
+    see late-registered strategies."""
+    return _STRATEGY_REGISTRY
 
 
 # ---------------------------------------------------------------------------

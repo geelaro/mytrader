@@ -17,7 +17,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams
+from .base import BaseStrategy, StrategyParams, register
 
 
 # -- helpers ---------------------------------------------------------------
@@ -76,6 +76,7 @@ class TurtleTradingParams(StrategyParams):
 # -- strategy --------------------------------------------------------------
 
 
+@register("turtle_trading")
 class TurtleTrading(BaseStrategy):
     """大哥2.2-style channel breakout with recursive SMA trend filter.
 

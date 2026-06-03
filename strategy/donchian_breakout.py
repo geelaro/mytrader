@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr, register
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class DonchianBreakoutParams(StrategyParams):
         if not (0 < self.risk_per_trade <= 1): raise ValueError("validation failed")
 
 
+@register("donchian_breakout")
 class DonchianBreakout(ChandelierTrailingExit, BaseStrategy):
     """Long: close > Donchian upper. Short: close < Donchian lower.
     Exit: trailing stop or price crosses back beyond channel mid."""

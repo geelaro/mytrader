@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr
+from .base import BaseStrategy, StrategyParams, ChandelierTrailingExit, compute_atr, register
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class ATRBreakoutParams(StrategyParams):
             raise ValueError("risk_per_trade must be in (0, 1]")
 
 
+@register("atr_breakout")
 class ATRBreakout(ChandelierTrailingExit, BaseStrategy):
     """Entry: close crosses above MA + N*ATR. Exit: Chandelier trailing stop."""
 

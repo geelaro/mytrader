@@ -16,6 +16,7 @@ from .base import (
     compute_atr,
     compute_kdj,
     compute_macd,
+    register,
     resample_weekly,
 )
 
@@ -85,6 +86,7 @@ class DailyMACDKDJParams(MACDKDJParams):
 # -- unified strategy ---------------------------------------------------------
 
 
+@register("macd_kdj")
 class MACDKDJStrategy(ChandelierTrailingExit, BaseStrategy):
     """KDJ golden cross entry + MACD death cross exit.
 
@@ -198,6 +200,7 @@ class MACDKDJStrategy(ChandelierTrailingExit, BaseStrategy):
 # -- backward-compat aliases --------------------------------------------------
 
 
+@register("weekly_macd_kdj")
 class WeeklyMACD_KDJ(MACDKDJStrategy):
     """Backward-compat. Use MACDKDJStrategy(freq="W", use_atr_stop=False)."""
 
@@ -209,6 +212,7 @@ class WeeklyMACD_KDJ(MACDKDJStrategy):
         super().__init__(WeeklyMACDKDJParams(**kwargs))
 
 
+@register("daily_macd_kdj")
 class DailyMACD_KDJ(MACDKDJStrategy):
     """Backward-compat. Use MACDKDJStrategy(freq="D", use_atr_stop=True)."""
 

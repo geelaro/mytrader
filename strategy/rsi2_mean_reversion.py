@@ -10,7 +10,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .base import BaseStrategy, StrategyParams, compute_rsi
+from .base import BaseStrategy, StrategyParams, compute_rsi, register
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,7 @@ class RSI2MeanReversionParams(StrategyParams):
             raise ValueError("risk_per_trade must be in (0, 1]")
 
 
+@register("rsi2_mean_reversion")
 class RSI2MeanReversion(BaseStrategy):
     """Larry Connors RSI2 mean-reversion for index ETFs.
 
