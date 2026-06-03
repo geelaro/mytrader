@@ -32,7 +32,6 @@ from utils.bootstrap import setup_runtime  # noqa: E402
 setup_runtime()
 
 from analysis.risk_report import RiskReport  # noqa: E402
-from config import config as runtime_config  # noqa: E402
 from data import DataProvider  # noqa: E402
 from data.cache import CacheManager  # noqa: E402
 from utils import load_toml  # noqa: E402

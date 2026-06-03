@@ -55,7 +55,6 @@ from live.risk_alerts import AlertConfig, RiskAlerter
 from live.position_stops import compute_hypothetical_positions
 from analysis.risk_monitor import compute_risk_state, RiskState
 from data.realtime import get_realtime_vix
-from config import config as runtime_config
 
 logger = get_logger("live")
 
@@ -115,7 +114,10 @@ class LiveTrader:
         )
         # Feishu risk alerter — state machine for risk-light / VIX /
         # position-near-stop notifications, driven from daemon ticks.
-        alert_cfg = AlertConfig.from_dict(runtime_config.raw.get("alerts"))
+        # Thresholds read from the same watchlist.toml ``[alerts]`` section
+        # the daemon already loaded; falls back to AlertConfig defaults if
+        # the section is missing.
+        alert_cfg = AlertConfig.from_dict(self.config.get("alerts"))
         self.alerter = RiskAlerter(self.notifier, self.cache, alert_cfg)
 
     # ------------------------------------------------------------------
