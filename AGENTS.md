@@ -9,29 +9,41 @@
 ## Verify
 
 ```bash
-pipenv run pytest tests/ -v                    # full suite
-pipenv run pytest tests/test_golden.py -v       # CI gate only
-pipenv run pytest tests/test_strategy.py -v     # single file
+pipenv run pytest -q                            # full suite (1043 tests, ~40s)
+pipenv run pytest tests/test_golden.py -v        # CI gate only
+pipenv run pytest tests/test_strategy.py -v      # single file
 pipenv run pytest tests/test_strategy.py::TestWeeklyMACDKDJ -v  # single class
+
+# Coverage (matches CI)
+pipenv run pytest --cov=. --cov-report=term --cov-config=.coveragerc
 ```
 
-No lint, formatter, or typechecker is configured. Tests are the only verification step.
+CI runs on push/PR via `.github/workflows/ci.yml`, uploads coverage to
+Codecov (`.codecov.yml`, badge in README).  Coverage threshold:
+project 60% (current ~76%), patch 70%, drop tolerance 2pp.
+
+No lint, formatter, or typechecker is configured. Tests + coverage are the verification steps.
 
 ## Project architecture
 
 Flat single-package layout — everything is at the top level. No `src/` layout, no namespace packages.
+**Strict single-direction dependencies, no cycles.** See `docs/architecture.md` for the full layer diagram.
 
-| Directory | Role |
-|-----------|------|
-| `data/` | Market data pipeline (sources → cache → provider) |
-| `strategy/` | Strategy library (ABC + 10 implementations) |
-| `broker/` | Broker abstraction (MockBroker + FutuBroker) |
-| `engine/` | Backtest engines (single-symbol + portfolio + optimization) |
-| `analysis/` | Offline analysis tools (robustness, sensitivity, Monte Carlo) |
-| `utils/` | Logging, notifications, market state, signal gate, sectors |
-| `tests/` | 485 tests, all offline (synthetic data) |
+| Directory | LOC | Role |
+|-----------|----:|------|
+| `data/` | 2081 | Market data pipeline — 6 sources + SQLite cache + cross-source drift check + `apply_us_splits` shared helper + realtime VIX bypass |
+| `strategy/` | 2051 | Strategy library — `BaseStrategy` + `ChandelierTrailingExit` mixin + 9 active strategies + `StrategyEnsemble` |
+| `broker/` | 960 | Broker abstraction — `Broker` ABC + `MockBroker` (dry-run) + `FutuBroker` (real) |
+| `engine/` | 2525 | Backtest engines — single-symbol + portfolio + walk-forward optimize |
+| `analysis/` | **5299** | ★ **22 risk/performance analysis modules** — VaR / EVT / Stress / Concentration / Correlation / Brinson / Drawdown / Marginal VaR / What-If / Risk Report aggregator / …  Pure compute, no I/O side effects |
+| `live/` | 1146 | Live trading bridge — `RiskController` / `OrderManager` / `RiskAlerter` / **`KillSwitch`** / `position_stops` |
+| `dashboard/` | 3139 | Streamlit UI — **11 tabs**, pure render |
+| `utils/` | 1787 | Cross-cutting — notify (Feishu) / sizing / risk / market_state / signal_gate / logging / sectors |
+| `scripts/` | 364 | Cron entry — `weekly_risk_report.py` etc. |
+| `tests/` | **11890** | **1043 tests, all offline.** 75.9% coverage on runtime code |
+| `docs/` | — | `architecture.md` (full design doc) |
 
-Entry points: `live_trader.py`, `daily.py`, `dashboard.py`. None are importable as libraries — they're scripts.
+Entry points: `live_trader.py`, `daily.py`, `dashboard.py`, `scripts/weekly_risk_report.py`. None are importable as libraries — they're scripts.
 
 ## Critical: import side-effects
 
@@ -127,6 +139,78 @@ human-readable string**. If a `logger.info(msg)` literally repeats a
 - **`enhanced_macd`** — rated 0 stars, documented as overfitted. Don't use for live.
 - **Streamlit requires `--server.headless true`** on servers/headless machines.
 
+## Critical design rules
+
+### 1. New US data source MUST call `apply_us_splits()`
+
+`data/sources.py:apply_us_splits()` is a shared helper.  All US-equity
+sources (Tencent, SinaUS, YahooChart) call it at the end of `fetch()`.
+**Skipping it = cross-source price cliffs in cache** (the NVDA 2023-12-26
+909% jump bug).  Same applies when adding a new US source — call
+`apply_us_splits(df, sym)` before returning.
+
+### 2. Updating `splits.json` requires force-refresh
+
+`apply_us_splits` is applied **at fetch time** and the result is cached.
+If `splits.json` is updated AFTER data is already cached, the old data
+stays in the old (unadjusted) scale.  After adding entries:
+
+```python
+provider.get_daily(sym, ..., force_refresh=True)
+# or just delete the rows: DELETE FROM ohlcv_daily WHERE symbol IN (...)
+```
+
+### 3. Realtime VIX uses an isolated session
+
+`data/realtime.py:_realtime_session()` is **separate** from
+`data/sources.py:_yahoo_session()`.  Why: `_yahoo_session` warms with
+a `fc.yahoo.com` cookie call required by Yahoo's historical chart
+endpoint.  That cookie marks the session for **strict rate limiting** —
+spark/chart 429 within seconds.  Without the cookie, spark/chart work
+fine.
+
+**Any new Yahoo realtime endpoint must use `_realtime_session`**, NOT
+`_yahoo_session`.
+
+### 4. Never auto-trigger Kill Switch on VIX / drawdown
+
+Empirical study (CBOE 1990+, see `live/kill_switch.py` docstring):
+VIX > 50 has happened 5 times historically; SPY's 250-day forward
+return after those events averaged **+44.6%** (vs baseline +11.4%).
+**VIX > 50 is a bottom signal, not a panic-sell signal.**
+
+Same logic applies to any "X% drawdown → auto liquidate" trigger.
+Manual control only.  This is a `live/kill_switch.py` invariant.
+
+### 5. Streamlit cross-button state needs `st.session_state`
+
+Every button click in Streamlit re-runs the page from top.  Local
+variables are reset.  If a tab has two buttons (e.g. "Generate" then
+"Send"), the "Send" branch will never see the data built in the
+"Generate" branch unless that data is stashed in `st.session_state`.
+
+See `dashboard/risk_report.py` for the canonical pattern (`_rr_report`,
+`_rr_data`, `_rr_md` keys).
+
+### 6. `NotifyLogHandler` is NOT auto-installed
+
+`utils/notify.install_notify_log_handler()` is only called in tests.
+In production code, do **not** use `logger.error(...)` or
+`logger.exception(...)` for expected failures — those would be picked
+up if/when the handler is installed and spam Feishu.
+
+Use `logger.warning(...)` for recoverable / try-except'd errors that
+the caller already surfaces to the user.  Use `logger.error(...)`
+only for genuine unexpected errors that warrant Feishu attention
+(when the handler is installed in `live_trader.py`).
+
+### 7. Dashboard tabs are stateless renders
+
+`dashboard/*.py` files only render — never persist state outside
+`st.session_state` or `cache.save_*`.  Provider and cache are shared
+singletons via `@st.cache_resource`.  Don't introduce module-level
+mutable state in dashboard modules.
+
 ## Windows / Docker quirks
 
 - `utils/env.py` fixes GBK encoding on Windows: `sys.stdout.reconfigure(encoding="utf-8")`
@@ -147,4 +231,43 @@ human-readable string**. If a `logger.info(msg)` literally repeats a
 pipenv run streamlit run dashboard.py --server.port 8501 --server.headless true
 ```
 
-Access at `http://localhost:8501`. Has tabs for single-symbol backtest, portfolio backtest, risk dashboard, Monte Carlo, and live trade history.
+Access at `http://localhost:8501`. **11 tabs**:
+
+1. 单标的回测 — single-symbol backtest + risk-adjusted metrics
+2. 组合回测 — portfolio backtest + PnL attribution + Monte Carlo expander
+3. 因子归因 — 6-factor OLS + Newey-West HAC, Jensen α + β
+4. 业绩归因 Brinson — sector allocation / selection / interaction
+5. 盈亏分析 — Realized + Unrealized PnL breakdown
+6. 信号有效性 — Forward return distribution
+7. 风险量化 — VaR + EVT + Stress + Concentration + Correlation + Marginal VaR + What-If
+8. 风险告警历史 — alert timeline + per-type daily bar chart
+9. 📑 风险报告 — 9-section weekly report + Feishu push
+10. 🚨 Kill Switch — emergency liquidation (manual + double confirm + dry-run)
+11. 配置管理 — watchlist editor
+
+## Weekly risk report (cron)
+
+```bash
+# Manual run + Feishu push
+pipenv run python scripts/weekly_risk_report.py
+
+# Dry-run (Markdown only)
+pipenv run python scripts/weekly_risk_report.py --dry-run
+
+# Cron schedule
+# 0 9 * * 1 cd /path/to/traderbridge && pipenv run python scripts/weekly_risk_report.py
+```
+
+## Proxy config (China)
+
+Yahoo + GitHub are unreachable from mainland China without a proxy.
+Add to `.env` (gitignored):
+
+```
+HTTPS_PROXY=http://127.0.0.1:7897
+HTTP_PROXY=http://127.0.0.1:7897
+NO_PROXY=localhost,127.0.0.1
+```
+
+Pipenv loads `.env` automatically.  Git pushes use SSH (`git@github.com`)
+to bypass HTTPS proxy issues.

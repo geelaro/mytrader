@@ -310,41 +310,92 @@
 
 ---
 
-## 专业风险管理平台对标 (2026-06-01 评估)
+## 专业风险管理平台对标 (2026-06-02 全部完成 ✅)
 
-按 Aladdin / Barra / Bloomberg POMS 对标, traderbridge 缺失的模块,
-按价值排序. 标 ✅ 的本批次做.
+按 Aladdin / Barra / Bloomberg POMS 对标, 12 项中 9 项完成, 2 项跳过
+(门槛未到 / 优先级低), 1 项主动放弃 (VIX>50 自动平仓被实证否决).
 
-### 第一批 — 本批次实施
+### 第一批 — 风险测量基础 ✅
 
-- ✅ **VaR / Expected Shortfall** — Historical/Parametric/Conditional VaR, 1d 95%/99%
-- ✅ **历史场景压力测试** — 2008/2020/2022 重放 + 当前持仓重算
-- ✅ **集中度指标** — HHI, Top-N, Effective N, 行业暴露, 相关性 HHI
+- ✅ **VaR / Expected Shortfall** — `analysis/var.py` Historical / Parametric / CVaR, 1d 95%/99%
+- ✅ **历史场景压力测试** — `analysis/stress.py` 2008/2018/2020/2022/2015 五场景
+- ✅ **集中度指标** — `analysis/concentration.py` HHI / Top-N / Effective N / 行业 / 相关性
 
 ### 第二批 — 实盘相关
 
-- [ ] **Kill Switch / 紧急平仓** — 一键 market-sell-all + VIX>50 自动触发.
-  实盘前必备, 半天
-- [ ] **流动性风险** — Days-to-Liquidate (持仓/ADV), Position vs ADV %.
-  中小盘 / 大仓位时出场预估
+- ✅ **Kill Switch / 紧急平仓** — `live/kill_switch.py` 手动触发 + 双确认 + 飞书.
+  自动 VIX>50 触发**被实证否决**: CBOE 36 年史 5 次 VIX>50 后 SPY 250 日均
+  +44.6% (vs 基线 +11.4%), 是抄底信号而非清仓信号
+- 跳过 **流动性风险 Days-to-Liquidate** — 当前 watchlist 全大盘, DTL 接近 0;
+  未来加中小盘配置时再做
 
-### 第三批 — 业绩分析深化
+### 第三批 — 业绩分析深化 ✅
 
-- [ ] **Risk-Adjusted Metrics 深化** — Sortino / Calmar / MAR / Omega.
-  当前只有 Sharpe. Sortino 只看下行波动, 更贴近"风险"
-- [ ] **Drawdown Analytics 深化** — Underwater curve, Time-to-recover,
-  Pain Index. 当前只有 MaxDD 数字
-- [ ] **Brinson Performance Attribution** — 资产配置 vs 选股 vs 交互效应
-  分解. 不同于现有的因子暴露归因
-- [ ] **Realized vs Unrealized PnL 拆分** — trade_pnl 表已有 realized,
-  dashboard 没正式拆开展示
+- ✅ **Risk-Adjusted Metrics 深化** — `analysis/risk_metrics.py`
+  Sortino / Calmar / MAR / Omega / Pain Index / Information Ratio
+- ✅ **Drawdown Analytics 深化** — `analysis/drawdown.py`
+  Underwater curve / Episodes / Time-to-recover (median/p75/p95)
+- ✅ **Brinson Performance Attribution** — `analysis/brinson.py`
+  配置 / 选股 / 交互三效应分解, vs SPDR Sector ETFs
+- ✅ **Realized vs Unrealized PnL 拆分** — `analysis/pnl_breakdown.py`
+  Dashboard 新 tab + 7d/30d/90d/1y/YTD 区间
 
 ### 第四批 — 报告与合规
 
-- [ ] **风险报告自动生成** — 周报 / 月报 PDF, 含 VaR / Beta / 暴露 /
-  持仓 / PnL 归因, 飞书推送
-- [ ] **税务批次会计 (FIFO/LIFO/HIFO)** — 报税需要, 但富途自带, 可暂缓
-- [ ] **Style drift detection** — 策略在不同 regime 下风格漂移监测
+- ✅ **风险报告自动生成** — `analysis/risk_report.py` + `scripts/weekly_risk_report.py`
+  9 section 综合周报, Markdown + 飞书富文本卡片; Dashboard "📑 风险报告" tab 手动触发
+- 跳过 **税务批次会计 (FIFO/LIFO)** — 富途自带, 优先级低
+- 跳过 **Style drift detection** — 需 ≥6 个月实盘数据才有意义, 现在做空跑
+
+### Bonus — 同期完成的非对标项
+
+- ✅ **Marginal / Component VaR** — `analysis/risk_decomposition.py`
+  欧拉分解, Risk Parity 权重求解, Top 风险贡献者识别
+- ✅ **What-If 假设调仓** — `analysis/what_if.py`
+  调仓前预演 VaR / HHI / sector 变化, 5 个预设方案
+- ✅ **EVT 尾部估计** — `analysis/evt.py`
+  GPD POT 拟合, 99.5%/99.9% 高分位 VaR 外推
+- ✅ **相关性聚类 / Effective Bets** — `analysis/correlation_analysis.py`
+  层次聚类 + PCA 特征值分解, watchlist 揭露"12 持仓实际只是 1.01 个独立赌注"
+- ✅ **实时 VIX 旁路** — `data/realtime.py` Yahoo spark/chart 端点
+  独立 session 绕开 fc.yahoo.com cookie 触发的限流
+- ✅ **风险灯 + 三类告警状态机** — `analysis/risk_monitor.py` + `live/risk_alerts.py`
+- ✅ **告警历史审计** — `data/cache.py` alert_history 表 + Dashboard 时间线
+- ✅ **拆股调整统一** — `data/sources.py:apply_us_splits()`
+  三个 US source 共享, 修复 NVDA / GOOG cache 跳变 bug
+
+---
+
+## 2026-06-02 风险管理 sprint (27 commit 单日)
+
+| Commit | 类型 | 内容 |
+|--------|------|------|
+| `c5f6d0e` | feat | VaR + Stress + Concentration 套件 |
+| `47e3a76` | feat | Sortino/Calmar + Drawdown 深度分析 |
+| `e29a856` | feat | Marginal VaR + What-If 假设分析 |
+| `9b42490` | feat | EVT 尾部估计 + 相关性聚类 |
+| `48f4a8d` | fix | 统一拆股调整到所有 US 源 (修 NVDA/GOOG) |
+| `460458b` | feat | 实时 VIX 旁路接入 |
+| `424b74f` | fix | Yahoo session 启用 trust_env |
+| `433316f` | fix | 实时 VIX 加 HTML scrape fallback |
+| `2bea382` | fix | 移除 HTML fallback (CDN 缓存 EOD) |
+| `f5304d7` | fix | 实时 VIX 独立 session 绕开限流 |
+| `d16cfa5` | feat | Brinson 业绩归因 |
+| `e172899` | feat | Realized vs Unrealized PnL 拆分 |
+| `b3d1642` | fix | SPDR Sector ETFs 加 Tencent code map |
+| `d33dea5` | feat | Kill Switch 紧急平仓 (手动 + 飞书) |
+| `52e5a53` | feat | 风险报告自动生成 |
+| `daf38fa` | chore | Codecov coverage CI + badge |
+| `728db26` | fix | 风险报告 section 失败日志降级 |
+| `64e56f3` | fix | 风险报告 dashboard 推送飞书按钮 (session_state) |
+
+测试 710 → **1043 用例**, 覆盖率 **75.9%**.
+
+---
+
+## 剩余待办 (Phase 7 长期方向)
+
+都有门槛, 实盘数据 / 数据权限 / 训练样本未到位时做没意义.
 
 ---
 

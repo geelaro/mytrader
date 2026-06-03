@@ -2,36 +2,97 @@
 
 > 原名 `mytrader` — 2026-05-31 改名
 
-个人量化**风险管理 + 决策辅助**工具 — 数据管线 → 因子归因 → 滚动 α → 信号有效性 → 三色风险灯 → 持仓监控 → dry-run 桥梁。**不替你下单，给你海图。**
+个人量化**风险管理 + 决策辅助**平台 — 数据管线 → 13 策略库 → 回测 + 实盘桥梁 → **22 个风险/业绩分析模块** → 风险告警 + Kill Switch + 周报。**不替你下单，给你海图。**
 
 [![CI](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/geelaro/traderbridge/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/geelaro/traderbridge/branch/master/graph/badge.svg)](https://codecov.io/gh/geelaro/traderbridge)
 
-## 功能
+📐 **[完整架构与设计决策 → `docs/architecture.md`](docs/architecture.md)**
+
+## 规模
+
+| 维度 | 数据 |
+|------|------|
+| 业务代码 | ~19,000 行 Python |
+| 测试 | **1043 用例 / 49 文件 / 75.9% 覆盖率** |
+| Dashboard tab | **11 个** |
+| 数据源 | 6 个(sina_us / tencent / cboe / yahoo_chart / yahoo_realtime / futu) |
+| 策略库 | 13 个(9 active + 3 弃用 + 1 ensemble) |
+| 分析模块 | **22 个**(VaR / EVT / Brinson / Drawdown / Marginal VaR ...) |
+
+## 核心功能
+
+### 数据 + 策略 + 回测(基础设施)
 
 | 模块 | 说明 |
 |------|------|
-| 数据管线 | 统一 DataProvider，腾讯/新浪/AKShare/YFinance 四源，SQLite 本地缓存 + 增量更新 |
-| 策略库 | 9 个活跃策略（趋势/动量/波动率/宏观过滤/多空），BaseStrategy 统一接口 |
-| 多空支持 | 有符号持仓引擎，做空/平空完整链路，mock/live broker 全面适配 |
-| MTF 框架 | 多时间框架接口 `calculate_indicators(df, df_weekly)`，周线指标映射日线执行 |
-| 策略组合 | StrategyEnsemble 加权投票，MarketRegime 自适应权重分配 |
-| 策略门控 | SignalGate：市场状态感知 + 风控暂停 + 敞口检查，`active`/`monitor` 双轨 |
-| 回测引擎 | 含滑点佣金，有符号持仓，单标 + 组合回测 |
-| 仓位管理 | `fixed_capital` / `risk_budget` 双模式，回测实盘共用 `utils/sizing.py` |
-| 参数优化 | 网格搜索 + Walk-forward 样本外验证 + 滚动优化自动更新 watchlist.toml |
-| 分析工具 | 成本敏感性 + 参数鲁棒性 + Monte Carlo 模拟 + 滚动窗口 α 衰减 + 压力测试 |
-| 每日回溯 | 批量扫描 watchlist，信号表格 + 飞书卡片推送 + 每日报告 |
-| 实盘桥梁 | Broker 抽象接口 + MockBroker（dry-run）+ FutuBroker（富途 OpenD） |
-| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期、滑点检查 |
-| 风控持久化 | risk_state + entry_prices 表，守护进程重启后恢复熔断/日内计数/入场价 |
+| 数据管线 | 6 数据源 + SQLite 增量缓存 + 跨源校验 + 拆股统一(`apply_us_splits`) |
+| 策略库 | 13 策略,BaseStrategy + ChandelierTrailingExit Mixin + Ensemble 投票 |
+| MTF 框架 | 多时间框架接口 `calculate_indicators(df, df_weekly)` |
+| 策略门控 | SignalGate:市场状态感知 + 风控暂停 + 敞口检查 |
+| 回测引擎 | 含滑点佣金,有符号持仓(多空),单标 + 组合回测,Walk-forward 优化 |
+| 仓位管理 | `fixed_capital` / `risk_budget` 双模式,回测实盘共用 `utils/sizing.py` |
+
+### 风险管理 + 业绩分析(平台核心)
+
+| 模块 | 说明 |
+|------|------|
+| **VaR / 期望损失** | Historical / Parametric / Expected Shortfall,95% 99% 双置信度 |
+| **EVT 尾部估计** | GPD POT 拟合,99.5% / 99.9% 高分位 VaR 外推 |
+| **历史压力测试** | 5 场景:2008 雷曼 / 2018 Q4 / 2020 COVID / 2022 加息 / 2015 8.11 |
+| **Marginal / Component VaR** | Gaussian 解析分解,Risk Parity 权重求解 |
+| **What-If 假设调仓** | 调仓前预演 VaR / HHI / 行业 / 集中度变化 |
+| **Brinson 业绩归因** | 行业配置 / 选股 / 交互三效应分解 |
+| **6 因子归因** | Jensen α + Newey-West HAC,SPDR ETF 代理 |
+| **集中度** | HHI / Effective N / Sector HHI / Top-N 占比 |
+| **相关性结构** | 层次聚类 + Effective Bets(PCA),最大对相关性 |
+| **回撤分析** | Underwater Curve + Drawdown Episodes + Time-to-Recover |
+| **风险调整收益** | Sortino / Calmar / Omega / Pain Index / Information Ratio |
+| **盈亏分析** | Realized(trade_pnl 表) + Unrealized(持仓浮动)拆分 |
+
+### 实时告警 + 决策辅助
+
+| 模块 | 说明 |
+|------|------|
+| **风险灯** | SPY MA200 + ADX + VIX **(实时,Yahoo spark)** → 🟢/🟡/🔴 |
+| **风险告警状态机** | 风险灯转 RED / VIX 突破 / 持仓临近止损,飞书推送 + 历史落盘 |
+| **Kill Switch** | 一键紧急平仓,纯手动 + 双确认(VIX>50 实证是抄底信号,不自动触发) |
+| **风险报告** | `scripts/weekly_risk_report.py`,9 section 综合周报 → Markdown + 飞书 |
+| **CBOE VIX** | 官方 CSV 全量日线 + Yahoo 实时旁路覆盖 |
+
+### 实盘桥梁
+
+| 模块 | 说明 |
+|------|------|
+| Broker 抽象 | MockBroker(dry-run)+ FutuBroker(富途 OpenD) |
+| 风控 | 连续亏损熔断、波动率自适应仓位、单日上限、总敞口、行业权重、止损冷却期 |
+| 风控持久化 | risk_state + entry_prices 表,守护进程重启后恢复 |
 | 订单管理 | 部分成交轮询、限价单超时撤单、滑点统计、批量等风险分配 |
-| 组合回测 | 多标的共享资金池，组合级风控（集中度/敞口/行业/日开仓上限） |
-| 运维可观测 | ops_log 统一运维表，schema_version 版本化迁移，结构化 JSON 日志，/health HTTP 端点 |
-| 数据质量 | quality.py — 缺失值/异常跳变/停牌标记 + validate_ohlcv 前置检查 |
-| Dashboard | Streamlit Web UI — 市场状态 → 今日信号 → 策略分布 → 行业饼图 → Monte Carlo 风控 |
-| CI | GitHub Actions — push/PR 自动跑 pytest（637 测试 + 黄金样本回归）|
+
+### 运维 + 可观测
+
+| 模块 | 说明 |
+|------|------|
+| 日志 | 结构化 JSON 日志,/health HTTP 端点,ops_log + alert_history 审计 |
+| Dashboard | Streamlit Web UI,11 个 tab(见下) |
+| CI | GitHub Actions + Codecov + badge,push/PR 自动跑 1043 测试 |
 | Docker | docker-compose.yml 一键部署 traderbridge + futu-opend + HEALTHCHECK |
+
+## Dashboard 11 个 Tab
+
+| Tab | 功能 |
+|-----|------|
+| 单标的回测 | 选标的/策略 → 权益曲线 + 买卖点 + 策略对比 |
+| 组合回测 | 多标组合回测 → 风险看板 + PnL 归因 + 交易明细 |
+| 因子归因 | 6 因子 OLS + Newey-West HAC,Jensen α + β 暴露 |
+| 业绩归因 Brinson | 行业配置 / 选股 / 交互三效应,vs SPDR Sector ETFs |
+| 盈亏分析 | Realized(trade_pnl) + Unrealized(持仓浮动)拆分 |
+| 信号有效性 | Forward return 分布,信号预测力 |
+| 风险量化 | VaR + EVT + Stress + Concentration + Correlation + Marginal VaR + What-If |
+| 风险告警历史 | 三类告警时间线 + 按日柱状图 + 阈值验证 |
+| 📑 风险报告 | 9 section 综合周报,Markdown + 推飞书 |
+| 🚨 Kill Switch | 紧急平仓,双确认 + Dry Run + Reset |
+| 配置管理 | watchlist 编辑器 |
 
 ## 策略
 
@@ -63,43 +124,110 @@
 
 ## 项目结构
 
+严格分层,单向依赖,无循环引用。完整架构图见 [`docs/architecture.md`](docs/architecture.md)。
+
 ```
 traderbridge/
-  data/              # 数据管线 (protocol/cache/provider/sources/quality/splits.json)
-  strategy/          # 策略库 (base + 9 个活跃策略 + 3 个已弃用 + ensemble)
-  broker/            # 券商接口 (base + mock + futu)
-  engine/            # 回测引擎
-  ├─ trader.py       #   单标回测 (BacktestEngine/Trade/BacktestResult) — 有符号持仓
-  ├─ portfolio.py    #   组合回测 (PortfolioBacktest/PortfolioTrade)
-  ├─ execution.py    #   执行模型 (回测/实盘共用的订单执行语义)
-  └─ optimize.py     #   参数优化 (grid_search/walk_forward)
-  analysis/          # 分析工具
-  ├─ cost_sensitivity.py    #   成本敏感性网格扫描
-  ├─ param_robustness.py    #   参数鲁棒性邻域扰动
-  ├─ monte_carlo.py         #   Monte Carlo 模拟（交易序列随机化）
-  ├─ rolling_alpha.py       #   滚动窗口 α 衰减检测
-  └─ stress_test.py         #   极端行情压力测试 (2008/2020/2022)
-  live/              # 实盘交易组件
-  ├─ risk_controller.py     #   风控检查、仓位计算、熔断持久化
-  └─ order_manager.py       #   信号→订单生成（4路多空矩阵）、批量等风险分配
-  utils/             # 工具
-  ├─ signal_gate.py         #   策略门控层（市场状态+风控+敞口+孤儿守卫）
-  ├─ market_state.py        #   四象限市场状态分类器（SPY MA20/50/200 + ADX25）
-  ├─ notify.py              #   飞书通知 (Webhook/App + daily_card PnL归因)
-  ├─ signal_scanner.py      #   共享信号扫描引擎（MTF 跨频率）
-  ├─ logging.py             #   结构化 JSON 日志 (JsonFormatter)
-  ├─ sizing.py              #   统一仓位计算（回测实盘共用）
-  ├─ sectors.py             #   行业分类映射
+  data/              # 数据管线 (7 文件 / 2081 行)
+  ├─ sources.py             #   6 数据源 + apply_us_splits 共享拆股调整
+  ├─ provider.py            #   DataProvider 失败链 sina→tencent→yahoo
+  ├─ cache.py               #   CacheManager (SQLite) + StateStore + OpsLogger
+  ├─ realtime.py            #   实时 VIX 旁路 (Yahoo spark/chart,独立 session)
+  ├─ quality.py             #   数据质量校验
+  ├─ protocol.py            #   SOURCE_PRIORITY 路由
+  └─ splits.json            #   美股拆股调整因子
+
+  strategy/          # 策略库 (16 文件 / 2051 行)
+  ├─ base.py                #   BaseStrategy + ChandelierTrailingExit Mixin
+  ├─ 9 个 active 策略       #   spy_ma_breakout / weekly_macd_kdj / ...
+  ├─ ensemble.py            #   StrategyEnsemble 加权投票
+  └─ STRATEGY_GUIDE.md      #   策略使用指南
+
+  broker/            # 券商抽象 (4 文件 / 960 行)
+  ├─ base.py                #   Broker ABC + Order/Position/Account dataclass
+  ├─ mock.py                #   MockBroker dry-run
+  └─ futu.py                #   FutuBroker (富途 OpenD)
+
+  engine/            # 回测引擎 (5 文件 / 2525 行)
+  ├─ trader.py              #   BacktestEngine 单标回测,有符号持仓
+  ├─ portfolio.py           #   PortfolioBacktest 组合回测
+  ├─ execution.py           #   ExecutionModel 订单执行语义
+  └─ optimize.py             #   grid_search + walk_forward
+
+  analysis/          # 风险/业绩分析核心 ★ (22 文件 / 5299 行)
+  ├─ risk_monitor.py        #   Risk Light (SPY MA200 + ADX + VIX)
+  ├─ var.py                 #   Historical / Parametric VaR + ES
+  ├─ evt.py                 #   GPD POT 尾部估计
+  ├─ stress.py              #   5 历史场景压力测试
+  ├─ concentration.py       #   HHI / Sector / Effective N
+  ├─ correlation_analysis.py #  层次聚类 + PCA Effective Bets
+  ├─ risk_decomposition.py  #   Marginal/Component VaR + Risk Parity
+  ├─ what_if.py             #   假设调仓预览
+  ├─ risk_metrics.py        #   Sortino/Calmar/Omega/Pain Index
+  ├─ drawdown.py            #   Underwater + Episodes + Time-to-Recover
+  ├─ brinson.py             #   Brinson 业绩归因(配置/选股/交互)
+  ├─ factor_attribution.py  #   6 因子 OLS + Newey-West HAC
+  ├─ pnl_breakdown.py       #   Realized + Unrealized 拆分
+  ├─ risk_report.py         #   9 section 综合周报
+  ├─ rolling_alpha.py       #   滚动 α 衰减
+  ├─ forward_return.py      #   信号 forward return 分布
+  ├─ cost_sensitivity.py    #   成本敏感性扫描
+  ├─ param_robustness.py    #   参数鲁棒性
+  ├─ monte_carlo.py         #   Monte Carlo 模拟
+  └─ stress_test.py         #   (历史遗留,被 stress.py 取代中)
+
+  live/              # 实盘桥梁 (6 文件 / 1146 行)
+  ├─ risk_controller.py     #   风控检查 + 仓位 + 熔断持久化
+  ├─ order_manager.py       #   信号→订单 4 路矩阵 + 批量等风险
+  ├─ risk_alerts.py         #   三类告警状态机 + 飞书推送
+  ├─ kill_switch.py         #   紧急平仓(纯手动 + 双确认)
+  └─ position_stops.py      #   Chandelier 止损 + 假设持仓计算
+
+  utils/             # 横切关注点 (12 文件 / 1787 行)
+  ├─ notify.py              #   飞书通知 (Webhook/App 双模式 + 5 种卡片)
+  ├─ signal_gate.py         #   策略门控(市场状态+风控+敞口)
+  ├─ market_state.py        #   四象限市场状态分类
+  ├─ signal_scanner.py      #   MTF 跨频率信号扫描
+  ├─ logging.py             #   结构化 JSON 日志
+  ├─ sizing.py              #   统一仓位计算(回测实盘共用)
+  ├─ sectors.py             #   行业分类映射(DEFAULT_SECTORS)
   ├─ risk.py                #   RiskLimits 数据类
-  └─ metrics.py             #   回撤统计、敞口重构
-  tests/             # 637 个测试 (含黄金样本回归 test_golden.py)
-  reports/           # 自动生成的 CSV + PNG 报告
-  live_trader.py     # 实盘信号执行 + 风控 + HTTP /health (入口脚本)
-  daily.py           # 每日回溯扫描 + --optimize 滚动优化 (入口脚本)
-  dashboard.py       # Streamlit Web 仪表盘 (入口脚本)
+  ├─ metrics.py             #   回撤统计、敞口重构
+  ├─ env.py                 #   TOML 读写 (load_toml/save_toml)
+  └─ font.py                #   中文字体兼容
+
+  dashboard/         # Streamlit UI (14 文件 / 3139 行)
+  ├─ main.py                #   11 tab 编排
+  ├─ signals.py             #   今日信号 + 风险灯 + 持仓监控
+  ├─ single_backtest.py     #   单标回测 + 风险调整收益
+  ├─ portfolio_backtest.py  #   组合回测 + Monte Carlo
+  ├─ factor_attribution.py  #   因子归因 tab
+  ├─ brinson_attribution.py #   Brinson 业绩归因 tab
+  ├─ pnl_breakdown.py       #   盈亏分析 tab
+  ├─ risk_analytics.py      #   风险量化 tab (VaR/Stress/Conc/Corr/MVaR)
+  ├─ signal_effectiveness.py #  信号有效性 tab
+  ├─ risk_report.py         #   📑 风险报告 tab
+  ├─ kill_switch.py         #   🚨 Kill Switch tab
+  ├─ config_editor.py       #   watchlist 配置编辑器
+  └─ ops.py                 #   交易记录 + 行业分布
+
+  scripts/           # 命令入口 (4 文件 / 364 行)
+  └─ weekly_risk_report.py  #   cron 入口,周报推飞书
+
+  tests/             # 1043 测试 (49 文件 / 11890 行)
+  docs/              # 架构文档
+  └─ architecture.md
+  reports/           # 自动生成的 CSV + PNG
+  logs/              # JSON 结构化日志 + 周报 markdown
+
+  live_trader.py     # 实盘信号执行 + 风控 + HTTP /health
+  daily.py           # 每日回溯 + --optimize 滚动优化
+  dashboard.py       # Streamlit 入口
   config.py          # 统一运行时配置
-  watchlist.toml     # 标的 + 策略 + 风控 + 市场状态 + 孤儿持仓配置
-  docker-compose.yml # Docker Compose 一键部署 (traderbridge + futu-opend)
+  watchlist.toml     # 标的 + 策略 + 风控 + 告警阈值
+  docker-compose.yml # 一键部署 (traderbridge + futu-opend)
+  .coveragerc        # 覆盖率配置
+  .codecov.yml       # codecov 阈值
 ```
 
 ## 快速开始
@@ -108,8 +236,18 @@ traderbridge/
 # Python 3.10+
 pip install pipenv
 pipenv install --dev
-pipenv run pytest tests/ -v   # 637 tests, verify env
+pipenv run pytest -q   # 1043 tests / 0 failures
 ```
+
+**国内必须配置代理**(Yahoo / GitHub 直连不通)。在 `.env` 写:
+
+```
+HTTPS_PROXY=http://127.0.0.1:7897
+HTTP_PROXY=http://127.0.0.1:7897
+NO_PROXY=localhost,127.0.0.1
+```
+
+Pipenv 会自动加载 `.env`,所有 Python 进程都会用上代理。
 
 ## 核心流程（30 分钟上手）
 
@@ -157,6 +295,40 @@ pipenv run python daily.py              # 今日信号
 pipenv run python daily.py --history    # 近 7 天历史
 pipenv run python daily.py --optimize   # 扫描 + 滚动优化
 ```
+
+### 6. 周报推送
+
+```bash
+# 手动生成 + 推飞书
+pipenv run python scripts/weekly_risk_report.py
+
+# Dry-run（只生成 Markdown，不推飞书）
+pipenv run python scripts/weekly_risk_report.py --dry-run
+
+# 挂 cron（每周一上午 9 点推送）
+# 0 9 * * 1 cd /path/to/traderbridge && pipenv run python scripts/weekly_risk_report.py
+```
+
+报告涵盖 9 个 section:风险灯 / VaR + ES + EVT / 5 场景压力测试 / 集中度 /
+相关性 / Marginal VaR / Brinson 业绩归因 / Realized+Unrealized PnL / 回撤分析。
+
+### 7. 紧急停机(实盘)
+
+Dashboard 打开 **🚨 Kill Switch** tab:
+
+1. 输入 `CONFIRM` 解锁按钮
+2. 填触发原因(必填,审计用)
+3. 点 **🚨 紧急平仓全部** 或 **Dry Run 预演**
+
+会自动:
+- 对每个非零持仓下市价 opposite 单
+- 设 `risk_ctrl.trading_paused = True`(daemon 不再开新仓)
+- 写 `alert_history` 审计
+- 推飞书 RED 卡
+
+**完全手动触发**,无任何自动阈值绑定。基于实证:CBOE VIX 36 年史中 VIX > 50
+共 5 次,之后 SPY 250 日平均涨 **+44.6%**(是抄底信号而非清仓信号)。
+任何基于 VIX/回撤的自动平仓都会反向伤害。
 
 ## 推荐参数模板
 
