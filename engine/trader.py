@@ -1,4 +1,3 @@
-import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -9,8 +8,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
-
-warnings.filterwarnings('ignore')
 
 from data import DataProvider
 from broker import OrderSide, OrderStatus
