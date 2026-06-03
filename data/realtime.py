@@ -32,6 +32,8 @@ from typing import Optional
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 
 # Realtime quote uses its OWN session, NOT shared with data.sources._yahoo_session.
 # Why: _yahoo_session warms with a fc.yahoo.com cookie request needed by Yahoo's
@@ -62,7 +64,6 @@ def _realtime_session() -> requests.Session:
         _REALTIME_SESSION = s
         return s
 
-logger = logging.getLogger(__name__)
 
 _DEFAULT_TTL = 60.0
 _DEFAULT_TIMEOUT = 5.0

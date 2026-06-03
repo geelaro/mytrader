@@ -194,6 +194,44 @@ class TestIdempotency:
 # ===================================================================
 
 
+class TestBrokerOrderOutcomes:
+    """Broker may return non-FILLED order statuses — Kill Switch must
+    record them in audit but still mark itself active."""
+
+    def test_rejected_order_recorded_but_active_set(
+            self, kill_switch, broker, temp_cache):
+        """Broker returns REJECTED — error path inside audit, kill switch
+        is still active (don't keep retrying)."""
+        broker.get_positions.return_value = [_position("AAPL", 100)]
+
+        def submit(order):
+            rej = _make_filled_order(order, order_id="rej_1")
+            rej.status = OrderStatus.REJECTED
+            return rej
+
+        broker.submit_order.side_effect = submit
+        result = kill_switch.trigger("test")
+        # Order recorded with REJECTED status — audit visible to user
+        assert result["status"] == "triggered"
+        assert len(result["orders"]) == 1
+        assert result["orders"][0]["status"] == "REJECTED"
+        # Active flag still set — no auto-retry
+        assert kill_switch.is_active is True
+
+    def test_partial_fill_recorded(self, kill_switch, broker):
+        broker.get_positions.return_value = [_position("AAPL", 100)]
+
+        def submit(order):
+            o = _make_filled_order(order, order_id="part_1")
+            o.status = OrderStatus.PARTIAL
+            o.filled_qty = 60
+            return o
+
+        broker.submit_order.side_effect = submit
+        result = kill_switch.trigger("test")
+        assert result["orders"][0]["status"] == "PARTIAL"
+
+
 class TestRobustness:
     """Failure modes that MUST not silently break Kill Switch."""
 

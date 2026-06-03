@@ -219,8 +219,10 @@ class RiskReport:
         evt = evt_summary(pf_ret)
         m95 = var.get("95%", {})
         m99 = var.get("99%", {})
-        # Find EVT entries
-        evt_by = {row["confidence"]: row for row in evt["comparison"]}
+        # Find EVT entries — defensive against future evt_summary refactors
+        # that might return {"comparison": None} or omit the key.
+        evt_by = {row["confidence"]: row
+                  for row in (evt.get("comparison") or [])}
         return Section(
             title="📉 VaR / 期望损失 (单日)",
             summary=f"基于 {var['n_obs']} 个交易日; 日波动 {var['std'] * 100:.2f}%",
