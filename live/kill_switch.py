@@ -204,6 +204,11 @@ class KillSwitch:
                         "order_id": result.order_id,
                     })
             except Exception as exc:
+                # logger.exception (ERROR level) is INTENTIONAL here — Kill
+                # Switch is a safety-critical path and a per-symbol
+                # liquidation failure warrants Feishu attention via
+                # NotifyLogHandler (when installed in live_trader.py).
+                # See AGENTS.md "Critical design rules" §6.
                 logger.exception("KillSwitch: failed to liquidate %s", pos.symbol)
                 errors.append({"symbol": pos.symbol, "error": str(exc)})
 

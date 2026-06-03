@@ -497,26 +497,52 @@ class RiskReport:
                 vix if vix is not None else pd.DataFrame())
 
     def _portfolio_panel(self, lookback_years: int = 2) -> tuple[Optional[pd.DataFrame], dict]:
-        """Build (prices_df, equal_weights_dict) for hypothetical positions or watchlist."""
+        """Build (prices_df, equal_weights_dict) for hypothetical positions or watchlist.
+
+        Caches the full-history panel (max lookback = 18y) so callers
+        asking for shorter windows just slice the cached frame instead of
+        re-fetching from the provider.  Build() may call this 6+ times
+        across different sections; without the cache that's 60+ symbol
+        round-trips per report.
+        """
+        # Per-instance lazy cache: full panel + symbols
+        if not hasattr(self, "_panel_cache"):
+            self._panel_cache = None
+            self._panel_cache_years = 0
+
         from live.position_stops import compute_hypothetical_positions
-        try:
-            rows = compute_hypothetical_positions(
-                self.config, self.target_date, self.provider) or []
-            symbols = [r["symbol"] for r in rows]
-        except Exception:
-            symbols = []
-        if not symbols:
-            symbols = [item["symbol"]
-                       for item in self.config.get("watchlist", []) or []]
-        if not symbols:
+
+        if self._panel_cache is None:
+            try:
+                rows = compute_hypothetical_positions(
+                    self.config, self.target_date, self.provider) or []
+                symbols = [r["symbol"] for r in rows]
+            except Exception:
+                symbols = []
+            if not symbols:
+                symbols = [item["symbol"]
+                           for item in self.config.get("watchlist", []) or []]
+            if not symbols:
+                self._panel_cache = pd.DataFrame()
+                self._panel_cache_years = 0
+                return None, {}
+            # Fetch the largest window we'll need — sections later slice down.
+            self._panel_cache_years = 18
+            end = pd.Timestamp(self.target_date)
+            start = end - pd.DateOffset(years=self._panel_cache_years)
+            self._panel_cache = self._fetch_panel(symbols, start, end)
+
+        full = self._panel_cache
+        if full is None or full.empty:
             return None, {}
+
         end = pd.Timestamp(self.target_date)
         start = end - pd.DateOffset(years=lookback_years)
-        prices = self._fetch_panel(symbols, start, end)
-        if prices.empty:
+        sliced = full.loc[full.index >= start]
+        if sliced.empty:
             return None, {}
-        weights = {s: 1.0 for s in prices.columns}
-        return prices, weights
+        weights = {s: 1.0 for s in sliced.columns}
+        return sliced, weights
 
     def _fetch_panel(self, symbols, start, end) -> pd.DataFrame:
         start_str = (start.strftime("%Y-%m-%d") if hasattr(start, "strftime")

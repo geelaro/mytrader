@@ -167,8 +167,10 @@ def unrealized_pnl_summary(positions: Iterable[dict]) -> dict:
         ep = float(p.get("entry_price", 0) or 0)
         cp = float(p.get("current_price", 0) or 0)
         # Default shares to 1 only when the key is missing entirely; an
-        # explicit 0 / None means "invalid position" and is skipped.
-        shares_raw = p.get("shares", 1) if "shares" in p else 1
+        # explicit 0 / None means "invalid position" and is skipped below.
+        # (dict.get returns None — not the default — when the value is None,
+        # so the simple form below preserves the same semantics.)
+        shares_raw = p.get("shares", 1)
         try:
             shares = float(shares_raw) if shares_raw is not None else 0.0
         except (TypeError, ValueError):

@@ -99,6 +99,21 @@ def parametric_portfolio_var(
     return float(max(-(mu_p + z * sigma_p), 0.0))
 
 
+def _marginal_var_from_pkg(pkg, confidence: float) -> pd.Series:
+    """Compute marginal VaR from an already-prepared pkg tuple.
+
+    Internal helper shared by marginal_var / component_var to avoid
+    re-running _prepare twice when both are called in sequence.
+    """
+    _, w, mu, cov, sigma_p, _, syms = pkg
+    if sigma_p == 0:
+        return pd.Series(0.0, index=syms)
+    z = stats.norm.ppf(1 - confidence)
+    sigma_w = cov @ w
+    mvar = -(mu + z * sigma_w / sigma_p)
+    return pd.Series(mvar, index=syms)
+
+
 def marginal_var(
     prices: pd.DataFrame,
     weights: Mapping[str, float],
@@ -111,15 +126,7 @@ def marginal_var(
     pkg = _prepare(prices, weights)
     if pkg is None:
         return pd.Series(dtype=float)
-    _, w, mu, cov, sigma_p, _, syms = pkg
-    if sigma_p == 0:
-        return pd.Series(0.0, index=syms)
-    z = stats.norm.ppf(1 - confidence)
-    # ∂σ_p / ∂w_i = (Σw)_i / σ_p
-    sigma_w = cov @ w
-    # VaR = -(μ_p + z σ_p)  →  ∂VaR/∂w_i = -(μ_i + z × (Σw)_i / σ_p)
-    mvar = -(mu + z * sigma_w / sigma_p)
-    return pd.Series(mvar, index=syms)
+    return _marginal_var_from_pkg(pkg, confidence)
 
 
 def component_var(
@@ -137,7 +144,7 @@ def component_var(
     if pkg is None:
         return pd.Series(dtype=float)
     _, w, _, _, _, _, syms = pkg
-    mvar = marginal_var(prices, weights, confidence)
+    mvar = _marginal_var_from_pkg(pkg, confidence)
     if mvar.empty:
         return mvar
     return pd.Series(w, index=syms) * mvar

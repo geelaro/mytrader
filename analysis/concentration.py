@@ -160,12 +160,18 @@ def correlation_hhi(
     if correlation_matrix is None or correlation_matrix.empty:
         return hhi(weights)
 
-    # Align: only use symbols present in both
+    # Align: only use symbols present in both.  Re-normalise the subset
+    # to sum to 1 — without this, dropping a few symbols would bias the
+    # HHI downward because the quadratic form scales with Σw².
     syms = [s for s in w.index if s in correlation_matrix.columns and s in correlation_matrix.index]
     if not syms:
         return hhi(weights)
 
-    w_arr = w.loc[syms].values
+    w_sub = w.loc[syms]
+    sub_total = float(w_sub.sum())
+    if sub_total <= 0:
+        return hhi(weights)
+    w_arr = (w_sub / sub_total).values
     rho = correlation_matrix.loc[syms, syms].values
     # Symmetric quadratic form; clip negative correlations don't reduce
     # below 0 mathematically here (full rho matrix), no clip needed.
