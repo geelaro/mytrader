@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import utils  # noqa: F401 - triggers env setup before matplotlib
 import logging
 
 import numpy as np

@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
-import utils  # noqa: F401 — triggers env setup (encoding, matplotlib backend)
 from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import numpy as np

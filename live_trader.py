@@ -24,6 +24,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# Runtime bootstrap — MUST run before any matplotlib / dotenv-aware import.
+from utils.bootstrap import setup_runtime
+setup_runtime()
+
 import pandas as pd
 
 from data import DataProvider

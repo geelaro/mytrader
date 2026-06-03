@@ -11,6 +11,10 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+# Runtime bootstrap — MUST run before matplotlib / dotenv-aware imports.
+from utils.bootstrap import setup_runtime
+setup_runtime()
+
 import pandas as pd
 
 from data import DataProvider

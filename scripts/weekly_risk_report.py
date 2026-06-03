@@ -27,6 +27,10 @@ from pathlib import Path
 # Ensure project root is importable when run via ``python scripts/...``
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Runtime bootstrap — must run before matplotlib / dotenv-aware imports.
+from utils.bootstrap import setup_runtime  # noqa: E402
+setup_runtime()
+
 from analysis.risk_report import RiskReport  # noqa: E402
 from config import config as runtime_config  # noqa: E402
 from data import DataProvider  # noqa: E402

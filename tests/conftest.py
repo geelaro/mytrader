@@ -5,6 +5,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Ensure project root on path before bootstrap import.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Runtime bootstrap — must run before any business import that touches
+# matplotlib, .env, or Windows-specific encoding paths.
+from utils.bootstrap import setup_runtime
+setup_runtime()
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,9 +21,6 @@ import pytest
 import tempfile as _tempfile
 _test_db_dir = _tempfile.mkdtemp(prefix="traderbridge_test_")
 os.environ["TRADERBRIDGE_DB"] = os.path.join(_test_db_dir, "test.db")
-
-# Ensure project root is on path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 # ---------------------------------------------------------------------------

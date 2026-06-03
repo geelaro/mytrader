@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
-import utils  # noqa: F401 — triggers env setup
 from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker

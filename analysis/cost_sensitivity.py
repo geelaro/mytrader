@@ -15,7 +15,6 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import utils  # noqa: F401 - triggers env setup before matplotlib
 from utils.font import setup_chinese_font
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
