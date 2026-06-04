@@ -72,6 +72,7 @@ from .drawdown import (
 )
 from .drawdown_attribution import (
     attribute_drawdown, attribute_active_drawdown,
+    trade_overlap_attribution, historical_drawdown_attribution,
 )
 from .factor_attribution import FactorAttribution
 from .factor_returns import FactorReturns
@@ -129,6 +130,7 @@ __all__ = [
     "underwater_curve", "drawdown_episodes",
     "time_to_recover_stats", "drawdown_summary",
     "attribute_drawdown", "attribute_active_drawdown",
+    "trade_overlap_attribution", "historical_drawdown_attribution",
     "FactorAttribution", "FactorReturns",
     "SECTOR_ETF", "brinson_attribution",
     "portfolio_sector_breakdown", "compute_period_returns",

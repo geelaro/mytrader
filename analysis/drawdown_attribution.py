@@ -1,5 +1,20 @@
 """Drawdown attribution — decompose a portfolio drawdown to per-position.
 
+Two attribution flavours
+------------------------
+1. :func:`attribute_drawdown` — needs a daily per-symbol value DataFrame
+   (price × shares), gives accounting-exact dollar attribution.  Best for
+   live use where you already have the holdings snapshot.
+
+2. :func:`trade_overlap_attribution` (this module) — uses closed-trade
+   records and counts the full PnL of every trade whose lifetime overlaps
+   the [peak, trough] window.  Approximate but doesn't need daily prices
+   — works directly with backtest output.
+
+3. :func:`historical_drawdown_attribution` — wraps (2) to scan the top-N
+   historical drawdown episodes from an equity curve and produce a
+   per-episode breakdown table for review.
+
 Companion to :mod:`analysis.drawdown` (which characterises the *shape* of
 drawdowns: depth, duration, recovery).  This module answers a different
 question: **inside a given drawdown episode, which positions caused it?**
@@ -208,6 +223,179 @@ def attribute_active_drawdown(
         trough_date=latest_idx,
         top_n=top_n,
     )
+
+
+# ---------------------------------------------------------------------------
+# Trade-overlap attribution (no daily prices needed)
+# ---------------------------------------------------------------------------
+
+
+def trade_overlap_attribution(
+    trades,
+    peak_date: pd.Timestamp,
+    trough_date: pd.Timestamp,
+    depth_usd: float = 0.0,
+) -> dict:
+    """Attribute a drawdown to per-symbol trade PnL via lifetime overlap.
+
+    For each trade whose ``[entry_time, exit_time]`` intersects
+    ``[peak_date, trough_date]``, attribute its **whole** PnL to its
+    symbol.  Sum by symbol → ranked contributions.
+
+    Approximation: a trade open for 200 days that crosses a 30-day
+    drawdown gets its full lifetime PnL attributed to that window.  In
+    practice this works well because trades only enter the count when
+    they overlap the window, and across many trades the over/under
+    counting tends to wash out.  Use :func:`attribute_drawdown` for
+    accounting-exact dollar bookkeeping.
+
+    Parameters
+    ----------
+    trades : iterable
+        Iterable of objects with attributes ``entry_time``, ``exit_time``,
+        ``symbol``, ``pnl``.  Compatible with ``PortfolioTrade``.
+    peak_date, trough_date : pd.Timestamp
+    depth_usd : float, optional
+        Absolute dollar depth of the drawdown.  If provided, the
+        ``contribution_pct`` field is filled in for each symbol;
+        otherwise it's left as None.
+
+    Returns
+    -------
+    dict::
+
+        {
+            "peak_date":   Timestamp,
+            "trough_date": Timestamp,
+            "by_symbol":   list[dict],   # sorted by pnl asc (worst first)
+            "explained_usd":   float,
+            "unexplained_usd": float,    # depth - explained (open-position PnL)
+            "n_trades":    int,
+        }
+
+    ``by_symbol`` entries: ``{symbol, pnl, n_trades, contribution_pct}``.
+    """
+    by_symbol: dict[str, dict] = {}
+    n_total = 0
+    for t in trades or []:
+        try:
+            entry = pd.Timestamp(t.entry_time) if t.entry_time else None
+            exit_ = (pd.Timestamp(t.exit_time) if t.exit_time
+                     else trough_date)
+        except Exception:
+            continue
+        if entry is None:
+            continue
+        if exit_ < peak_date or entry > trough_date:
+            continue
+        sym = str(t.symbol)
+        pnl = float(t.pnl or 0)
+        if sym not in by_symbol:
+            by_symbol[sym] = {"symbol": sym, "pnl": 0.0, "n_trades": 0,
+                              "contribution_pct": None}
+        by_symbol[sym]["pnl"] += pnl
+        by_symbol[sym]["n_trades"] += 1
+        n_total += 1
+
+    rows = sorted(by_symbol.values(), key=lambda r: r["pnl"])
+    explained = sum(r["pnl"] for r in rows)
+
+    if depth_usd:
+        for r in rows:
+            r["contribution_pct"] = (r["pnl"] / abs(depth_usd) * 100)
+
+    return {
+        "peak_date": peak_date,
+        "trough_date": trough_date,
+        "by_symbol": rows,
+        "explained_usd": float(explained),
+        "unexplained_usd": float(depth_usd - explained) if depth_usd else 0.0,
+        "n_trades": n_total,
+    }
+
+
+def historical_drawdown_attribution(
+    equity_curve: pd.Series,
+    trades,
+    top_n_episodes: int = 5,
+    min_depth_pct: float = -1.0,
+) -> list[dict]:
+    """Per-episode drawdown attribution across the historical equity curve.
+
+    Scans the equity curve for the worst N drawdown episodes (via
+    :func:`analysis.drawdown.drawdown_episodes`), then applies
+    :func:`trade_overlap_attribution` to each.
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Daily portfolio value.  Index = dates.
+    trades : iterable
+        Backtest trades (see :func:`trade_overlap_attribution`).
+    top_n_episodes : int
+        Limit to the N deepest episodes.
+    min_depth_pct : float
+        Skip shallow episodes (e.g. ``-1.0`` skips < 1%).  Pass 0 to keep all.
+
+    Returns
+    -------
+    list[dict] — one per episode, sorted by depth ascending (worst first)::
+
+        {
+            "peak_date":             Timestamp,
+            "trough_date":           Timestamp,
+            "recovery_date":         Timestamp | NaT,
+            "depth_pct":             float (negative),
+            "depth_usd":             float (negative),
+            "duration_to_trough":    int (days),
+            "duration_to_recovery":  int (days, NaN if open),
+            "by_symbol":             list[dict],
+            "explained_usd":         float,
+            "unexplained_usd":       float,
+            "n_trades_in_window":    int,
+        }
+    """
+    # Inline import to avoid circulars at module init
+    from analysis.drawdown import drawdown_episodes
+
+    pv = _clean_series(equity_curve)
+    if pv.empty:
+        return []
+
+    returns = pv.pct_change().dropna()
+    episodes = drawdown_episodes(returns)
+    if episodes.empty:
+        return []
+
+    out: list[dict] = []
+    for _, ep in episodes.head(top_n_episodes).iterrows():
+        if ep["depth_pct"] > min_depth_pct:
+            continue
+        peak_d = ep["peak_date"]
+        trough_d = ep["trough_date"]
+        peak_v = float(pv.loc[peak_d]) if peak_d in pv.index else 0.0
+        trough_v = float(pv.loc[trough_d]) if trough_d in pv.index else 0.0
+        depth_usd = trough_v - peak_v
+
+        attr = trade_overlap_attribution(trades, peak_d, trough_d,
+                                         depth_usd=depth_usd)
+        out.append({
+            "peak_date":             peak_d,
+            "trough_date":           trough_d,
+            "recovery_date":         ep.get("recovery_date"),
+            "depth_pct":             float(ep["depth_pct"]),
+            "depth_usd":             float(depth_usd),
+            "duration_to_trough":    int(ep["duration_to_trough_days"]),
+            "duration_to_recovery":  (
+                int(ep["duration_to_recovery_days"])
+                if pd.notna(ep["duration_to_recovery_days"]) else None
+            ),
+            "by_symbol":             attr["by_symbol"],
+            "explained_usd":         attr["explained_usd"],
+            "unexplained_usd":       attr["unexplained_usd"],
+            "n_trades_in_window":    attr["n_trades"],
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------

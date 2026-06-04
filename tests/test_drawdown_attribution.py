@@ -9,7 +9,18 @@ import pytest
 from analysis.drawdown_attribution import (
     attribute_active_drawdown,
     attribute_drawdown,
+    historical_drawdown_attribution,
+    trade_overlap_attribution,
 )
+
+
+class _MockTrade:
+    """Duck-typed PortfolioTrade for tests."""
+    def __init__(self, symbol, entry_time, exit_time, pnl):
+        self.symbol = symbol
+        self.entry_time = entry_time
+        self.exit_time = exit_time
+        self.pnl = pnl
 
 
 def _dates(n: int, start: str = "2026-01-01") -> pd.DatetimeIndex:
@@ -142,6 +153,137 @@ class TestAttributeDrawdown:
 
         assert len(result["by_symbol"]) == 1
         assert result["by_symbol"][0]["symbol"] == "A"
+
+
+class TestTradeOverlapAttribution:
+    def test_overlapping_trade_counted(self):
+        peak = pd.Timestamp("2026-01-10")
+        trough = pd.Timestamp("2026-01-20")
+        trades = [
+            _MockTrade("NVDA", pd.Timestamp("2026-01-05"),
+                       pd.Timestamp("2026-01-25"), pnl=-500),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough, depth_usd=-500)
+        assert out["n_trades"] == 1
+        assert out["by_symbol"][0]["symbol"] == "NVDA"
+        assert out["by_symbol"][0]["pnl"] == -500
+        assert out["unexplained_usd"] == 0
+
+    def test_trade_entirely_before_window_excluded(self):
+        peak = pd.Timestamp("2026-02-01")
+        trough = pd.Timestamp("2026-02-10")
+        trades = [
+            _MockTrade("NVDA", pd.Timestamp("2026-01-01"),
+                       pd.Timestamp("2026-01-15"), pnl=-100),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough)
+        assert out["n_trades"] == 0
+
+    def test_trade_entirely_after_window_excluded(self):
+        peak = pd.Timestamp("2026-01-01")
+        trough = pd.Timestamp("2026-01-10")
+        trades = [
+            _MockTrade("X", pd.Timestamp("2026-02-01"),
+                       pd.Timestamp("2026-02-10"), pnl=999),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough)
+        assert out["n_trades"] == 0
+
+    def test_aggregates_multiple_trades_per_symbol(self):
+        peak = pd.Timestamp("2026-01-01")
+        trough = pd.Timestamp("2026-01-30")
+        trades = [
+            _MockTrade("NVDA", pd.Timestamp("2026-01-05"),
+                       pd.Timestamp("2026-01-15"), pnl=-200),
+            _MockTrade("NVDA", pd.Timestamp("2026-01-20"),
+                       pd.Timestamp("2026-01-28"), pnl=-100),
+            _MockTrade("TSLA", pd.Timestamp("2026-01-10"),
+                       pd.Timestamp("2026-01-25"), pnl=50),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough, depth_usd=-250)
+        by_sym = {r["symbol"]: r for r in out["by_symbol"]}
+        assert by_sym["NVDA"]["pnl"] == -300
+        assert by_sym["NVDA"]["n_trades"] == 2
+        assert by_sym["TSLA"]["pnl"] == 50
+        assert by_sym["TSLA"]["n_trades"] == 1
+        # Sort: worst first
+        assert out["by_symbol"][0]["symbol"] == "NVDA"
+
+    def test_contribution_pct_filled_when_depth_given(self):
+        peak = pd.Timestamp("2026-01-01")
+        trough = pd.Timestamp("2026-01-30")
+        trades = [
+            _MockTrade("X", pd.Timestamp("2026-01-05"),
+                       pd.Timestamp("2026-01-20"), pnl=-500),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough, depth_usd=-1000)
+        # Convention: PnL-signed share of |drawdown|.  -500/1000 = -50%
+        # (loser cost 50% of the drawdown).  A gainer's pnl_pct would be +.
+        assert out["by_symbol"][0]["contribution_pct"] == -50.0
+
+    def test_open_position_uses_trough_as_exit(self):
+        """A trade still open (exit_time=None) at trough is counted."""
+        peak = pd.Timestamp("2026-01-01")
+        trough = pd.Timestamp("2026-01-30")
+        trades = [
+            _MockTrade("X", pd.Timestamp("2026-01-10"), None, pnl=-200),
+        ]
+        out = trade_overlap_attribution(trades, peak, trough)
+        assert out["n_trades"] == 1
+
+
+class TestHistoricalDrawdownAttribution:
+    def test_scans_multiple_episodes(self):
+        """Equity curve with 2 drawdowns → 2 attribution records."""
+        idx = pd.date_range("2026-01-01", periods=10, freq="D")
+        # 100 → 90 (DD1), 100 → 80 (DD2)
+        pv = pd.Series([100, 95, 90, 95, 100, 95, 85, 80, 90, 100], index=idx)
+        trades = [
+            _MockTrade("A", idx[0], idx[3], pnl=-10),    # in DD1
+            _MockTrade("B", idx[4], idx[7], pnl=-15),   # in DD2
+        ]
+        out = historical_drawdown_attribution(pv, trades, top_n_episodes=5,
+                                              min_depth_pct=0)
+        assert len(out) == 2
+        # Worst first: DD2 (-20%) before DD1 (-10%)
+        assert out[0]["depth_pct"] < out[1]["depth_pct"]
+
+    def test_returns_empty_for_monotone_rising(self):
+        idx = pd.date_range("2026-01-01", periods=5, freq="D")
+        pv = pd.Series([100, 102, 105, 110, 115], index=idx)
+        out = historical_drawdown_attribution(pv, [])
+        assert out == []
+
+    def test_top_n_limits(self):
+        idx = pd.date_range("2026-01-01", periods=12, freq="D")
+        pv = pd.Series([100, 95, 100, 90, 100, 80, 100, 85, 100, 70, 100, 100],
+                       index=idx)
+        out = historical_drawdown_attribution(pv, [], top_n_episodes=2,
+                                              min_depth_pct=0)
+        assert len(out) <= 2
+
+    def test_min_depth_filter(self):
+        idx = pd.date_range("2026-01-01", periods=6, freq="D")
+        # One tiny DD (-1%) and one big (-20%)
+        pv = pd.Series([100, 99, 100, 110, 90, 100], index=idx)
+        out = historical_drawdown_attribution(pv, [], min_depth_pct=-5.0)
+        # Only the -20% DD survives the -5% filter
+        assert len(out) == 1
+        assert out[0]["depth_pct"] < -5
+
+    def test_per_episode_attribution_isolated(self):
+        idx = pd.date_range("2026-01-01", periods=10, freq="D")
+        pv = pd.Series([100, 95, 90, 95, 100, 95, 85, 80, 90, 100], index=idx)
+        trades = [
+            _MockTrade("A", idx[0], idx[3], pnl=-10),   # only DD1
+            _MockTrade("B", idx[4], idx[7], pnl=-15),   # only DD2
+        ]
+        out = historical_drawdown_attribution(pv, trades, top_n_episodes=5,
+                                              min_depth_pct=0)
+        # Each episode should see only the trades that overlap it
+        for ep in out:
+            symbols_in_ep = {r["symbol"] for r in ep["by_symbol"]}
+            assert len(symbols_in_ep) == 1
 
 
 class TestAttributeActiveDrawdown:

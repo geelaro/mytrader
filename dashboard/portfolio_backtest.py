@@ -269,17 +269,19 @@ def _render_pnl_attribution(pf_result, pf_strategy):
 
 
 def _render_drawdown_attribution(pf_result):
-    """Attribute the worst drawdown episode to per-symbol trade PnL.
+    """Per-episode drawdown attribution across the historical equity curve.
 
-    Finds the deepest peak→trough on ``equity_curve``, then sums the PnL
-    of every closed trade whose lifetime overlaps that window.  Trades
-    spanning the window have their whole PnL attributed to the symbol
-    (an honest approximation given we don't reconstruct daily holdings).
+    Uses :func:`analysis.drawdown_attribution.historical_drawdown_attribution`
+    to scan the top-N deepest drawdown episodes and produce a per-symbol
+    breakdown of each.  Each row in the summary table is one episode;
+    expanding it reveals the per-symbol contribution.
     """
+    from analysis.drawdown_attribution import historical_drawdown_attribution
+
     st.subheader("回撤归因")
     st.caption(
-        "找到回测期内最深的 peak→trough 区间，把期间内有活动的交易按标的汇总 — "
-        "回答\"那次最大回撤是谁拖下去的\"。"
+        "扫描历史回撤区间, 把每次 peak→trough 期间的交易按标的汇总 — "
+        "回答\"哪些回撤是谁拖下去的, 是不是同一批标的反复出问题\"."
     )
 
     curve = pf_result.equity_curve
@@ -287,78 +289,75 @@ def _render_drawdown_attribution(pf_result):
         st.info("权益曲线为空")
         return
 
-    cummax = curve.cummax()
-    underwater = curve / cummax - 1
-    trough_idx = underwater.idxmin()
-    peak_idx = curve.loc[:trough_idx].idxmax()
+    n_episodes = st.slider("展示历史回撤数", 1, 10, 5, key="dd_attr_n")
+    min_depth = st.slider("过滤浅回撤(%)", -10.0, 0.0, -1.0, step=0.5,
+                          key="dd_attr_min")
 
-    peak_v = float(curve.loc[peak_idx])
-    trough_v = float(curve.loc[trough_idx])
-    depth_usd = trough_v - peak_v
-    depth_pct = (depth_usd / peak_v * 100) if peak_v else 0.0
-
-    if depth_pct >= -0.01:
-        st.success("回测期内无显著回撤")
+    episodes = historical_drawdown_attribution(
+        curve, pf_result.closed_trades or [],
+        top_n_episodes=n_episodes, min_depth_pct=min_depth,
+    )
+    if not episodes:
+        st.success(f"回测期内无 < {min_depth}% 的回撤")
         return
 
-    # Build attribution from trades overlapping [peak_idx, trough_idx].
-    rows = []
-    for t in pf_result.closed_trades or []:
-        try:
-            entry = pd.Timestamp(t.entry_time)
-            exit_ = pd.Timestamp(t.exit_time) if t.exit_time else pd.Timestamp(curve.index[-1])
-        except Exception:
-            continue
-        # Overlap: trade's lifetime intersects [peak_idx, trough_idx].
-        if exit_ < peak_idx or entry > trough_idx:
-            continue
-        pnl = float(t.pnl or 0)
-        rows.append({"symbol": str(t.symbol), "pnl": pnl})
+    # ── Summary metrics across all returned episodes ────────────
+    total_depth = sum(ep["depth_usd"] for ep in episodes)
+    n_total_trades = sum(ep["n_trades_in_window"] for ep in episodes)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Peak", peak_idx.strftime("%Y-%m-%d"), f"${peak_v:,.0f}")
-    m2.metric("Trough", trough_idx.strftime("%Y-%m-%d"), f"${trough_v:,.0f}")
-    m3.metric("回撤", f"{depth_pct:.1f}%", f"${depth_usd:+,.0f}")
-    m4.metric("区间天数", f"{(trough_idx - peak_idx).days} 天")
+    m1.metric("回撤次数", len(episodes))
+    m2.metric("累计回撤", f"${total_depth:+,.0f}")
+    m3.metric("涉及交易笔数", n_total_trades)
+    m4.metric("最深", f"{episodes[0]['depth_pct']:.1f}%")
 
-    if not rows:
-        st.info("该回撤区间内无已平仓交易（可能仅由未平仓持仓的浮亏导致）")
-        return
+    # ── Episode summary table with top contributors inline ─────
+    summary_rows = []
+    for i, ep in enumerate(episodes):
+        peak = ep["peak_date"].strftime("%Y-%m-%d")
+        trough = ep["trough_date"].strftime("%Y-%m-%d")
+        top_loser = ep["by_symbol"][0] if ep["by_symbol"] else None
+        top_gainer = ep["by_symbol"][-1] if ep["by_symbol"] else None
+        summary_rows.append({
+            "#": i + 1,
+            "Peak → Trough": f"{peak} → {trough}",
+            "深度": f"{ep['depth_pct']:.1f}% (${ep['depth_usd']:+,.0f})",
+            "天数": ep["duration_to_trough"],
+            "恢复天数": (ep["duration_to_recovery"]
+                       if ep["duration_to_recovery"] is not None else "仍在 DD"),
+            "交易笔数": ep["n_trades_in_window"],
+            "↓ 最大拖累": (f"{top_loser['symbol']} ${top_loser['pnl']:+,.0f}"
+                          if top_loser and top_loser["pnl"] < 0 else "—"),
+            "↑ 最大对冲": (f"{top_gainer['symbol']} ${top_gainer['pnl']:+,.0f}"
+                          if top_gainer and top_gainer["pnl"] > 0 else "—"),
+        })
+    st.dataframe(pd.DataFrame(summary_rows), hide_index=True,
+                 use_container_width=True)
 
-    df = pd.DataFrame(rows).groupby("symbol")["pnl"].agg(["sum", "count"]).reset_index()
-    df.columns = ["symbol", "区间PnL", "交易笔数"]
-    df = df.sort_values("区间PnL")
-
-    df["贡献占比"] = (df["区间PnL"] / abs(depth_usd) * 100).round(1) if depth_usd else 0
-    df["区间PnL"] = df["区间PnL"].round(0).astype(int)
-
-    explained = int(df["区间PnL"].sum())
-    unexplained = int(depth_usd - explained)
-
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        if abs(unexplained) > abs(depth_usd) * 0.1:
-            st.caption(
-                f"⚠ 未解释部分 ${unexplained:+,} ({unexplained/peak_v*100:.1f}%) — "
-                "差额主要来自该区间未平仓持仓的浮动盈亏（不在 closed_trades 内）"
-            )
-
-    with c2:
-        top_loser = df.iloc[0]
-        if top_loser["区间PnL"] < 0:
-            st.metric(
-                f"↓ 最大拖累 {top_loser['symbol']}",
-                f"${top_loser['区间PnL']:+,}",
-                delta=f"{top_loser['贡献占比']:.0f}% 占回撤",
-            )
-        top_gainer = df.iloc[-1]
-        if top_gainer["区间PnL"] > 0:
-            st.metric(
-                f"↑ 最大对冲 {top_gainer['symbol']}",
-                f"${top_gainer['区间PnL']:+,}",
-                delta=f"+{top_gainer['贡献占比']:.0f}% 抵消",
-            )
+    # ── Per-episode drill-down (expander) ──────────────────────
+    for i, ep in enumerate(episodes):
+        peak = ep["peak_date"].strftime("%Y-%m-%d")
+        trough = ep["trough_date"].strftime("%Y-%m-%d")
+        label = (f"#{i+1}  {peak} → {trough}   "
+                 f"{ep['depth_pct']:.1f}%   ${ep['depth_usd']:+,.0f}")
+        with st.expander(label, expanded=(i == 0)):
+            if not ep["by_symbol"]:
+                st.info("该区间内无已平仓交易")
+                continue
+            rows = [{
+                "标的": r["symbol"],
+                "区间 PnL": int(round(r["pnl"])),
+                "交易笔数": r["n_trades"],
+                "占回撤 %": (f"{r['contribution_pct']:.1f}%"
+                            if r["contribution_pct"] is not None else "—"),
+            } for r in ep["by_symbol"]]
+            st.dataframe(pd.DataFrame(rows), hide_index=True,
+                         use_container_width=True)
+            if abs(ep["unexplained_usd"]) > abs(ep["depth_usd"]) * 0.1:
+                st.caption(
+                    f"⚠ 未解释部分 ${ep['unexplained_usd']:+,.0f} — "
+                    "差额来自该区间未平仓持仓的浮动盈亏 (closed_trades 不含)"
+                )
 
 
 def _render_trade_details(pf_result, pf_strategy):
