@@ -26,6 +26,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from analysis.decision_attribution import decision_attribution_summary
+
 
 _RISK_LIGHT_EMOJI = {
     "green": "🟢", "yellow": "🟡", "red": "🔴", None: "⚪", "": "⚪",
@@ -109,6 +111,58 @@ def render_decision_review(cache):
         st.dataframe(by_light, use_container_width=True)
     else:
         st.caption("风险灯字段未填充 — RiskAlerter 尚未在持久化 alert:last_risk_level")
+
+    # ── Hit-rate attribution (decisions joined to realised PnL) ───
+    st.subheader("命中率分析 — 决策 × 实现 PnL")
+    st.caption(
+        "把每次 trade_buy/sell 接到 trade_pnl 表的实现损益, 按风险灯分组, "
+        "看哪种环境下决策表现更好. 关 / 平仓决策按 order_id 精确匹配; "
+        "买入决策按 symbol + 下一笔 exit 匹配 (FIFO 假设)."
+    )
+    trade_rows = (cache.query_trade_pnl(limit=5000)
+                  if hasattr(cache, "query_trade_pnl") else [])
+    if not trade_rows:
+        st.info("trade_pnl 为空 — 实盘 / 模拟产生平仓后即可显示命中率")
+    else:
+        attr = decision_attribution_summary(
+            decisions, trade_rows, group_by="risk_light",
+        )
+        # Summary metrics
+        s1, s2, s3 = st.columns(3)
+        s1.metric("已匹配决策", attr["n_matched"])
+        s2.metric("未匹配 (仍持仓)", attr["n_unmatched"])
+        if attr["groups"]:
+            total_pnl = sum(g["total_pnl"] for g in attr["groups"].values())
+            s3.metric("总实现 PnL", f"${total_pnl:+,.0f}")
+
+        # Per-risk-light table
+        if attr["groups"]:
+            rows = []
+            for light_key in ["green", "yellow", "red", "(unknown)"]:
+                if light_key not in attr["groups"]:
+                    continue
+                g = attr["groups"][light_key]
+                rows.append({
+                    "风险灯": (f"{_RISK_LIGHT_EMOJI.get(light_key, '⚪')} "
+                               f"{light_key}"),
+                    "决策数": g["n"],
+                    "胜": g["n_wins"],
+                    "负": g["n_losses"],
+                    "胜率": f"{g['win_rate'] * 100:.1f}%",
+                    "总PnL": f"${g['total_pnl']:+,.0f}",
+                    "平均PnL": f"${g['avg_pnl']:+,.0f}",
+                    "中位PnL": f"${g['median_pnl']:+,.0f}",
+                })
+            if rows:
+                st.dataframe(pd.DataFrame(rows), hide_index=True,
+                             use_container_width=True)
+                st.caption(
+                    "解读: 如果 RED 灯下的胜率显著低于 GREEN, 说明你的决策框架"
+                    "在压力期失灵 — 考虑加严风控. 反之, 如果 RED 下胜率反而高, "
+                    "可能是因为 RED 时只剩高确信度决策能通过."
+                )
+            else:
+                st.caption("尚无已匹配的决策 PnL — 仍在持仓中.")
 
     # ── Detail table ───────────────────────────────────────────────
     st.subheader("决策明细")

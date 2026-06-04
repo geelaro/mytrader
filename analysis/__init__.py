@@ -84,6 +84,9 @@ from .pnl_breakdown import (
     resolve_period, realized_pnl_summary,
     unrealized_pnl_summary, pnl_summary,
 )
+from .decision_attribution import (
+    join_decision_pnl, hit_rate_by_group, decision_attribution_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Monitoring + reports
@@ -131,6 +134,8 @@ __all__ = [
     "compute_forward_returns",
     "resolve_period", "realized_pnl_summary",
     "unrealized_pnl_summary", "pnl_summary",
+    "join_decision_pnl", "hit_rate_by_group",
+    "decision_attribution_summary",
     # Monitoring + reports
     "RiskLevel", "RiskState", "compute_risk_state",
     "RiskReport", "Section",
