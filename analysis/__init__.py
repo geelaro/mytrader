@@ -34,6 +34,10 @@ from .var import (
     historical_var, parametric_var, conditional_var,
     portfolio_returns, var_summary,
 )
+from .garch import (
+    ewma_volatility, fit_gjr_garch, forecast_volatility,
+    forward_var, forward_var_summary,
+)
 from .evt import fit_gpd, evt_var, evt_es, evt_summary
 from .stress import SCENARIOS, replay_scenario, replay_custom, run_scenarios
 from .concentration import (
@@ -100,6 +104,8 @@ __all__ = [
     # Ex-ante risk
     "historical_var", "parametric_var", "conditional_var",
     "portfolio_returns", "var_summary",
+    "ewma_volatility", "fit_gjr_garch", "forecast_volatility",
+    "forward_var", "forward_var_summary",
     "fit_gpd", "evt_var", "evt_es", "evt_summary",
     "SCENARIOS", "replay_scenario", "replay_custom", "run_scenarios",
     "hhi", "hhi_label", "effective_n", "top_n_weight",

@@ -26,6 +26,7 @@ from analysis.evt import evt_summary
 from analysis.risk_decomposition import risk_decomposition_summary, risk_parity_weights
 from analysis.stress import SCENARIOS, run_scenarios
 from analysis.var import portfolio_returns, var_summary
+from analysis.garch import forward_var_summary
 from analysis.what_if import apply_rebalance, compare_portfolios
 from live.position_stops import compute_hypothetical_positions
 from utils.sectors import DEFAULT_SECTORS
@@ -160,6 +161,47 @@ def render_risk_analytics(config: dict, target_date, provider):
             "解读: Historical = 经验分位, Parametric = 正态闭式, "
             "**EVT = 拟合 GPD 后外推**(99%+ 唯一可靠估计, 历史样本太稀疏). "
             "EVT > Historical 通常说明有肥尾, 是好事(更保守)."
+        )
+
+        # ── Forward-looking VaR (GARCH / EWMA conditional vol) ──────
+        st.markdown("**前瞻 VaR**(条件波动率 — 抓住明日的实际风险)")
+        fv = forward_var_summary(pf_ret, confidences=(0.95, 0.99))
+        sig = fv["sigma_forecast"]
+        params = fv["gjr_params"]
+
+        method_label = "GJR-GARCH(1,1)" if params["fitted"] else "EWMA fallback"
+        c1, c2, c3 = st.columns(3)
+        c1.metric("EWMA σ (明日)", f"{sig['ewma'] * 100:.2f}%")
+        c2.metric("GJR-GARCH σ (明日)", f"{sig['gjr'] * 100:.2f}%",
+                  delta=method_label, delta_color="off")
+        if params["fitted"]:
+            c3.metric("GARCH 持续性", f"{params['persistence']:.3f}",
+                      delta=f"γ (杠杆) = {params['gamma']:.3f}",
+                      delta_color="off")
+        else:
+            c3.metric("GARCH 持续性", "—",
+                      delta="样本不足 → EWMA", delta_color="off")
+
+        fwd_rows = []
+        for conf in ["95%", "99%"]:
+            if conf in fv:
+                m = fv[conf]
+                hist_val = summary[conf]["historical"]
+                fwd_rows.append({
+                    "置信度": conf,
+                    "Historical(回溯)": f"{hist_val * 100:.2f}%",
+                    "EWMA 前瞻": f"{m['ewma'] * 100:.2f}%",
+                    "GJR-GARCH 前瞻": f"{m['gjr'] * 100:.2f}%",
+                    "GARCH/Hist 比": (f"{m['gjr'] / hist_val:.2f}×"
+                                     if hist_val > 0 else "—"),
+                })
+        st.dataframe(pd.DataFrame(fwd_rows), hide_index=True,
+                     use_container_width=True)
+        st.caption(
+            "解读: Historical 用整段历史样本(滞后); EWMA 用近期波动率("
+            "RiskMetrics λ=0.94, 半衰期 ~11 天); GJR-GARCH 还捕捉**杠杆效应**"
+            "(γ>0 = 负冲击放大未来波动). 比值 >1.3× 说明当前波动率已显著高于历史均值, "
+            "明日实际风险高于历史 VaR 给的数字."
         )
 
     st.divider()
