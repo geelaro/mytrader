@@ -86,80 +86,93 @@ def main():
     render_position_watch(config, target_date, provider)
 
     # -------------------------------------------------------------------
-    # Tabs: single backtest | portfolio backtest
+    # Tabs — 4 top-level groups by workflow stage.
+    #   研究  — backtest / attribution / signal effectiveness
+    #   绩效  — realised PnL + decision review + live trade ops
+    #   风控  — VaR/stress + weekly report + alert log + Kill Switch
+    #   设置  — config editor
+    # The "今日" content (risk light, today's signals, position watch)
+    # is the always-visible header above these tabs.
     # -------------------------------------------------------------------
 
-    (tab_single, tab_portfolio, tab_factors, tab_brinson, tab_pnl,
-     tab_signal_eff, tab_risk, tab_alerts, tab_decisions, tab_report,
-     tab_kill, tab_config) = st.tabs(
-        ["单标的回测", "组合回测", "因子归因", "业绩归因 Brinson",
-         "盈亏分析",
-         "信号有效性", "风险量化", "风险告警历史",
-         "📓 决策复盘", "📑 风险报告",
-         "🚨 Kill Switch", "配置管理"]
+    tab_research, tab_perf, tab_risk_top, tab_settings = st.tabs(
+        ["🔬 研究", "💰 绩效", "🚨 风控", "⚙ 设置"]
     )
 
-    with tab_single:
-        render_single_backtest(
-            selected_symbol, selected_strategy, backtest_years,
-            target_date, provider, cache,
+    # ─── 研究 ───────────────────────────────────────────────────────
+    with tab_research:
+        sub_single, sub_portfolio, sub_factors, sub_brinson, sub_signal_eff = \
+            st.tabs(["单标的回测", "组合回测", "因子归因",
+                     "业绩归因 Brinson", "信号有效性"])
+
+        with sub_single:
+            render_single_backtest(
+                selected_symbol, selected_strategy, backtest_years,
+                target_date, provider, cache,
+            )
+
+        with sub_portfolio:
+            render_portfolio_backtest(
+                config, target_date, backtest_years,
+                allocation_mode, pf_strategy,
+                strategy_options, symbols,
+            )
+            st.divider()
+            render_monte_carlo(strategy_options, symbols, target_date)
+
+        with sub_factors:
+            render_factor_attribution(
+                config, target_date, backtest_years,
+                allocation_mode, pf_strategy, symbols,
+            )
+
+        with sub_brinson:
+            render_brinson_attribution(config, target_date, provider)
+
+        with sub_signal_eff:
+            render_signal_effectiveness(
+                config, target_date, backtest_years, provider,
+                selected_symbol, selected_strategy,
+                strategy_options, symbols,
+            )
+
+    # ─── 绩效 ───────────────────────────────────────────────────────
+    with tab_perf:
+        sub_pnl, sub_decisions, sub_ops = st.tabs(
+            ["盈亏分析", "📓 决策复盘", "实盘记录"]
         )
 
-    with tab_portfolio:
-        render_portfolio_backtest(
-            config, target_date, backtest_years,
-            allocation_mode, pf_strategy,
-            strategy_options, symbols,
+        with sub_pnl:
+            render_pnl_breakdown(config, target_date, provider, cache)
+
+        with sub_decisions:
+            render_decision_review(cache)
+
+        with sub_ops:
+            # Sector pie + live trade log + ops health.
+            render_ops(config, cache)
+
+    # ─── 风控 ───────────────────────────────────────────────────────
+    with tab_risk_top:
+        sub_risk_q, sub_report, sub_alerts, sub_kill = st.tabs(
+            ["风险量化", "📑 风险报告", "风险告警历史", "🚨 Kill Switch"]
         )
 
-    with tab_factors:
-        render_factor_attribution(
-            config, target_date, backtest_years,
-            allocation_mode, pf_strategy, symbols,
-        )
+        with sub_risk_q:
+            render_risk_analytics(config, target_date, provider)
 
-    with tab_brinson:
-        render_brinson_attribution(config, target_date, provider)
+        with sub_report:
+            render_risk_report(config, target_date, provider, cache)
 
-    with tab_pnl:
-        render_pnl_breakdown(config, target_date, provider, cache)
+        with sub_alerts:
+            render_alert_history(cache)
 
-    with tab_signal_eff:
-        render_signal_effectiveness(
-            config, target_date, backtest_years, provider,
-            selected_symbol, selected_strategy,
-            strategy_options, symbols,
-        )
+        with sub_kill:
+            _render_kill_switch_tab(config, cache)
 
-    with tab_risk:
-        render_risk_analytics(config, target_date, provider)
-
-    with tab_alerts:
-        render_alert_history(cache)
-
-    with tab_decisions:
-        render_decision_review(cache)
-
-    with tab_report:
-        render_risk_report(config, target_date, provider, cache)
-
-    with tab_kill:
-        _render_kill_switch_tab(config, cache)
-
-    with tab_config:
+    # ─── 设置 ───────────────────────────────────────────────────────
+    with tab_settings:
         render_config_editor(config)
-
-    # -------------------------------------------------------------------
-    # Monte Carlo expander
-    # -------------------------------------------------------------------
-
-    render_monte_carlo(strategy_options, symbols, target_date)
-
-    # -------------------------------------------------------------------
-    # Ops / sector / trade history
-    # -------------------------------------------------------------------
-
-    render_ops(config, cache)
 
 
 # ---------------------------------------------------------------------------

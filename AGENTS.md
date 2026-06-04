@@ -37,7 +37,7 @@ Flat single-package layout — everything is at the top level. No `src/` layout,
 | `engine/` | 2525 | Backtest engines — single-symbol + portfolio + walk-forward optimize |
 | `analysis/` | **5299** | ★ **22 risk/performance analysis modules** — VaR / EVT / Stress / Concentration / Correlation / Brinson / Drawdown / Marginal VaR / What-If / Risk Report aggregator / …  Pure compute, no I/O side effects |
 | `live/` | 1146 | Live trading bridge — `RiskController` / `OrderManager` / `RiskAlerter` / **`KillSwitch`** / `position_stops` |
-| `dashboard/` | 3139 | Streamlit UI — **11 tabs**, pure render |
+| `dashboard/` | 3139 | Streamlit UI — **4 top-level tabs** (研究/绩效/风控/设置) with nested sub-tabs, pure render |
 | `utils/` | 1787 | Cross-cutting — notify (Feishu) / sizing / risk / market_state / signal_gate / logging / sectors |
 | `scripts/` | 364 | Cron entry — `weekly_risk_report.py` etc. |
 | `tests/` | **11890** | **1043 tests, all offline.** 75.9% coverage on runtime code |
@@ -362,19 +362,30 @@ CI.  Don't suppress.
 pipenv run streamlit run dashboard.py --server.port 8501 --server.headless true
 ```
 
-Access at `http://localhost:8501`. **11 tabs**:
+Access at `http://localhost:8501`. Layout: **always-visible "今日" header**
+(risk light + today's signals + position watch) above **4 top-level tabs**
+grouped by workflow stage:
 
-1. 单标的回测 — single-symbol backtest + risk-adjusted metrics
-2. 组合回测 — portfolio backtest + PnL attribution + Monte Carlo expander
-3. 因子归因 — 6-factor OLS + Newey-West HAC, Jensen α + β
-4. 业绩归因 Brinson — sector allocation / selection / interaction
-5. 盈亏分析 — Realized + Unrealized PnL breakdown
-6. 信号有效性 — Forward return distribution
-7. 风险量化 — VaR + EVT + Stress + Concentration + Correlation + Marginal VaR + What-If
-8. 风险告警历史 — alert timeline + per-type daily bar chart
-9. 📑 风险报告 — 9-section weekly report + Feishu push
-10. 🚨 Kill Switch — emergency liquidation (manual + double confirm + dry-run)
-11. 配置管理 — watchlist editor
+**🔬 研究** (5 sub-tabs)
+- 单标的回测 — single-symbol backtest + risk-adjusted metrics
+- 组合回测 — portfolio backtest + PnL attribution + 回撤归因 + Monte Carlo
+- 因子归因 — 6-factor OLS + Newey-West HAC, Jensen α + β
+- 业绩归因 Brinson — sector allocation / selection / interaction
+- 信号有效性 — Forward return distribution
+
+**💰 绩效** (3 sub-tabs)
+- 盈亏分析 — Realized + Unrealized PnL breakdown
+- 📓 决策复盘 — decision history × risk-light × realised PnL hit-rate
+- 实盘记录 — sector pie + live trade log + ops health
+
+**🚨 风控** (4 sub-tabs)
+- 风险量化 — VaR + EVT + Stress + Concentration + Correlation + Marginal VaR + What-If + 前瞻 VaR (GARCH) + 覆盖率回测
+- 📑 风险报告 — 9-section weekly report + Feishu push
+- 风险告警历史 — alert timeline + per-type daily bar chart
+- 🚨 Kill Switch — emergency liquidation (manual + double confirm + dry-run)
+
+**⚙ 设置**
+- 配置管理 — watchlist editor
 
 ## Weekly risk report (cron)
 
