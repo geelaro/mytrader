@@ -211,6 +211,139 @@ only for genuine unexpected errors that warrant Feishu attention
 singletons via `@st.cache_resource`.  Don't introduce module-level
 mutable state in dashboard modules.
 
+## Module boundaries (layer contract)
+
+Single repo, but strict layering — the project deliberately stays in one
+codebase (no split between "risk system" and "trading system") because
+the shared substrate (data/cache, broker abstraction, strategy library,
+engine) is large and splitting would force duplication or a shared lib
+with hidden coupling.  Instead, layer discipline carries the same
+benefits at much lower maintenance cost.
+
+### Layers (low → high)
+
+```
+utils       ← cross-cutting; no internal deps
+data        ← market data + SQLite cache; deps: utils
+broker      ← broker abstraction (MockBroker, FutuBroker, RetryingBroker); deps: utils
+strategy    ← strategies; deps: data, utils
+engine      ← backtest engines; deps: strategy, data, utils
+analysis    ← pure-compute risk/perf modules; deps: engine, strategy, data, utils
+                  ★ MUST NOT import live/ or broker/
+live        ← live trading bridge (risk_controller, order_manager,
+              kill_switch, decision_logger, risk_alerts); deps: broker,
+              strategy, data, utils, analysis (read-only)
+dashboard   ← Streamlit UI; deps: analysis, engine, data, broker, live, utils
+scripts     ← cron entry; deps: most modules
+```
+
+No cycles.  Currently verified manually (see [Layer-import enforcement](#layer-import-enforcement) below);
+CI gate via import-linter is planned but not yet wired.
+
+### `analysis/` is pure compute
+
+No I/O writes (no `cache.save_*`), no broker calls, no network.  Inputs
+are `pd.Series` / `pd.DataFrame` / dicts; outputs are dicts / DataFrames.
+This lets `analysis/` be unit-tested without DB or broker fixtures
+(currently ~5300 LOC; the bulk of the suite).
+
+**Known violation, slated for refactor**: `analysis/risk_report.py`
+imports `live.position_stops.compute_hypothetical_positions` (2 sites).
+The function itself is pure compute (config + target_date + provider →
+positions list, no broker access) and is misplaced in `live/`.  Planned
+fix: move to `analysis/hypothetical_positions.py`, keep a re-export in
+`live/position_stops.py` for the other 7 callers.  Until then, this is
+the only sanctioned `analysis → live` import.
+
+### `live/` is the only writer of trading-state tables
+
+| Table | Writers | Readers |
+|-------|---------|---------|
+| `ohlcv_daily`, `signal_history` | `data/` providers, `daily.py` | everywhere |
+| `trade_pnl`, `order_log`, `slippage_log` | `live/order_manager` (via `live_trader.py`) | dashboard, analysis, reports |
+| `decision_history` | `live/decision_logger` (via `live_trader.py` + KillSwitch) | dashboard `decision_review` |
+| `alert_history` | `live/risk_alerts`, `live/kill_switch` | dashboard `alert_history` |
+| `risk_state` | `live/risk_controller`, `live/kill_switch` | dashboard, daemon next tick |
+| `entry_prices` | `live/risk_controller` | engine, analysis |
+| `ops_log` | utility code across `live/`, `broker/` | dashboard `ops` tab |
+
+`dashboard/`, `analysis/`, `scripts/` are **read-only** with respect to
+all of the above, **with one principled exception** — see Kill Switch.
+
+If you want to write a new table from `dashboard/` or `analysis/`,
+reconsider.  The correct path is: dashboard writes a *request flag* to
+`risk_state` → daemon next tick reads the flag → daemon performs the
+action → daemon writes the table.
+
+### Sanctioned exception: Kill Switch is dashboard→broker direct
+
+`dashboard/kill_switch.py` constructs `KillSwitch(broker, ...)` directly
+and calls `ks.trigger()`, which executes `broker.submit_order()` from
+the **dashboard process** — bypassing the `live_trader` daemon entirely.
+
+This is **by design**, not a layering violation:
+
+- KillSwitch must work when the daemon is dead, hung, or unreachable.
+  Routing it through the daemon would make daemon failure also disable
+  the emergency exit — the single worst possible failure mode for a
+  safety control.
+- The `KillSwitch` class itself lives in `live/`, so dashboard depends
+  on `live/`, not the reverse.  Layer direction is preserved.
+- Audit trail flows the same way it would have through the daemon:
+  `KillSwitch.trigger` writes to `alert_history` AND `decision_history`,
+  and pauses the daemon via `risk_state` so the daemon won't open new
+  positions when it next ticks.
+- Locking is via SQLite + WAL; no in-process coordination needed.
+
+**Do not generalise this pattern.**  KillSwitch is the only sanctioned
+dashboard→broker write path.  Every other dashboard action must follow
+the "write a request flag" pattern above.
+
+### Layer-import enforcement
+
+The rule distinguishes **broker value types** (`Order`, `OrderSide`,
+`OrderStatus`, `OrderType` — pure dataclasses / enums) from **broker
+implementations** (`Broker`, `MockBroker`, `FutuBroker`, `RetryingBroker`
+— actual order-submitting code).  Value types are shared vocabulary;
+engine and strategy may use them.  Implementations may only be touched
+by `live/`, `dashboard/` (KillSwitch only), `scripts/`, and tests.
+
+Until import-linter is wired into CI, these greps are the spot-checks:
+
+```bash
+# analysis/ MUST NOT import live/  (one known violation, slated for fix)
+grep -rn "from live\|^import live\b" analysis/
+
+# strategy/, data/, utils/ MUST NOT import live/ or broker/
+grep -rn "from live\|^import live\b" strategy/ data/ utils/      # empty
+grep -rn "from broker\|^import broker\b" strategy/ data/ utils/  # empty
+
+# engine/ may import broker VALUE TYPES only — Order/OrderSide/OrderStatus/OrderType
+# It must NOT import Broker / MockBroker / FutuBroker / RetryingBroker
+grep -rn "Broker\b" engine/ \
+  | grep -v "OrderSide\|OrderStatus\|OrderType\|order_type\|order side\|Order\b"
+# (manual review — any line matching a *Broker class is a violation)
+
+# Who may IMPORT broker — broader (need types/factory)
+# Who may CALL broker.submit_order — narrower (only live_trader daemon + KillSwitch)
+grep -rn "from broker\|^import broker\b" \
+  | grep -v "^live/\|^dashboard/\|^scripts/\|^broker/\|^tests/\|^engine/\|^live_trader.py\|^daily.py\|^analysis/"
+# should be empty
+
+# Critical: broker.submit_order calls — should only appear in:
+#   live/order_manager.py  (daemon path)
+#   live/kill_switch.py    (emergency path)
+#   broker/middleware.py   (RetryingBroker passthrough)
+#   tests/                 (test fixtures)
+grep -rn "\.submit_order\b" \
+  | grep -v "^live/order_manager\|^live/kill_switch\|^broker/middleware\|^tests/\|^broker/base"
+# should be empty
+```
+
+If you add an import that breaks these rules, you're crossing a layer
+boundary — refactor or add a justification comment with a follow-up to
+CI.  Don't suppress.
+
 ## Windows / Docker quirks
 
 - `utils/env.py` fixes GBK encoding on Windows: `sys.stdout.reconfigure(encoding="utf-8")`
