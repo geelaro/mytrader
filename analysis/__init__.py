@@ -38,6 +38,7 @@ from .garch import (
     ewma_volatility, fit_gjr_garch, forecast_volatility,
     forward_var, forward_var_summary,
 )
+from .var_coverage import coverage_backtest
 from .evt import fit_gpd, evt_var, evt_es, evt_summary
 from .stress import SCENARIOS, replay_scenario, replay_custom, run_scenarios
 from .concentration import (
@@ -109,6 +110,7 @@ __all__ = [
     "portfolio_returns", "var_summary",
     "ewma_volatility", "fit_gjr_garch", "forecast_volatility",
     "forward_var", "forward_var_summary",
+    "coverage_backtest",
     "fit_gpd", "evt_var", "evt_es", "evt_summary",
     "SCENARIOS", "replay_scenario", "replay_custom", "run_scenarios",
     "hhi", "hhi_label", "effective_n", "top_n_weight",

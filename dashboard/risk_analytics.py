@@ -27,6 +27,7 @@ from analysis.risk_decomposition import risk_decomposition_summary, risk_parity_
 from analysis.stress import SCENARIOS, run_scenarios
 from analysis.var import portfolio_returns, var_summary
 from analysis.garch import forward_var_summary
+from analysis.var_coverage import coverage_backtest
 from analysis.what_if import apply_rebalance, compare_portfolios
 from live.position_stops import compute_hypothetical_positions
 from utils.sectors import DEFAULT_SECTORS
@@ -203,6 +204,54 @@ def render_risk_analytics(config: dict, target_date, provider):
             "(γ>0 = 负冲击放大未来波动). 比值 >1.3× 说明当前波动率已显著高于历史均值, "
             "明日实际风险高于历史 VaR 给的数字."
         )
+
+        # ── Coverage backtest ────────────────────────────────────────
+        if len(pf_ret) >= 500:
+            with st.expander("📊 VaR 模型回测覆盖率(Kupiec / Christoffersen)"):
+                st.caption(
+                    "rolling backtest: 每天用过去 250 天数据预测当日 VaR, "
+                    "看实际损失超出的频率是否接近声称的 (1-c)%. "
+                    "Kupiec 检验比例, Christoffersen 检验聚集. 两个 p > 0.05 = 模型合格."
+                )
+                conf_choice = st.radio("置信度", [0.95, 0.99], horizontal=True,
+                                       format_func=lambda x: f"{int(x*100)}%")
+                cov_rows = []
+                for method, label in [("historical", "Historical"),
+                                       ("ewma", "EWMA")]:
+                    cov = coverage_backtest(
+                        pf_ret, confidence=conf_choice,
+                        method=method, window=250,
+                    )
+                    cov_rows.append({
+                        "方法": label,
+                        "OOS 天数": cov["n_oos"],
+                        "违约数": cov["n_violations"],
+                        "实际频率": f"{cov['observed_rate'] * 100:.2f}%",
+                        "期望频率": f"{cov['expected_rate'] * 100:.2f}%",
+                        "Kupiec p": (f"{cov['kupiec']['p_value']:.3f}"
+                                     + (" ✗" if cov["kupiec"]["reject_at_5pct"]
+                                        else " ✓")),
+                        "Christoffersen p": (
+                            f"{cov['christoffersen']['p_value']:.3f}"
+                            + (" ✗" if cov["christoffersen"]["reject_at_5pct"]
+                               else " ✓")),
+                        "Conditional Cov. p": (
+                            f"{cov['conditional_coverage']['p_value']:.3f}"
+                            + (" ✗" if cov["conditional_coverage"]["reject_at_5pct"]
+                               else " ✓")),
+                    })
+                st.dataframe(pd.DataFrame(cov_rows), hide_index=True,
+                             use_container_width=True)
+                st.caption(
+                    "✓ = 通过 (p > 0.05), ✗ = 拒绝 (模型不合格). "
+                    "Kupiec 拒绝 = 实际频率与声称不符; "
+                    "Christoffersen 拒绝 = 违约聚集(波动率没建模到位); "
+                    "Conditional Coverage 拒绝 = 联合不通过. "
+                    "GJR-GARCH 方法因 MLE 拟合慢, 此处仅显示 Historical + EWMA."
+                )
+        else:
+            st.caption(f"💡 拥有 {len(pf_ret)} 天数据, "
+                       "≥500 天后此处会出现 VaR 模型回测覆盖率分析")
 
     st.divider()
 
