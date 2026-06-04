@@ -247,13 +247,11 @@ are `pd.Series` / `pd.DataFrame` / dicts; outputs are dicts / DataFrames.
 This lets `analysis/` be unit-tested without DB or broker fixtures
 (currently ~5300 LOC; the bulk of the suite).
 
-**Known violation, slated for refactor**: `analysis/risk_report.py`
-imports `live.position_stops.compute_hypothetical_positions` (2 sites).
-The function itself is pure compute (config + target_date + provider →
-positions list, no broker access) and is misplaced in `live/`.  Planned
-fix: move to `analysis/hypothetical_positions.py`, keep a re-export in
-`live/position_stops.py` for the other 7 callers.  Until then, this is
-the only sanctioned `analysis → live` import.
+As of the layer-discipline refactor (`compute_hypothetical_positions`
+moved from `live/` to `analysis/hypothetical_positions.py`),
+`analysis/` no longer imports from `live/` anywhere.  The grep is green.
+`live/position_stops.py` is now a thin re-export shim for backward
+compatibility with the 7 other call sites that hadn't been migrated.
 
 ### `live/` is the only writer of trading-state tables
 

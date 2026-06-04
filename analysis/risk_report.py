@@ -416,7 +416,7 @@ class RiskReport:
 
     def _build_pnl(self) -> Optional[Section]:
         from analysis.pnl_breakdown import pnl_summary
-        from live.position_stops import compute_hypothetical_positions
+        from analysis.hypothetical_positions import compute_hypothetical_positions
 
         try:
             positions = compute_hypothetical_positions(
@@ -512,7 +512,7 @@ class RiskReport:
             self._panel_cache = None
             self._panel_cache_years = 0
 
-        from live.position_stops import compute_hypothetical_positions
+        from analysis.hypothetical_positions import compute_hypothetical_positions
 
         if self._panel_cache is None:
             try:
