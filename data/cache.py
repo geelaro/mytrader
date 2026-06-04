@@ -214,6 +214,27 @@ class _CacheBase:
             (2, [
                 "CREATE INDEX IF NOT EXISTS idx_ops_src_ts ON ops_log(source, ts)",
             ]),
+            (3, [
+                """CREATE TABLE IF NOT EXISTS decision_history (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts                TEXT NOT NULL,
+                    decision_type     TEXT NOT NULL,
+                    symbol            TEXT,
+                    reason            TEXT,
+                    risk_light        TEXT,
+                    vix               REAL,
+                    portfolio_value   REAL,
+                    num_positions     INTEGER,
+                    concentration_hhi REAL,
+                    effective_bets    REAL,
+                    var_95            REAL,
+                    drawdown_pct      REAL,
+                    payload           TEXT
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_decision_ts   ON decision_history(ts)",
+                "CREATE INDEX IF NOT EXISTS idx_decision_type ON decision_history(decision_type)",
+                "CREATE INDEX IF NOT EXISTS idx_decision_sym  ON decision_history(symbol)",
+            ]),
         ]
 
         for version, statements in migrations:
@@ -508,6 +529,141 @@ class StateStore(_CacheBase):
             except (ValueError, TypeError):
                 payload = {"_raw": payload_str}
             out.append({"ts": ts, "alert_type": atype, "payload": payload})
+        return out
+
+    # -- decision history ---------------------------------------------------
+
+    def record_decision(
+        self,
+        decision_type: str,
+        symbol: Optional[str] = None,
+        reason: Optional[str] = None,
+        context: Optional[dict] = None,
+        payload: Optional[dict] = None,
+        ts: Optional[str] = None,
+    ) -> int:
+        """Persist one decision moment with current risk snapshot.
+
+        Parameters
+        ----------
+        decision_type : str
+            Caller category. Suggested: 'trade_buy' / 'trade_sell' /
+            'kill_switch' / 'rebalance' / 'manual_override' /
+            'signal_ignored'.
+        symbol : str, optional
+            Affected symbol. None for portfolio-wide events.
+        reason : str, optional
+            Free-text explanation persisted alongside the row.
+        context : dict, optional
+            Risk snapshot — known keys are columns; unknown keys go into
+            payload. Recognised: ``risk_light, vix, portfolio_value,
+            num_positions, concentration_hhi, effective_bets, var_95,
+            drawdown_pct``.
+        payload : dict, optional
+            Action-specific structured data (order details, what-if
+            params, etc.) — JSON-encoded into the payload column.
+        ts : str, optional
+            ISO timestamp. Defaults to now.
+
+        Returns
+        -------
+        int : the rowid of the inserted record (lets caller link a later
+        outcome update back to this decision).
+        """
+        import json as _json
+        if ts is None:
+            ts = datetime.now().isoformat(timespec="seconds")
+        ctx = dict(context or {})
+        # Pull recognised fields out of ctx; any leftovers merge into payload.
+        cols = {
+            "risk_light":        ctx.pop("risk_light", None),
+            "vix":               ctx.pop("vix", None),
+            "portfolio_value":   ctx.pop("portfolio_value", None),
+            "num_positions":     ctx.pop("num_positions", None),
+            "concentration_hhi": ctx.pop("concentration_hhi", None),
+            "effective_bets":    ctx.pop("effective_bets", None),
+            "var_95":            ctx.pop("var_95", None),
+            "drawdown_pct":      ctx.pop("drawdown_pct", None),
+        }
+        merged_payload = dict(payload or {})
+        if ctx:  # leftovers from context go into the payload JSON
+            merged_payload["_extra_context"] = ctx
+
+        with self._lock:
+            self.init_schema()
+            cur = self.conn.execute(
+                """INSERT INTO decision_history (
+                    ts, decision_type, symbol, reason,
+                    risk_light, vix, portfolio_value, num_positions,
+                    concentration_hhi, effective_bets, var_95, drawdown_pct,
+                    payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    ts, decision_type, symbol, reason,
+                    cols["risk_light"], cols["vix"],
+                    cols["portfolio_value"], cols["num_positions"],
+                    cols["concentration_hhi"], cols["effective_bets"],
+                    cols["var_95"], cols["drawdown_pct"],
+                    _json.dumps(merged_payload, ensure_ascii=False)
+                    if merged_payload else None,
+                ],
+            )
+            row_id = cur.lastrowid
+            self._commit()
+        return int(row_id) if row_id else 0
+
+    def query_decisions(
+        self,
+        days: int = 90,
+        decision_type: Optional[str] = None,
+        symbol: Optional[str] = None,
+        risk_light: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list:
+        """Return decisions within the last ``days`` (newest first).
+
+        Each row is a dict with all columns + parsed ``payload``.
+        Filters compose with AND; pass None to skip a filter.
+        """
+        import json as _json
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        sql = """SELECT id, ts, decision_type, symbol, reason,
+                        risk_light, vix, portfolio_value, num_positions,
+                        concentration_hhi, effective_bets, var_95, drawdown_pct,
+                        payload
+                 FROM decision_history WHERE ts >= ?"""
+        args = [cutoff]
+        if decision_type:
+            sql += " AND decision_type = ?"
+            args.append(decision_type)
+        if symbol:
+            sql += " AND symbol = ?"
+            args.append(symbol.upper())
+        if risk_light:
+            sql += " AND risk_light = ?"
+            args.append(risk_light)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(int(limit))
+
+        with self._lock:
+            self.init_schema()
+            rows = self.conn.execute(sql, args).fetchall()
+
+        cols = ("id", "ts", "decision_type", "symbol", "reason",
+                "risk_light", "vix", "portfolio_value", "num_positions",
+                "concentration_hhi", "effective_bets", "var_95", "drawdown_pct",
+                "payload")
+        out = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            if d.get("payload"):
+                try:
+                    d["payload"] = _json.loads(d["payload"])
+                except (ValueError, TypeError):
+                    d["payload"] = {"_raw": d["payload"]}
+            else:
+                d["payload"] = {}
+            out.append(d)
         return out
 
     # -- entry prices -------------------------------------------------------

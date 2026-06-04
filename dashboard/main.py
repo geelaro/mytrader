@@ -25,6 +25,7 @@ from dashboard.risk_report import render_risk_report
 from dashboard.ops import render_ops
 from dashboard.config_editor import render_config_editor
 from dashboard.risk_analytics import render_risk_analytics
+from dashboard.decision_review import render_decision_review
 
 logger = get_logger("dashboard.main")
 
@@ -89,11 +90,12 @@ def main():
     # -------------------------------------------------------------------
 
     (tab_single, tab_portfolio, tab_factors, tab_brinson, tab_pnl,
-     tab_signal_eff, tab_risk, tab_alerts, tab_report, tab_kill,
-     tab_config) = st.tabs(
+     tab_signal_eff, tab_risk, tab_alerts, tab_decisions, tab_report,
+     tab_kill, tab_config) = st.tabs(
         ["单标的回测", "组合回测", "因子归因", "业绩归因 Brinson",
          "盈亏分析",
-         "信号有效性", "风险量化", "风险告警历史", "📑 风险报告",
+         "信号有效性", "风险量化", "风险告警历史",
+         "📓 决策复盘", "📑 风险报告",
          "🚨 Kill Switch", "配置管理"]
     )
 
@@ -134,6 +136,9 @@ def main():
 
     with tab_alerts:
         render_alert_history(cache)
+
+    with tab_decisions:
+        render_decision_review(cache)
 
     with tab_report:
         render_risk_report(config, target_date, provider, cache)

@@ -103,6 +103,16 @@ class LiveTrader:
                                         broker=self.broker, notifier=self.notifier)
         self._gate = SignalGate(ms_enabled=self._ms_enabled,
                                 max_total_exposure_pct=self.risk.max_total_exposure_pct)
+        # Decision logger — snapshots risk context on every order / kill
+        # switch trigger so we can later answer "of last 90 days of decisions
+        # under RED light, what was the hit rate?"  Resolver collects only
+        # cheap fields (account, positions); marker fields like risk_light /
+        # vix can be patched in by callers that have them at hand.
+        from live.decision_logger import DecisionLogger
+        self.decision_logger = DecisionLogger(
+            self.cache,
+            context_resolver=self._decision_context,
+        )
         self.order_mgr = OrderManager(
             broker=self.broker,
             cache=self.cache,
@@ -241,6 +251,23 @@ class LiveTrader:
                 account = self.broker.get_account()
                 positions_dict = {p.symbol: p for p in self.broker.get_positions()}
                 self.risk_ctrl.check_global(account, positions_dict)
+                # Capture decision context — risk-light + portfolio snapshot
+                # at exactly the moment of the fill, for later complaince /
+                # framework-validation review.
+                self.decision_logger.log(
+                    decision_type=("trade_buy" if order.side == OrderSide.BUY
+                                   else "trade_sell"),
+                    symbol=order.symbol,
+                    reason=getattr(order, "reason", None) or "live_trader",
+                    payload={
+                        "order_id": order.order_id,
+                        "qty": int(order.filled_qty or 0),
+                        "price": float(order.avg_fill_price or 0),
+                        "status": order.status.value,
+                        "side": order.side.value,
+                        "dry_run": self.dry_run,
+                    },
+                )
 
         if not orders:
             print("\n  无新订单 — 信号与持仓一致")
@@ -540,6 +567,40 @@ class LiveTrader:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _decision_context(self) -> dict:
+        """Best-effort risk snapshot for DecisionLogger.
+
+        Resolves only cheap, already-loaded fields (account snapshot +
+        position count); heavier ones (HHI, VaR, drawdown) are intentionally
+        left off so submit_order's hot path stays sub-millisecond.  Risk
+        light is sourced from the most recent ``check_risk_light`` cache
+        write (alert:last_risk_level) — a few seconds stale at worst.
+        """
+        ctx: dict = {}
+        # risk_light from the alerter's state-store cache
+        try:
+            level = self.cache.load_risk_state("alert:last_risk_level")
+            if level:
+                ctx["risk_light"] = level
+        except Exception:
+            pass
+        # account snapshot
+        try:
+            account = self.broker.get_account()
+            if account is not None:
+                ctx["portfolio_value"] = float(getattr(account, "total_equity", 0) or 0)
+        except Exception:
+            pass
+        # position count
+        try:
+            positions = self.broker.get_positions() or []
+            ctx["num_positions"] = sum(
+                1 for p in positions if int(getattr(p, "quantity", 0) or 0) != 0
+            )
+        except Exception:
+            pass
+        return ctx
 
     @staticmethod
     def _load_config(path: str) -> dict:

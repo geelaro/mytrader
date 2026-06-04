@@ -254,6 +254,30 @@ class KillSwitch:
         except Exception:
             logger.exception("KillSwitch: audit log write failed")
 
+        # Also persist to the unified decision_history so the dashboard's
+        # decision-review tab sees kill-switch events alongside trades.
+        # Risk context: at trigger time, risk_light is by definition RED
+        # in spirit (manual emergency) — we record what's known.
+        try:
+            risk_light = self.cache.load_risk_state("alert:last_risk_level")
+            self.cache.record_decision(
+                decision_type="kill_switch",
+                symbol=None,
+                reason=reason,
+                context={
+                    "risk_light": risk_light,
+                    "num_positions": len(positions),
+                },
+                payload={
+                    "n_orders": len(orders),
+                    "n_errors": len(errors),
+                    "dry_run": dry_run,
+                },
+                ts=ts,
+            )
+        except Exception:
+            logger.exception("KillSwitch: decision log write failed")
+
         # Push Feishu card (best-effort)
         self._notify(reason, len(positions), orders, errors, dry_run)
 
