@@ -107,6 +107,9 @@ def render_portfolio_backtest(config, target_date, backtest_years,
     # --- PnL Attribution ---
     _render_pnl_attribution(pf_result, pf_strategy)
 
+    # --- Drawdown Attribution ---
+    _render_drawdown_attribution(pf_result)
+
     # --- Filtered trade details ---
     _render_trade_details(pf_result, pf_strategy)
 
@@ -263,6 +266,99 @@ def _render_pnl_attribution(pf_result, pf_strategy):
         for sym, p in bot3.items():
             pct = f"{p / filt_pnl * 100:.0f}%" if filt_pnl != 0 else "—"
             st.metric(f"↓ {sym}", f"${p:+,.0f}", delta=pct)
+
+
+def _render_drawdown_attribution(pf_result):
+    """Attribute the worst drawdown episode to per-symbol trade PnL.
+
+    Finds the deepest peak→trough on ``equity_curve``, then sums the PnL
+    of every closed trade whose lifetime overlaps that window.  Trades
+    spanning the window have their whole PnL attributed to the symbol
+    (an honest approximation given we don't reconstruct daily holdings).
+    """
+    st.subheader("回撤归因")
+    st.caption(
+        "找到回测期内最深的 peak→trough 区间，把期间内有活动的交易按标的汇总 — "
+        "回答\"那次最大回撤是谁拖下去的\"。"
+    )
+
+    curve = pf_result.equity_curve
+    if curve.empty or len(curve) < 2:
+        st.info("权益曲线为空")
+        return
+
+    cummax = curve.cummax()
+    underwater = curve / cummax - 1
+    trough_idx = underwater.idxmin()
+    peak_idx = curve.loc[:trough_idx].idxmax()
+
+    peak_v = float(curve.loc[peak_idx])
+    trough_v = float(curve.loc[trough_idx])
+    depth_usd = trough_v - peak_v
+    depth_pct = (depth_usd / peak_v * 100) if peak_v else 0.0
+
+    if depth_pct >= -0.01:
+        st.success("回测期内无显著回撤")
+        return
+
+    # Build attribution from trades overlapping [peak_idx, trough_idx].
+    rows = []
+    for t in pf_result.closed_trades or []:
+        try:
+            entry = pd.Timestamp(t.entry_time)
+            exit_ = pd.Timestamp(t.exit_time) if t.exit_time else pd.Timestamp(curve.index[-1])
+        except Exception:
+            continue
+        # Overlap: trade's lifetime intersects [peak_idx, trough_idx].
+        if exit_ < peak_idx or entry > trough_idx:
+            continue
+        pnl = float(t.pnl or 0)
+        rows.append({"symbol": str(t.symbol), "pnl": pnl})
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Peak", peak_idx.strftime("%Y-%m-%d"), f"${peak_v:,.0f}")
+    m2.metric("Trough", trough_idx.strftime("%Y-%m-%d"), f"${trough_v:,.0f}")
+    m3.metric("回撤", f"{depth_pct:.1f}%", f"${depth_usd:+,.0f}")
+    m4.metric("区间天数", f"{(trough_idx - peak_idx).days} 天")
+
+    if not rows:
+        st.info("该回撤区间内无已平仓交易（可能仅由未平仓持仓的浮亏导致）")
+        return
+
+    df = pd.DataFrame(rows).groupby("symbol")["pnl"].agg(["sum", "count"]).reset_index()
+    df.columns = ["symbol", "区间PnL", "交易笔数"]
+    df = df.sort_values("区间PnL")
+
+    df["贡献占比"] = (df["区间PnL"] / abs(depth_usd) * 100).round(1) if depth_usd else 0
+    df["区间PnL"] = df["区间PnL"].round(0).astype(int)
+
+    explained = int(df["区间PnL"].sum())
+    unexplained = int(depth_usd - explained)
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        if abs(unexplained) > abs(depth_usd) * 0.1:
+            st.caption(
+                f"⚠ 未解释部分 ${unexplained:+,} ({unexplained/peak_v*100:.1f}%) — "
+                "差额主要来自该区间未平仓持仓的浮动盈亏（不在 closed_trades 内）"
+            )
+
+    with c2:
+        top_loser = df.iloc[0]
+        if top_loser["区间PnL"] < 0:
+            st.metric(
+                f"↓ 最大拖累 {top_loser['symbol']}",
+                f"${top_loser['区间PnL']:+,}",
+                delta=f"{top_loser['贡献占比']:.0f}% 占回撤",
+            )
+        top_gainer = df.iloc[-1]
+        if top_gainer["区间PnL"] > 0:
+            st.metric(
+                f"↑ 最大对冲 {top_gainer['symbol']}",
+                f"${top_gainer['区间PnL']:+,}",
+                delta=f"+{top_gainer['贡献占比']:.0f}% 抵消",
+            )
 
 
 def _render_trade_details(pf_result, pf_strategy):

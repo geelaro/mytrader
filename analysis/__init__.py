@@ -65,6 +65,9 @@ from .drawdown import (
     underwater_curve, drawdown_episodes,
     time_to_recover_stats, drawdown_summary,
 )
+from .drawdown_attribution import (
+    attribute_drawdown, attribute_active_drawdown,
+)
 from .factor_attribution import FactorAttribution
 from .factor_returns import FactorReturns
 from .brinson import (
@@ -114,6 +117,7 @@ __all__ = [
     "information_ratio", "pain_index", "pain_ratio", "risk_adjusted_summary",
     "underwater_curve", "drawdown_episodes",
     "time_to_recover_stats", "drawdown_summary",
+    "attribute_drawdown", "attribute_active_drawdown",
     "FactorAttribution", "FactorReturns",
     "SECTOR_ETF", "brinson_attribution",
     "portfolio_sector_breakdown", "compute_period_returns",
