@@ -272,6 +272,7 @@ def render_signal_detail(config, target_date, provider, cache):
 
     if not active:
         st.info("今日无买入/卖出信号 — 等待")
+        _render_proximity(results, default_expanded=True)
         st.divider()
         return
 
@@ -367,7 +368,58 @@ def render_signal_detail(config, target_date, provider, cache):
                     agree_lines.append(f"{r['strategy']} {tag}: {sig_label}")
                 st.markdown("**其它策略观察**: " + "  ·  ".join(agree_lines))
 
+    # Proximity warnings — even when signals fire, near-trigger info on
+    # other symbols is useful. Collapsed by default so it doesn't crowd
+    # the signal cards.
+    _render_proximity(results, default_expanded=False)
     st.divider()
+
+
+# ---------------------------------------------------------------------------
+# Proximity-to-trigger warnings (analysis/proximity)
+# ---------------------------------------------------------------------------
+
+
+_PROX_ICON = {"alert": "🔴", "warn": "🟡", "info": "⚪"}
+_PROX_DIR_ARROW = {"bullish": "↑", "bearish": "↓", "neutral": "·"}
+
+
+def _render_proximity(scan_results, default_expanded: bool = False) -> None:
+    """Render the 'near-trigger' warning panel.
+
+    Each entry is one (symbol, strategy) with one or more proximity
+    warnings.  Symbol cards are sorted by urgency (alerts first, then
+    warns).  ``default_expanded`` controls whether the expander starts
+    open — True for the no-signal fallback, False when shown alongside
+    actual signals.
+    """
+    from analysis.proximity import proximity_summary
+
+    summary = proximity_summary(scan_results)
+    if not summary:
+        return
+
+    n_alert = sum(1 for r in summary if r["max_level"] == "alert")
+    n_warn = sum(1 for r in summary if r["max_level"] == "warn")
+    badge = f"🔴 {n_alert} · 🟡 {n_warn}" if (n_alert or n_warn) else f"{len(summary)} 条"
+    title = f"📡 接近触发预警 ({badge})"
+
+    with st.expander(title, expanded=default_expanded):
+        st.caption(
+            "策略未发实际信号, 但部分指标已接近触发阈值. "
+            "🔴 alert = 1-2 个 bar 内可能触发, 🟡 warn = 几个 bar 后可能触发. "
+            "方向箭头: ↑ 多头机会, ↓ 空头/退出机会."
+        )
+        for row in summary:
+            icon = _PROX_ICON.get(row["max_level"], "")
+            header = (f"{icon}  **{row['symbol']}**  ·  "
+                      f"{row['strategy']}  ({row['n_warnings']} 项)")
+            st.markdown(header)
+            for w in row["warnings"]:
+                ic = _PROX_ICON.get(w["level"], "")
+                arrow = _PROX_DIR_ARROW.get(w["direction"], "")
+                st.markdown(f"&nbsp;&nbsp;{ic} {arrow} {w['message']}",
+                            unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
