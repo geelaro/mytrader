@@ -277,6 +277,56 @@ def proximity_summary(scan_results: Iterable[dict]) -> List[dict]:
     return rows
 
 
+def proximity_summary_by_symbol(scan_results: Iterable[dict]) -> List[dict]:
+    """Like :func:`proximity_summary` but collapse all strategies on the
+    same symbol into one row.
+
+    Each strategy's warnings remain accessible via ``by_strategy`` so the
+    renderer can still show "AAPL → weekly_macd_kdj: ..., spy_ma_breakout: ...".
+
+    Sort: alerts first, then warns, then by total ``n_warnings`` desc.
+
+    Returns list of dict, one per symbol with at least one warning::
+
+        {
+            "symbol":       str,
+            "max_level":    "alert" | "warn" | "info",
+            "n_warnings":   int,            # total across all strategies
+            "n_strategies": int,            # number of strategies contributing
+            "by_strategy":  dict[str, list[dict]],   # {strategy_name: [warning, ...]}
+        }
+    """
+    _level_rank = {"alert": 3, "warn": 2, "info": 1}
+
+    by_sym: dict[str, dict] = {}
+    for r in scan_results or []:
+        warnings = proximity_warnings(r)
+        if not warnings:
+            continue
+        sym = r.get("symbol", "")
+        strat = r.get("strategy", "")
+        slot = by_sym.setdefault(sym, {
+            "symbol": sym,
+            "max_level": "info",
+            "n_warnings": 0,
+            "by_strategy": {},
+        })
+        slot["by_strategy"].setdefault(strat, []).extend(warnings)
+        slot["n_warnings"] += len(warnings)
+        # Promote max_level if any warning is more severe
+        for w in warnings:
+            if _level_rank.get(w["level"], 0) > _level_rank.get(slot["max_level"], 0):
+                slot["max_level"] = w["level"]
+
+    rows = list(by_sym.values())
+    for r in rows:
+        r["n_strategies"] = len(r["by_strategy"])
+    rows.sort(
+        key=lambda x: (-_level_rank.get(x["max_level"], 0), -x["n_warnings"]),
+    )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Internal
 # ---------------------------------------------------------------------------

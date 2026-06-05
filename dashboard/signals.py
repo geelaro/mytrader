@@ -385,17 +385,18 @@ _PROX_DIR_ARROW = {"bullish": "↑", "bearish": "↓", "neutral": "·"}
 
 
 def _render_proximity(scan_results, default_expanded: bool = False) -> None:
-    """Render the 'near-trigger' warning panel.
+    """Render the 'near-trigger' warning panel, grouped by symbol.
 
-    Each entry is one (symbol, strategy) with one or more proximity
-    warnings.  Symbol cards are sorted by urgency (alerts first, then
-    warns).  ``default_expanded`` controls whether the expander starts
-    open — True for the no-signal fallback, False when shown alongside
-    actual signals.
+    All strategies' warnings on the same symbol are collapsed into one
+    card (the symbol is the user's mental unit).  Sub-grouped by strategy
+    inside the card so you can still see which detector fired what.
+    ``default_expanded`` controls whether the expander starts open —
+    True for the no-signal fallback, False when shown alongside actual
+    signals.
     """
-    from analysis.proximity import proximity_summary
+    from analysis.proximity import proximity_summary_by_symbol
 
-    summary = proximity_summary(scan_results)
+    summary = proximity_summary_by_symbol(scan_results)
     if not summary:
         return
 
@@ -413,13 +414,18 @@ def _render_proximity(scan_results, default_expanded: bool = False) -> None:
         for row in summary:
             icon = _PROX_ICON.get(row["max_level"], "")
             header = (f"{icon}  **{row['symbol']}**  ·  "
-                      f"{row['strategy']}  ({row['n_warnings']} 项)")
+                      f"{row['n_warnings']} 项  ·  "
+                      f"{row['n_strategies']} 个策略")
             st.markdown(header)
-            for w in row["warnings"]:
-                ic = _PROX_ICON.get(w["level"], "")
-                arrow = _PROX_DIR_ARROW.get(w["direction"], "")
-                st.markdown(f"&nbsp;&nbsp;{ic} {arrow} {w['message']}",
-                            unsafe_allow_html=True)
+            for strat, warnings in row["by_strategy"].items():
+                st.markdown(f"&nbsp;&nbsp;*{strat}*", unsafe_allow_html=True)
+                for w in warnings:
+                    ic = _PROX_ICON.get(w["level"], "")
+                    arrow = _PROX_DIR_ARROW.get(w["direction"], "")
+                    st.markdown(
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;{ic} {arrow} {w['message']}",
+                        unsafe_allow_html=True,
+                    )
 
 
 # ---------------------------------------------------------------------------

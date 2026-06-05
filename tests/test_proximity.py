@@ -6,6 +6,7 @@ import pytest
 
 from analysis.proximity import (
     proximity_summary,
+    proximity_summary_by_symbol,
     proximity_warnings,
 )
 
@@ -165,6 +166,65 @@ class TestSummary:
     def test_empty_input(self):
         assert proximity_summary([]) == []
         assert proximity_summary(None) == []
+
+
+class TestSummaryBySymbol:
+    def test_collapses_multiple_strategies_per_symbol(self):
+        scans = [
+            _result(symbol="QQQ", strategy="daily_macd_kdj",
+                    MACD=10, MACD_signal=10.3),     # alert macd cross
+            _result(symbol="QQQ", strategy="weekly_macd_kdj", J=115),  # alert J extreme
+            _result(symbol="QQQ", strategy="spy_ma_breakout",
+                    price=99.5, N_day_high=100),    # alert near high
+        ]
+        out = proximity_summary_by_symbol(scans)
+        assert len(out) == 1
+        row = out[0]
+        assert row["symbol"] == "QQQ"
+        assert row["n_strategies"] == 3
+        assert row["n_warnings"] == 3
+        assert set(row["by_strategy"].keys()) == {
+            "daily_macd_kdj", "weekly_macd_kdj", "spy_ma_breakout",
+        }
+        assert row["max_level"] == "alert"
+
+    def test_max_level_is_highest_across_strategies(self):
+        scans = [
+            _result(symbol="X", strategy="a", MACD=10, MACD_signal=9.0),   # warn
+            _result(symbol="X", strategy="b", J=115),                       # alert
+        ]
+        out = proximity_summary_by_symbol(scans)
+        assert out[0]["max_level"] == "alert"
+
+    def test_sort_alerts_above_warns(self):
+        scans = [
+            _result(symbol="A", strategy="s", MACD=10, MACD_signal=9.0),   # warn only
+            _result(symbol="B", strategy="s", J=115),                       # alert
+        ]
+        out = proximity_summary_by_symbol(scans)
+        assert [r["symbol"] for r in out] == ["B", "A"]
+
+    def test_sort_breaks_tie_by_total_n(self):
+        scans = [
+            _result(symbol="A", strategy="s", MACD=10, MACD_signal=10.3),   # alert + 1
+            _result(symbol="B", strategy="s1", MACD=10, MACD_signal=10.3),  # alert
+            _result(symbol="B", strategy="s2", J=115),                       # +alert
+        ]
+        out = proximity_summary_by_symbol(scans)
+        assert out[0]["symbol"] == "B"   # 2 warnings ranks above 1 at same level
+        assert out[0]["n_warnings"] == 2
+
+    def test_excludes_clean_symbols(self):
+        scans = [
+            _result(symbol="A", MACD=10, MACD_signal=5),    # far, no warn
+            _result(symbol="B", J=115),                      # alert
+        ]
+        out = proximity_summary_by_symbol(scans)
+        assert [r["symbol"] for r in out] == ["B"]
+
+    def test_empty_input(self):
+        assert proximity_summary_by_symbol([]) == []
+        assert proximity_summary_by_symbol(None) == []
 
 
 class TestEdgeCases:

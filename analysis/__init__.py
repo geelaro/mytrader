@@ -90,7 +90,9 @@ from .decision_attribution import (
     join_decision_pnl, hit_rate_by_group, decision_attribution_summary,
 )
 from .hypothetical_positions import compute_hypothetical_positions
-from .proximity import proximity_warnings, proximity_summary
+from .proximity import (
+    proximity_warnings, proximity_summary, proximity_summary_by_symbol,
+)
 
 # ---------------------------------------------------------------------------
 # Monitoring + reports
@@ -144,6 +146,7 @@ __all__ = [
     "decision_attribution_summary",
     "compute_hypothetical_positions",
     "proximity_warnings", "proximity_summary",
+    "proximity_summary_by_symbol",
     # Monitoring + reports
     "RiskLevel", "RiskState", "compute_risk_state",
     "RiskReport", "Section",
