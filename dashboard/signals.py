@@ -307,11 +307,19 @@ def render_signal_detail(config, target_date, provider, cache):
         stop_pct = (stop_price - price) / price * 100 if price > 0 and atr > 0 else 0
         target_pct = (target_price - price) / price * 100 if price > 0 and atr > 0 else 0
 
+        # bar_date is the actual K-line date the price comes from. Display
+        # it inline so users can tell at a glance whether "今日信号" is
+        # using yesterday's close (typical pre-US-close) vs today's close.
+        bar_date_full = str(primary.get("bar_date", "") or "")
+        bar_date_short = bar_date_full[5:10] if len(bar_date_full) >= 10 else "—"
+
         title = (
-            f"{cfg['icon']} {sym}  {cfg['label']}  @ ${price:.2f}  "
+            f"{cfg['icon']} {sym}  {cfg['label']}  @ ${price:.2f} ({bar_date_short})  "
             f"({primary['strategy']})"
         )
         with st.expander(title, expanded=False):
+            if bar_date_full:
+                st.caption(f"📅 数据来自 **{bar_date_full}** 的日 K 收盘价")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("触发价", f"${price:.2f}")
             c2.metric("ATR(14)", f"${atr:.2f}" if atr > 0 else "—")
