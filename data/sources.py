@@ -9,6 +9,7 @@ import re
 from abc import ABC
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,17 @@ def _make_session() -> requests.Session:
     s.trust_env = False
     s.headers.update({"User-Agent": "Mozilla/5.0"})
     return s
+
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _et_today_naive() -> pd.Timestamp:
+    """Current US/Eastern date as a naive Timestamp at midnight.
+
+    Exists as a seam for tests — monkeypatch this instead of pd.Timestamp.now.
+    """
+    return pd.Timestamp.now(tz=_ET).normalize().tz_localize(None)
 
 
 _YAHOO_SESSION: Optional[requests.Session] = None
@@ -192,6 +204,11 @@ class TencentSource(DataSource):
         df = pd.DataFrame(rows).set_index("date").sort_index()
         df = apply_us_splits(df, sym)
         df = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))]
+        # Tencent's day endpoint live-updates the last bar during US market
+        # hours — OHLC is a mid-session snapshot, not EOD. Drop the ET-today
+        # row so we never cache a partial bar; sina_us / yahoo_chart will
+        # fill it once the close prints.
+        df = df[df.index < _et_today_naive()]
         return self.validate(df, symbol)
 
 

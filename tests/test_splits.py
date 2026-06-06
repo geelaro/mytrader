@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+import data.sources as sources_mod
 from data.sources import (
     SinaUSSource,
     TencentSource,
@@ -18,6 +19,17 @@ from data.sources import (
     _US_SPLITS,
     apply_us_splits,
 )
+
+
+def _mock_tencent_response(code: str, rows: list[list]) -> MagicMock:
+    """Build a mock Tencent fqkline response for *code*.
+
+    Each row in *rows* is [date_str, open, close, high, low, volume].
+    """
+    body = {"code": 0, "data": {code: {"day": rows}}}
+    resp = MagicMock()
+    resp.json.return_value = body
+    return resp
 
 
 # ===================================================================
@@ -233,3 +245,64 @@ class TestCrossSourceConsistency:
         assert sina_close == pytest.approx(yahoo_close, abs=0.001)
         # And both ~= the expected /10 split adjustment
         assert sina_close == pytest.approx(49.279, abs=0.01)
+
+
+# ===================================================================
+# TencentSource — regression: must drop ET-today (mid-session snapshot)
+# ===================================================================
+
+
+class TestTencentDropsIntradayBar:
+    """tencent's day endpoint live-updates the last bar during US market
+    hours. The last row's OHLC is a partial-day snapshot, not EOD. Caching
+    it pollutes the store until a manual force_refresh.
+    """
+
+    def test_drops_et_today_row(self, monkeypatch):
+        """Mock ET-today = 2026-06-05; the 6/5 row must be dropped, 6/4 kept."""
+        monkeypatch.setattr(
+            sources_mod, "_et_today_naive",
+            lambda: pd.Timestamp("2026-06-05"),
+        )
+        # row layout per tencent: [date, open, close, high, low, volume]
+        # SPY has no splits, so apply_us_splits is a no-op.
+        raw_rows = [
+            ["2026-06-03", 758.15, 756.08, 758.80, 756.01, 3394229],
+            ["2026-06-04", 752.10, 757.09, 758.31, 751.47, 49873840],
+            # This is the mid-session snapshot — close 749.35 vs real EOD 737.55
+            ["2026-06-05", 752.31, 749.35, 752.82, 748.23, 12349807],
+        ]
+        with patch("data.sources._make_session") as mock_make:
+            session = MagicMock()
+            session.get.return_value = _mock_tencent_response("usSPY.AM", raw_rows)
+            mock_make.return_value = session
+
+            df = TencentSource().fetch("SPY", "2026-06-03", "2026-06-05")
+
+        # 6/5 row dropped, 6/3 and 6/4 retained
+        assert pd.Timestamp("2026-06-05") not in df.index
+        assert pd.Timestamp("2026-06-04") in df.index
+        assert pd.Timestamp("2026-06-03") in df.index
+        assert df.loc["2026-06-04", "Close"] == pytest.approx(757.09)
+
+    def test_keeps_all_rows_when_today_is_future(self, monkeypatch):
+        """When ET-today is after the fetched range, every row is EOD already."""
+        monkeypatch.setattr(
+            sources_mod, "_et_today_naive",
+            lambda: pd.Timestamp("2026-06-08"),  # Monday after the fetched week
+        )
+        raw_rows = [
+            ["2026-06-04", 752.10, 757.09, 758.31, 751.47, 49873840],
+            ["2026-06-05", 752.31, 737.55, 752.82, 735.00, 49600000],
+        ]
+        with patch("data.sources._make_session") as mock_make:
+            session = MagicMock()
+            session.get.return_value = _mock_tencent_response("usSPY.AM", raw_rows)
+            mock_make.return_value = session
+
+            df = TencentSource().fetch("SPY", "2026-06-04", "2026-06-05")
+
+        # Both rows kept — neither is ET-today
+        assert pd.Timestamp("2026-06-05") in df.index
+        assert pd.Timestamp("2026-06-04") in df.index
+        assert df.loc["2026-06-05", "Close"] == pytest.approx(737.55)
