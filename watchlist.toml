@@ -37,14 +37,14 @@ monitor = ["spy_ma_breakout"]
 [[watchlist]]
 symbol = "MU"
 name = "Micron"
-active = "weekly_macd_kdj"
-monitor = ["daily_macd_kdj", "spy_ma_breakout"]
+active = "weekly_macd"
+monitor = ["weekly_macd_kdj", "daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "INTC"
 name = "Intel"
-active = "weekly_macd_kdj"
-monitor = ["daily_macd_kdj", "spy_ma_breakout"]
+active = "weekly_macd"
+monitor = ["weekly_macd_kdj", "daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "ORCL"
