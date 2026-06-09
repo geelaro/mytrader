@@ -15,7 +15,7 @@ Three estimators, all returning a *positive* number (the loss):
   deep* it falls).
 
 All three accept any pd.Series of single-period returns (daily, weekly).
-Convert from prices via ``df["Close"].pct_change().dropna()``.
+Convert from prices via ``df["Close"].pct_change(fill_method=None).dropna()``.
 
 Portfolio aggregation: :func:`portfolio_returns` weights individual symbol
 returns into a portfolio return series; pass the result back into the
@@ -103,7 +103,7 @@ def portfolio_returns(
         return pd.Series(dtype=float)
     normed = {s: w / total for s, w in used.items()}
 
-    rets = prices[list(normed.keys())].pct_change().dropna(how="all")
+    rets = prices[list(normed.keys())].pct_change(fill_method=None).dropna(how="all")
     if rets.empty:
         return pd.Series(dtype=float)
     w_vec = pd.Series(normed)

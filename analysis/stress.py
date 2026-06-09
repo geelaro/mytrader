@@ -192,7 +192,7 @@ def _replay(
 
     # Daily portfolio return path with reindex/ffill for cross-symbol alignment
     px = window[list(used.keys())].ffill().dropna(how="all")
-    rets = px.pct_change().dropna(how="all").fillna(0)
+    rets = px.pct_change(fill_method=None).dropna(how="all").fillna(0)
     w_series = pd.Series(normed)
     pf_returns = (rets * w_series).sum(axis=1)
     if pf_returns.empty:

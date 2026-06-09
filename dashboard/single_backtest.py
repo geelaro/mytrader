@@ -146,7 +146,7 @@ def _render_risk_adjusted_section(result):
     eq = result.equity_curve
     if eq is None or len(eq) < 2:
         return
-    rets = eq.pct_change().dropna()
+    rets = eq.pct_change(fill_method=None).dropna()
     if rets.empty:
         return
 

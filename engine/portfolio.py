@@ -948,7 +948,7 @@ class PortfolioResult:
 
     @property
     def sharpe_ratio(self) -> float:
-        rets = self.equity_curve.pct_change().dropna()
+        rets = self.equity_curve.pct_change(fill_method=None).dropna()
         if rets.std() == 0:
             return 0
         return np.sqrt(252) * rets.mean() / rets.std()

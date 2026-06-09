@@ -346,7 +346,7 @@ class BacktestEngine:
             raise ValueError("No equity history recorded")
         eq_df = pd.DataFrame(self.equity_history, columns=['date', 'equity']).set_index('date')
         curve = eq_df['equity']
-        rets = curve.pct_change().dropna()
+        rets = curve.pct_change(fill_method=None).dropna()
 
         final = curve.iloc[-1]
         total_ret = (final / self.initial_capital - 1) * 100
@@ -435,7 +435,7 @@ class BacktestEngine:
         if close_out and self.position != 0:
             self._close_out(df, close_out)
 
-        return df["Close"].pct_change().dropna()
+        return df["Close"].pct_change(fill_method=None).dropna()
 
     # -- close-out -----------------------------------------------------------
 

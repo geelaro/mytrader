@@ -36,7 +36,7 @@ def correlation_matrix(prices: pd.DataFrame, min_obs: int = 30) -> pd.DataFrame:
     """Pairwise correlation of daily returns.  Requires ≥ ``min_obs`` rows."""
     if prices is None or prices.empty:
         return pd.DataFrame()
-    rets = prices.pct_change().dropna()
+    rets = prices.pct_change(fill_method=None).dropna()
     if len(rets) < min_obs:
         return pd.DataFrame()
     return rets.corr()

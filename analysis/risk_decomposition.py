@@ -63,7 +63,7 @@ def _prepare(prices: pd.DataFrame, weights: Mapping[str, float]):
         return None
     normed = {s: w / total for s, w in used.items()}
     syms = list(normed.keys())
-    rets = prices[syms].pct_change().dropna()
+    rets = prices[syms].pct_change(fill_method=None).dropna()
     if rets.empty or len(rets) < 30:
         return None
     w = pd.Series(normed)[syms].values  # 1-D ndarray aligned with syms
@@ -199,7 +199,7 @@ def risk_parity_weights(
     if not cols:
         return pd.Series(dtype=float)
 
-    rets = prices[cols].pct_change().dropna()
+    rets = prices[cols].pct_change(fill_method=None).dropna()
     if rets.empty or len(rets) < 30:
         return pd.Series(dtype=float)
 
@@ -259,7 +259,7 @@ def inverse_volatility_weights(
     cols = [s for s in cols if s in prices.columns]
     if not cols:
         return pd.Series(dtype=float)
-    rets = prices[cols].pct_change().dropna()
+    rets = prices[cols].pct_change(fill_method=None).dropna()
     if rets.empty:
         return pd.Series(dtype=float)
     vol = rets.std()

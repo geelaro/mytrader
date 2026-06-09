@@ -143,7 +143,7 @@ def test_full_backtest_run(ohlcv):
         engine.sell(df.index[-1], last_price, reason="回测结束")
         engine.update(df.index[-1], last_price)
 
-    result = engine.get_result(df["Close"].pct_change().dropna())
+    result = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert result.initial_capital == 10000
     assert result.final_equity > 0
     assert result.total_trades >= 0

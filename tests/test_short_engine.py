@@ -75,7 +75,7 @@ class TestTurtleLongShort:
         engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget",
                                 risk_per_trade=0.01, risk_atr_mult=2.0)
         engine.run(s, df_sig)
-        r = engine.get_result(df_sig["Close"].pct_change().dropna())
+        r = engine.get_result(df_sig["Close"].pct_change(fill_method=None).dropna())
         dirs = {t.direction for t in engine.trades}
         assert "LONG" in dirs or "SHORT" in dirs
         assert r.total_trades > 0
@@ -92,7 +92,7 @@ class TestTurtleLongShort:
         df_sig = s.calculate_indicators(data)
         engine = BacktestEngine(initial_capital=10000)
         engine.run(s, df_sig)
-        r = engine.get_result(df_sig["Close"].pct_change().dropna())
+        r = engine.get_result(df_sig["Close"].pct_change(fill_method=None).dropna())
         assert len(r.equity_curve) > 0
         assert r.final_equity > 0
 

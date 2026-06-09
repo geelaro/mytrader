@@ -68,7 +68,7 @@ def buy_and_hold_eq_weight():
     n = len(prices.columns)
     shares = (100000 / n) / prices.iloc[0]
     eq = (prices * shares).sum(axis=1)
-    rets = eq.pct_change().dropna()
+    rets = eq.pct_change(fill_method=None).dropna()
     yrs = (eq.index[-1] - eq.index[0]).days / 365.25
     cagr = ((eq.iloc[-1] / eq.iloc[0]) ** (1 / yrs) - 1) * 100
     sharpe = float(np.sqrt(252) * rets.mean() / rets.std())

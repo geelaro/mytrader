@@ -32,7 +32,7 @@ def test_golden_enhanced_macd_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
 
     assert r.total_trades == 4, f"trades: {r.total_trades}"
     assert r.total_return_pct == pytest.approx(-2.5970, abs=0.01), f"return: {r.total_return_pct:.4f}"
@@ -45,7 +45,7 @@ def test_golden_weekly_macd_kdj_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
 
     assert r.total_trades == 2, f"trades: {r.total_trades}"
     assert r.total_return_pct == pytest.approx(-11.7037, abs=0.01), f"return: {r.total_return_pct:.4f}"
@@ -58,7 +58,7 @@ def test_golden_turtle_trading_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
 
     assert r.total_trades == 5, f"trades: {r.total_trades}"
     assert r.total_return_pct == pytest.approx(-7.5886, abs=0.01), f"return: {r.total_return_pct:.4f}"
@@ -71,7 +71,7 @@ def test_golden_atr_breakout_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r.total_trades == 4
     assert r.total_return_pct == pytest.approx(-4.3525, abs=0.01)
     assert r.sharpe_ratio == pytest.approx(-1.0176, abs=0.01)
@@ -83,7 +83,7 @@ def test_golden_donchian_breakout_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r.total_trades == 6
     assert r.total_return_pct == pytest.approx(-1.2705, abs=0.01)
     assert r.sharpe_ratio == pytest.approx(-0.2918, abs=0.01)
@@ -95,7 +95,7 @@ def test_golden_daily_macd_kdj_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r.total_trades == 13
     assert r.total_return_pct == pytest.approx(-4.0445, abs=0.01)
     assert r.sharpe_ratio == pytest.approx(-0.7408, abs=0.01)
@@ -107,7 +107,7 @@ def test_golden_weekly_macd_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r.total_trades == 2
     assert r.total_return_pct == pytest.approx(-15.9225, abs=0.01)
     assert r.sharpe_ratio == pytest.approx(-3.5648, abs=0.01)
@@ -119,7 +119,7 @@ def test_golden_macd_kdj_merged_fixed_capital(golden_df):
     df = s.calculate_indicators(golden_df)
     engine = BacktestEngine(initial_capital=10000)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r.total_trades == 13
     assert r.total_return_pct == pytest.approx(-4.0445, abs=0.01)
 
@@ -157,7 +157,7 @@ def test_golden_risk_budget(golden_df, strat_name, cls_or_factory):
     engine = BacktestEngine(initial_capital=10000, sizing_mode="risk_budget",
                             risk_per_trade=0.01, risk_atr_mult=2.0)
     engine.run(s, df)
-    r = engine.get_result(df["Close"].pct_change().dropna())
+    r = engine.get_result(df["Close"].pct_change(fill_method=None).dropna())
 
     expected = _GOLDEN_RISK_BUDGET[strat_name]
     assert r.total_trades == expected["trades"], f"{strat_name} trades"
@@ -181,7 +181,7 @@ def test_commission_changes_metrics(golden_df):
     e2 = BacktestEngine(initial_capital=10000, commission_rate=0.003)
     e1.run(s, df)
     e2.run(s, df)
-    r1 = e1.get_result(df["Close"].pct_change().dropna())
-    r2 = e2.get_result(df["Close"].pct_change().dropna())
+    r1 = e1.get_result(df["Close"].pct_change(fill_method=None).dropna())
+    r2 = e2.get_result(df["Close"].pct_change(fill_method=None).dropna())
     assert r2.total_return_pct <= r1.total_return_pct + 0.001, \
         "higher commission should not increase return"

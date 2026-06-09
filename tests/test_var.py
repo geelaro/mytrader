@@ -144,7 +144,7 @@ class TestPortfolioReturns:
         # 1 less than prices because pct_change drops first row
         assert len(pf) == len(prices) - 1
         # Equal-weight portfolio return == average of symbol returns
-        expected = prices.pct_change().dropna().mean(axis=1)
+        expected = prices.pct_change(fill_method=None).dropna().mean(axis=1)
         pd.testing.assert_series_equal(pf, expected, check_names=False)
 
     def test_weights_normalised(self, prices):
@@ -157,7 +157,7 @@ class TestPortfolioReturns:
         """Weight for non-existent symbol silently dropped."""
         pf = portfolio_returns(prices, {"AAPL": 1, "TSLA": 1})
         # Effectively AAPL with full weight
-        expected = prices["AAPL"].pct_change().dropna()
+        expected = prices["AAPL"].pct_change(fill_method=None).dropna()
         pd.testing.assert_series_equal(pf, expected, check_names=False)
 
     def test_empty_inputs(self, prices):

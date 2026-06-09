@@ -362,7 +362,7 @@ def historical_drawdown_attribution(
     if pv.empty:
         return []
 
-    returns = pv.pct_change().dropna()
+    returns = pv.pct_change(fill_method=None).dropna()
     episodes = drawdown_episodes(returns)
     if episodes.empty:
         return []

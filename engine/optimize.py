@@ -261,7 +261,7 @@ def walk_forward(
     eq_df = pd.DataFrame(all_oos_equity, columns=["date", "equity"]).set_index("date")
     eq_df = eq_df.sort_index()
     curve = eq_df["equity"]
-    rets = curve.pct_change().dropna()
+    rets = curve.pct_change(fill_method=None).dropna()
     total_ret = (curve.iloc[-1] / initial_capital - 1) * 100
     sharpe = np.sqrt(252) * rets.mean() / rets.std() if rets.std() > 0 else 0
     rolling_max = curve.expanding().max()
