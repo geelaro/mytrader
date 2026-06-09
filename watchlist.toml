@@ -49,14 +49,14 @@ monitor = ["weekly_macd_kdj", "daily_macd_kdj", "spy_ma_breakout"]
 [[watchlist]]
 symbol = "ORCL"
 name = "Oracle"
-active = "weekly_macd_kdj"
-monitor = ["spy_ma_breakout"]
+active = "weekly_macd"
+monitor = ["weekly_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "QQQ"
 name = "Nasdaq ETF"
-active = "weekly_macd_kdj"
-monitor = ["donchian_breakout", "daily_macd_kdj", "spy_ma_breakout"]
+active = "weekly_macd"
+monitor = ["weekly_macd_kdj", "donchian_breakout", "daily_macd_kdj", "spy_ma_breakout"]
 
 [[watchlist]]
 symbol = "SPY"
