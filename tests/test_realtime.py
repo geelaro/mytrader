@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from data.realtime import _extract_latest_quote, get_realtime_vix, reset_cache
+from data.realtime import (
+    _extract_latest_quote,
+    get_fear_greed,
+    get_realtime_vix,
+    reset_cache,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -205,3 +210,112 @@ class TestGetRealtimeVix:
         with patch("data.realtime._realtime_session", return_value=session):
             assert get_realtime_vix() is None
         assert session.get.call_count == 2
+
+
+# ===================================================================
+# get_fear_greed — CNN dataviz JSON
+# ===================================================================
+
+
+def _mock_fg_response(payload: dict, status: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = payload
+    resp.status_code = status
+    if status >= 400:
+        resp.raise_for_status.side_effect = requests.HTTPError(f"{status}")
+    return resp
+
+
+class TestGetFearGreed:
+    """CNN Fear & Greed JSON endpoint parsing.
+
+    Endpoint shape:
+        {"fear_and_greed": {"score": float, "rating": str, "timestamp": ..., ...}, ...}
+    """
+
+    def test_parses_score_and_rating(self):
+        payload = {"fear_and_greed": {
+            "score": 27.2, "rating": "Fear",  # rating could be capitalised
+            "timestamp": "2026-06-11T08:36:31+00:00",
+        }}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            result = get_fear_greed()
+        assert result == (27.2, "fear")  # lowercased
+
+    def test_int_score_coerced_to_float(self):
+        payload = {"fear_and_greed": {"score": 75, "rating": "extreme greed"}}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            result = get_fear_greed()
+        assert result == (75.0, "extreme greed")
+
+    def test_network_error_returns_none(self):
+        session = MagicMock()
+        session.get.side_effect = requests.ConnectionError("blocked")
+        with patch("data.realtime._realtime_session", return_value=session):
+            assert get_fear_greed() is None
+
+    def test_http_error_returns_none(self):
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response({}, status=451)
+        with patch("data.realtime._realtime_session", return_value=session):
+            assert get_fear_greed() is None
+
+    def test_malformed_json_returns_none(self):
+        # fear_and_greed missing
+        payload = {"other_field": "x"}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            assert get_fear_greed() is None
+
+    def test_missing_score_returns_none(self):
+        payload = {"fear_and_greed": {"rating": "fear"}}  # no score
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            assert get_fear_greed() is None
+
+    def test_non_string_rating_returns_none(self):
+        payload = {"fear_and_greed": {"score": 50, "rating": 3}}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            assert get_fear_greed() is None
+
+    def test_cache_returns_same_value_within_ttl(self):
+        payload = {"fear_and_greed": {"score": 50.0, "rating": "neutral"}}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            r1 = get_fear_greed(ttl=60)
+            r2 = get_fear_greed(ttl=60)
+        # Second call must come from cache — exactly 1 network call.
+        assert session.get.call_count == 1
+        assert r1 == r2 == (50.0, "neutral")
+
+    def test_cache_expires_after_ttl(self):
+        payload = {"fear_and_greed": {"score": 50.0, "rating": "neutral"}}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            get_fear_greed(ttl=0.01)
+            time.sleep(0.02)
+            get_fear_greed(ttl=0.01)
+        assert session.get.call_count == 2
+
+    def test_vix_and_fg_caches_are_separate(self):
+        """VIX cache miss should NOT serve fear_greed cache and vice versa."""
+        fg_payload = {"fear_and_greed": {"score": 50.0, "rating": "neutral"}}
+        session = MagicMock()
+        session.get.return_value = _mock_fg_response(fg_payload)
+        with patch("data.realtime._realtime_session", return_value=session):
+            r = get_fear_greed()
+        assert r == (50.0, "neutral")
+        # Now look up VIX cache — should be empty, not contaminated
+        from data.realtime import _cache
+        assert "fear_greed" in _cache
+        assert "vix" not in _cache

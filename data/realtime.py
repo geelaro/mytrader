@@ -164,6 +164,69 @@ def _try_chart(timeout: float = _DEFAULT_TIMEOUT) -> Optional[float]:
     return _extract_latest_quote(data)
 
 
+def get_fear_greed(
+    timeout: float = _DEFAULT_TIMEOUT,
+    ttl: float = _DEFAULT_TTL,
+) -> Optional[tuple[float, str]]:
+    """Fetch CNN Fear & Greed Index — (score 0-100, rating label).
+
+    Source: CNN's internal dataviz JSON endpoint at
+    ``production.dataviz.cnn.io/index/fearandgreed/graphdata``.
+    This is far more stable than parsing the marketing-page HTML at
+    ``edition.cnn.com/markets/fear-and-greed`` — CNN changes page
+    markup frequently but this internal API has been stable for years.
+    The HTML page is also geo-blocked from several regions (451), the
+    JSON endpoint is more permissive.
+
+    Behind a proxy in China set ``HTTPS_PROXY`` in ``.env`` — session
+    has ``trust_env=True`` so it's picked up automatically.
+
+    Returns
+    -------
+    (score, rating) tuple where rating is one of:
+    ``'extreme fear'`` / ``'fear'`` / ``'neutral'`` / ``'greed'`` /
+    ``'extreme greed'``.  Returns ``None`` on any error so callers can
+    gracefully show "unavailable".
+
+    Score thresholds (CNN's own):
+    - 0-25  : extreme fear
+    - 25-45 : fear
+    - 45-55 : neutral
+    - 55-75 : greed
+    - 75-100: extreme greed
+    """
+    now = time.time()
+    with _cache_lock:
+        cached = _cache.get("fear_greed")
+        if cached and (now - cached[0]) < ttl:
+            _incr_metric("realtime_fear_greed_cache_hits_total")
+            return cached[1]
+
+    _incr_metric("realtime_fear_greed_cache_misses_total")
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    try:
+        s = _realtime_session()
+        r = s.get(url, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.debug("CNN fear_greed fetch failed: %s", e)
+        return None
+
+    fg = data.get("fear_and_greed") if isinstance(data, dict) else None
+    if not isinstance(fg, dict):
+        return None
+    score = fg.get("score")
+    rating = fg.get("rating")
+    if not (isinstance(score, (int, float)) and isinstance(rating, str)):
+        return None
+
+    result = (float(score), rating.lower())
+    with _cache_lock:
+        _cache["fear_greed"] = (now, result)
+    return result
+
+
 def reset_cache() -> None:
     """Clear the in-process realtime cache.  Used by tests."""
     with _cache_lock:

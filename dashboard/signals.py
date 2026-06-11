@@ -9,7 +9,7 @@ from utils import get_logger
 from utils.market_state import MarketStateClassifier, MarketRegime, Volatility
 from strategy import SIGNAL_LABEL
 from analysis.risk_monitor import compute_risk_state, RiskLevel
-from data.realtime import get_realtime_vix
+from data.realtime import get_realtime_vix, get_fear_greed
 from live.position_stops import compute_hypothetical_positions
 
 logger = get_logger("dashboard.signals")
@@ -92,7 +92,7 @@ def render_risk_light(config, target_date, provider):
 
     # Indicator row
     ind = state.indicators
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(
         "SPY",
         f"${ind.get('spy_close', 0):.2f}",
@@ -111,6 +111,28 @@ def render_risk_light(config, target_date, provider):
             + ("Yahoo ~15min 延迟实时" if vix_src == "realtime" else "CBOE 官方收盘价")
         ),
     )
+
+    # CNN Fear & Greed Index — sentiment 互补指标, 不参与 RED/YELLOW/GREEN 判定
+    fg = get_fear_greed()
+    if fg is not None:
+        fg_score, fg_rating = fg
+        rating_zh = {
+            "extreme fear": "极度恐慌",
+            "fear": "恐慌",
+            "neutral": "中性",
+            "greed": "贪婪",
+            "extreme greed": "极度贪婪",
+        }.get(fg_rating, fg_rating)
+        c5.metric(
+            "F&G (CNN)",
+            f"{fg_score:.0f}",
+            delta=rating_zh,
+            delta_color="off",
+            help="CNN 恐惧贪婪指数. 0-25 极度恐慌, 25-45 恐慌, 45-55 中性, 55-75 贪婪, 75-100 极度贪婪. 数据源 production.dataviz.cnn.io JSON 接口",
+        )
+    else:
+        c5.metric("F&G (CNN)", "—", delta="数据不可用", delta_color="off",
+                   help="CNN 接口暂时无响应 — 检查代理/网络")
 
     # Reason bullets
     if state.reasons:
